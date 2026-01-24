@@ -4,24 +4,30 @@ import logging
 import math
 import os
 import random
+import re
 from pathlib import Path
 import copy
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
+    Document,
     InlineKeyboardMarkup,
+    InlineKeyboardButton,
     InlineQuery,
     InlineQueryResultArticle,
     InputTextMessageContent,
+    InputMediaPhoto,
     Message,
 )
 from aiogram.types import FSInputFile
+
+router = Router()
 
 from catalog import (
     find_icon_by_slug,
@@ -71,12 +77,589 @@ from .keyboards import (
     review_actions_keyboard,
     submission_type_keyboard,
     LANGUAGE_OPTIONS,
+    DRAFT_EDITOR_BUTTONS,
 )
 from .states import AdminReview, UserSubmission
 
 CONFIG = load_config()
 CATEGORY_OPTIONS = CONFIG.get("categories", [])
 ALL_CATEGORY_OPTION = {"key": "_all", "ru": "Все плагины", "en": "All plugins"}
+
+
+class PluginFileError(Exception):
+    def __init__(self, key: str, **params: Any) -> None:
+        super().__init__(key)
+        self.key = key
+        self.params = params
+
+
+DRAFT_FIELD_SPECS = {
+    "name_ru": {
+        "group": "plugin",
+        "key": "name",
+        "label_key": "draft_field_name",
+        "prompt_key": "draft_prompt_name",
+        "required": True,
+    },
+    "name_en": {
+        "group": "data",
+        "key": "en_name",
+        "label_key": "draft_field_name",
+        "prompt_key": "draft_prompt_name_en",
+        "required": True,
+    },
+    "description_ru": {
+        "group": "plugin",
+        "key": "description",
+        "label_key": "draft_field_description",
+        "prompt_key": "draft_prompt_description",
+        "required": True,
+    },
+    "description_en": {
+        "group": "data",
+        "key": "en_description",
+        "label_key": "draft_field_description",
+        "prompt_key": "draft_prompt_description_en",
+        "required": True,
+    },
+    "usage_ru": {
+        "group": "data",
+        "key": "usage",
+        "label_key": "draft_field_usage",
+        "prompt_key": "draft_prompt_usage",
+        "required": True,
+    },
+    "usage_en": {
+        "group": "data",
+        "key": "en_usage",
+        "label_key": "draft_field_usage",
+        "prompt_key": "draft_prompt_usage_en",
+        "required": True,
+    },
+    "author": {
+        "group": "plugin",
+        "key": "author",
+        "label_key": "draft_field_author",
+        "prompt_key": "draft_prompt_author",
+        "required": True,
+    },
+    "author_channel": {
+        "group": "data",
+        "key": "author_channel",
+        "label_key": "draft_field_author_channel",
+        "prompt_key": "draft_prompt_author_channel",
+        "required": True,
+    },
+    "version": {
+        "group": "plugin",
+        "key": "version",
+        "label_key": "draft_field_version",
+        "prompt_key": "draft_prompt_version",
+        "required": True,
+    },
+    "min_version": {
+        "group": "plugin",
+        "key": "min_version",
+        "label_key": "draft_field_min_version",
+        "prompt_key": "draft_prompt_min_version",
+        "required": True,
+    },
+    "has_ui": {
+        "group": "plugin",
+        "key": "has_ui_settings",
+        "label_key": "draft_field_has_ui",
+        "required": True,
+    },
+    "category": {
+        "group": "category",
+        "label_key": "draft_field_category",
+        "prompt_key": "draft_prompt_category",
+        "required": True,
+    },
+    "file": {
+        "group": "file",
+        "label_key": "draft_field_file",
+        "prompt_key": "draft_prompt_file",
+        "required": True,
+    },
+}
+
+
+async def _ingest_plugin_document(bot: Bot, document: Document) -> Dict[str, Any]:
+    if not document or not document.file_name.endswith(".plugin"):
+        raise PluginFileError("invalid_extension")
+
+    try:
+        file_path = await download_file(bot, document.file_id)
+    except Exception:
+        raise PluginFileError("download_error")
+
+    try:
+        metadata = parse_plugin_file(file_path)
+    except (FileNotFoundError, PluginParseError) as exc:
+        raise PluginFileError("parse_error", error=str(exc))
+
+    try:
+        plugin_file = ensure_plugin_file_named(metadata.id, file_path)
+    except Exception as exc:
+        logging.error("Failed to rename plugin file: %s", exc)
+        raise PluginFileError("file_save_error")
+
+    plugin_dict = metadata_to_dict(metadata, plugin_file)
+    storage_meta = await store_plugin_file(bot, metadata.id, plugin_file)
+    if storage_meta:
+        plugin_dict["storage"] = storage_meta
+    return plugin_dict
+
+
+DRAFT_FIELD_LAYOUT = [
+    ["name_ru", "name_en"],
+    ["description_ru", "description_en"],
+    ["usage_ru", "usage_en"],
+    ["author", "author_channel"],
+    ["version", "min_version"],
+    ["has_ui", "category"],
+    ["file"],
+]
+
+USER_DRAFT_STATES: Tuple[Any, ...] = (
+    UserSubmission.draft_editor,
+    UserSubmission.draft_waiting_value,
+    UserSubmission.draft_waiting_file,
+    UserSubmission.draft_choose_category,
+)
+
+ADMIN_DRAFT_STATES: Tuple[Any, ...] = (
+    AdminReview.review_item,
+    AdminReview.draft_waiting_value,
+    AdminReview.draft_waiting_file,
+    AdminReview.draft_choose_category,
+)
+
+DRAFT_CONTEXTS: Dict[str, Dict[str, Any]] = {
+    "user": {
+        "title_key": "draft_editor_title",
+        "submit_blocked_key": "draft_editor_submit_blocked",
+        "submit_ready_key": "draft_editor_submit_ready",
+        "submit_callback": "draft:submit",
+        "cancel_callback": "draft:cancel",
+        "menu_callback": "draft:menu",
+        "category_prompt_key": "ask_category",
+        "file_prompt_key": "draft_prompt_file",
+        "plugin_caption_key": "draft_plugin_file",
+        "field_callback_prefix": "draft:field:",
+        "base_state": UserSubmission.draft_editor,
+        "waiting_value_state": UserSubmission.draft_waiting_value,
+        "waiting_file_state": UserSubmission.draft_waiting_file,
+        "choose_category_state": UserSubmission.draft_choose_category,
+        "store_key": "plugin",
+    },
+    "admin": {
+        "title_key": "admin_draft_title",
+        "submit_blocked_key": "draft_editor_submit_blocked",
+        "submit_ready_key": "draft_editor_submit_ready",
+        "submit_callback": "admin:submit",
+        "cancel_callback": "admin:menu",
+        "menu_callback": "admin:draft:menu",
+        "category_prompt_key": "ask_category",
+        "file_prompt_key": "draft_prompt_file",
+        "plugin_caption_key": "admin_plugin_file",
+        "field_callback_prefix": "admin:field:",
+        "base_state": AdminReview.review_item,
+        "waiting_value_state": AdminReview.draft_waiting_value,
+        "waiting_file_state": AdminReview.draft_waiting_file,
+        "choose_category_state": AdminReview.draft_choose_category,
+        "store_key": "admin_draft",
+    },
+}
+
+
+def get_admin_missing_fields(payload: Dict[str, Any], language: str) -> list[str]:
+    data = {"admin_draft": payload or {}}
+    return get_draft_missing_fields(data, language, context="admin")
+
+
+def admin_payload_is_complete(payload: Dict[str, Any]) -> bool:
+    data = {"admin_draft": payload or {}}
+    return draft_is_complete(data, context="admin")
+
+
+def _get_context_store(data: Dict[str, Any], context: str) -> Dict[str, Any]:
+    if context == "admin":
+        return data.get("admin_draft", {})
+    return data
+
+
+def _copy_plugin(data: Dict[str, Any], context: str = "user") -> Dict[str, Any]:
+    source = _get_context_store(data, context)
+    plugin = source.get("plugin") or {}
+    return copy.deepcopy(plugin)
+
+
+def _update_state_plugin(data: Dict[str, Any], plugin: Dict[str, Any], context: str = "user") -> None:
+    if context == "admin":
+        draft = data.get("admin_draft") or {}
+        draft["plugin"] = plugin
+        data["admin_draft"] = draft
+    else:
+        data["plugin"] = plugin
+
+
+def _get_draft_field_value(data: Dict[str, Any], field_id: str, context: str = "user") -> Any:
+    spec = DRAFT_FIELD_SPECS.get(field_id)
+    if not spec:
+        return None
+    group = spec["group"]
+    store = data if context == "user" else data.get("admin_draft", {})
+    if group == "plugin":
+        return (store.get("plugin") or {}).get(spec["key"])
+    if group == "data":
+        return store.get(spec["key"])
+    if group == "category":
+        return store.get("category_label")
+    if group == "file":
+        plugin = store.get("plugin") or {}
+        storage = plugin.get("storage") or {}
+        if storage.get("file_id") or storage.get("message_id"):
+            return storage
+        return plugin.get("file_path")
+    return None
+
+
+def _draft_field_filled(data: Dict[str, Any], field_id: str, context: str = "user") -> bool:
+    value = _get_draft_field_value(data, field_id, context)
+    store = _get_context_store(data, context)
+    if field_id == "category":
+        return bool(store.get("category_key"))
+    if field_id == "file":
+        if isinstance(value, dict):
+            return bool(value.get("file_id") or value.get("message_id"))
+        return bool(value)
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def get_draft_missing_fields(data: Dict[str, Any], language: str, context: str = "user") -> list[str]:
+    missing: list[str] = []
+    for field_id, spec in DRAFT_FIELD_SPECS.items():
+        if not spec.get("required"):
+            continue
+        if not _draft_field_filled(data, field_id, context):
+            label = translate(spec["label_key"], language)
+            missing.append(label)
+    return missing
+
+
+def draft_is_complete(data: Dict[str, Any], context: str = "user") -> bool:
+    for field_id, spec in DRAFT_FIELD_SPECS.items():
+        if spec.get("required") and not _draft_field_filled(data, field_id, context):
+            return False
+    store = data if context == "user" else data.get("admin_draft", {})
+    plugin = store.get("plugin") or {}
+    storage = plugin.get("storage") or {}
+    if not storage and not plugin.get("file_path"):
+        return False
+    return True
+
+
+def _get_draft_field_status_icon(field_id: str, data: Dict[str, Any], context: str = "user") -> str:
+    return "✅" if _draft_field_filled(data, field_id, context) else "⚠️"
+
+
+def _get_draft_button_text(field_id: str, data: Dict[str, Any], language: str, context: str = "user") -> str:
+    if field_id == "has_ui":
+        store = data if context == "user" else data.get("admin_draft", {})
+        plugin = store.get("plugin") or {}
+        has_ui = plugin.get("has_ui_settings")
+        button_key = "has_ui_on" if has_ui else "has_ui_off"
+        base_map = DRAFT_EDITOR_BUTTONS.get(button_key, {})
+        base = base_map.get(language) or base_map.get("ru") or field_id
+        return f"{_get_draft_field_status_icon(field_id, data, context)} {base}"
+
+    base_map = DRAFT_EDITOR_BUTTONS.get(field_id) or {}
+    base = base_map.get(language) or base_map.get("ru") or field_id
+    if field_id == "file":
+        store = data if context == "user" else data.get("admin_draft", {})
+        plugin = store.get("plugin") or {}
+        storage = plugin.get("storage") or {}
+        if storage.get("message_id"):
+            base = translate("draft_file_storage", language)
+        elif plugin.get("file_path"):
+            try:
+                filename = Path(plugin.get("file_path")).name
+            except Exception:
+                filename = plugin.get("file_path", "file")
+            base = translate("draft_file_local", language, name=filename)
+    return f"{_get_draft_field_status_icon(field_id, data)} {base}"
+
+
+def build_draft_editor_keyboard(
+    data: Dict[str, Any],
+    language: str,
+    *,
+    context: str = "user",
+) -> InlineKeyboardMarkup:
+    inline_keyboard: list[list[InlineKeyboardButton]] = []
+    for row in DRAFT_FIELD_LAYOUT:
+        buttons: list[InlineKeyboardButton] = []
+        for field_id in row:
+            buttons.append(
+                InlineKeyboardButton(
+                    text=_get_draft_button_text(field_id, data, language, context),
+                    callback_data=f"{DRAFT_CONTEXTS[context]['field_callback_prefix']}{field_id}",
+                )
+            )
+        inline_keyboard.append(buttons)
+
+    submit_button = InlineKeyboardButton(
+        text=translate("draft_submit_button", language), callback_data=DRAFT_CONTEXTS[context]["submit_callback"]
+    )
+    cancel_button = InlineKeyboardButton(
+        text=translate("draft_cancel_button", language), callback_data=DRAFT_CONTEXTS[context]["cancel_callback"]
+    )
+    inline_keyboard.append([submit_button])
+    inline_keyboard.append([cancel_button])
+    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+
+
+def build_draft_editor_caption(data: Dict[str, Any], language: str, *, context: str = "user") -> str:
+    ctx = DRAFT_CONTEXTS[context]
+    lines = [f"<b>{translate(ctx['title_key'], language)}</b>"]
+    missing = get_draft_missing_fields(data, language, context)
+    if missing:
+        lines.append(translate(ctx["submit_blocked_key"], language, fields=", ".join(missing)))
+    else:
+        lines.append(translate(ctx["submit_ready_key"], language))
+    lines.append("")
+
+    for row in DRAFT_FIELD_LAYOUT:
+        parts: list[str] = []
+        for field_id in row:
+            spec = DRAFT_FIELD_SPECS.get(field_id)
+            if not spec:
+                continue
+            label = translate(spec["label_key"], language)
+            parts.append(f"{_get_draft_field_status_icon(field_id, data, context)} {label}")
+        if parts:
+            lines.append(" · ".join(parts))
+
+    return "\n".join(lines)
+
+
+def _draft_prompt_keyboard(language: str, context: str = "user") -> InlineKeyboardMarkup:
+    ctx = DRAFT_CONTEXTS[context]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=translate("draft_back_button", language),
+                    callback_data=ctx["menu_callback"],
+                )
+            ]
+        ]
+    )
+
+
+async def _save_draft_field(state: FSMContext, field_id: str, value: Any, context: str = "user") -> None:
+    spec = DRAFT_FIELD_SPECS.get(field_id)
+    if not spec:
+        return
+    data = await state.get_data()
+    group = spec.get("group")
+    if group == "plugin":
+        plugin = _copy_plugin(data, context)
+        plugin[spec["key"]] = value
+        if context == "admin":
+            draft = data.get("admin_draft") or {}
+            draft["plugin"] = plugin
+            await state.update_data(admin_draft=draft)
+        else:
+            await state.update_data(plugin=plugin)
+    elif group == "data":
+        if context == "admin":
+            draft = data.get("admin_draft") or {}
+            draft[spec["key"]] = value
+            await state.update_data(admin_draft=draft)
+        else:
+            await state.update_data(**{spec["key"]: value})
+
+
+async def _persist_admin_draft(state: FSMContext) -> None:
+    data = await state.get_data()
+    request_id = data.get("current_request_id")
+    payload = data.get("admin_draft")
+    if not request_id or not payload:
+        return
+    try:
+        update_request_payload(request_id, payload)
+    except Exception:
+        logging.exception("Failed to persist admin draft for %s", request_id)
+
+
+async def _render_editor(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    language: str,
+    context: str,
+    *,
+    send_file: bool = False,
+) -> None:
+    if context == "admin":
+        await show_admin_draft_editor(target, state, language, send_file=send_file)
+    else:
+        await show_draft_editor(target, state, language, send_file=send_file)
+
+
+async def _handle_draft_field_select(
+    callback: CallbackQuery,
+    state: FSMContext,
+    field_id: str,
+    context: str,
+) -> None:
+    language = await get_language_for_callback(callback, state)
+    spec = DRAFT_FIELD_SPECS.get(field_id)
+    ctx = DRAFT_CONTEXTS[context]
+    if not spec:
+        await callback.answer("Unknown field", show_alert=True)
+        return
+    if field_id == "has_ui":
+        data = await state.get_data()
+        plugin = _copy_plugin(data, context)
+        plugin["has_ui_settings"] = not plugin.get("has_ui_settings", False)
+        await _save_draft_field(state, field_id, plugin["has_ui_settings"], context)
+        if context == "admin":
+            await _persist_admin_draft(state)
+        await _render_editor(callback, state, language, context)
+        await callback.answer()
+        return
+    if field_id == "category":
+        await state.set_state(ctx["choose_category_state"])
+        await _send_rich_media(
+            callback,
+            PLUGINS_IMAGE_PATH,
+            translate(ctx["category_prompt_key"], language),
+            category_keyboard(CATEGORY_OPTIONS, language),
+        )
+        await callback.answer()
+        return
+    if field_id == "file":
+        await state.update_data(draft_edit_field=field_id)
+        await state.set_state(ctx["waiting_file_state"])
+        await _send_rich_media(
+            callback,
+            PLUGINS_IMAGE_PATH,
+            translate(ctx["file_prompt_key"], language),
+            _draft_prompt_keyboard(language, context),
+        )
+        await callback.answer()
+        return
+
+    prompt_key = spec.get("prompt_key")
+    message = translate(prompt_key, language) if prompt_key else translate("draft_field_need_text", language)
+    await state.update_data(draft_edit_field=field_id)
+    await state.set_state(ctx["waiting_value_state"])
+    await _send_rich_media(
+        callback,
+        PLUGINS_IMAGE_PATH,
+        message,
+        _draft_prompt_keyboard(language, context),
+    )
+    await callback.answer()
+
+
+async def _handle_draft_value_input(message: Message, state: FSMContext, context: str) -> None:
+    language = await get_language_for_message(message, state)
+    data = await state.get_data()
+    field_id = data.get("draft_edit_field")
+    if not field_id:
+        await message.answer(translate("draft_field_need_text", language))
+        return
+    text = get_formatted_text(message).strip()
+    if not text:
+        await message.answer(translate("draft_field_need_text", language))
+        return
+    await _save_draft_field(state, field_id, text, context)
+    if context == "admin":
+        await _persist_admin_draft(state)
+    await state.set_state(DRAFT_CONTEXTS[context]["base_state"])
+    await state.update_data(draft_edit_field=None)
+    await message.answer(translate("draft_field_updated", language))
+    await _render_editor(message, state, language, context)
+
+
+async def _handle_draft_file_input(message: Message, state: FSMContext, context: str) -> None:
+    language = await get_language_for_message(message, state)
+    document = message.document
+    try:
+        plugin_dict = await _ingest_plugin_document(message.bot, document)
+    except PluginFileError as exc:
+        await message.answer(translate(exc.key, language, **exc.params))
+        return
+
+    if context == "admin":
+        data = await state.get_data()
+        draft = data.get("admin_draft") or {}
+        draft["plugin"] = plugin_dict
+        await state.update_data(admin_draft=draft, draft_edit_field=None)
+        await _persist_admin_draft(state)
+    else:
+        await state.update_data(plugin=plugin_dict, draft_edit_field=None)
+
+    await state.set_state(DRAFT_CONTEXTS[context]["base_state"])
+    await message.answer(translate("draft_field_updated", language))
+    await _render_editor(message, state, language, context, send_file=True)
+
+
+async def _handle_draft_file_fallback(message: Message, state: FSMContext, context: str) -> None:
+    language = await get_language_for_message(message, state)
+    await message.answer(translate("invalid_extension", language))
+
+
+async def _handle_category_select(
+    callback: CallbackQuery,
+    state: FSMContext,
+    category: Dict[str, Any],
+    context: str,
+) -> None:
+    language = await get_language_for_callback(callback, state)
+    label = f"{category.get('ru', '')} / {category.get('en', '')}"
+    if context == "admin":
+        data = await state.get_data()
+        draft = data.get("admin_draft") or {}
+        draft["category_key"] = category.get("key")
+        draft["category_label"] = label
+        await state.update_data(admin_draft=draft)
+        await _persist_admin_draft(state)
+    else:
+        await state.update_data(
+            category_key=category.get("key"),
+            category_label=label,
+        )
+    await state.set_state(DRAFT_CONTEXTS[context]["base_state"])
+    await _render_editor(callback, state, language, context)
+    await callback.answer(translate("category_selected", language))
+
+async def show_draft_editor(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    language: str,
+    *,
+    send_file: bool = False,
+) -> None:
+    data = await state.get_data()
+    caption = build_draft_editor_caption(data, language)
+    keyboard = build_draft_editor_keyboard(data, language)
+    await _send_rich_media(target, PLUGINS_IMAGE_PATH, caption, keyboard)
+    if send_file:
+        plugin = data.get("plugin", {})
+        await _send_plugin_file(
+            target,
+            plugin,
+            f"<b>{translate('draft_plugin_file', language)}</b>",
+        )
 ADMIN_IDS = {int(admin_id) for admin_id in CONFIG.get("admins", [])}
 BASE_DIR = Path(__file__).resolve().parent.parent
 WELCOME_IMAGE_PATH = BASE_DIR / "img" / "welcome.png"
@@ -197,6 +780,154 @@ TEXTS = {
         "ru": "Найдено в каталоге",
         "en": "Found in catalog",
     },
+    "profile_page_label": {
+        "ru": "Страница {current} из {total}",
+        "en": "Page {current} of {total}",
+    },
+    "draft_plugin_file": {
+        "ru": "📎 Файл плагина",
+        "en": "📎 Plugin file",
+    },
+    "draft_editor_title": {
+        "ru": "✏️ Проверь черновик и заполни поля",
+        "en": "✏️ Review the draft and fill all fields",
+    },
+    "draft_editor_submit_ready": {
+        "ru": "✅ Всё заполнено. Можно отправлять.",
+        "en": "✅ All fields look good. Ready to submit.",
+    },
+    "draft_editor_submit_blocked": {
+        "ru": "⚠️ Заполни обязательные поля: {fields}",
+        "en": "⚠️ Please fill the required fields: {fields}",
+    },
+    "draft_field_updated": {
+        "ru": "Поле обновлено.",
+        "en": "Field updated.",
+    },
+    "draft_field_need_text": {
+        "ru": "Нужно текстовое значение.",
+        "en": "Text value required.",
+    },
+    "draft_back_button": {
+        "ru": "↩️ К редактору",
+        "en": "↩️ Back to editor",
+    },
+    "draft_prompt_name": {
+        "ru": "Пришли новое название плагина.",
+        "en": "Send the new plugin name.",
+    },
+    "draft_prompt_author": {
+        "ru": "Пришли имя или ник автора.",
+        "en": "Send the author name or nickname.",
+    },
+    "draft_prompt_author_channel": {
+        "ru": "Пришли канал или контакт автора.",
+        "en": "Send the author's channel/contact.",
+    },
+    "draft_prompt_description": {
+        "ru": "Пришли новое описание.",
+        "en": "Send the new description.",
+    },
+    "draft_prompt_usage": {
+        "ru": "Пришли новый блок \"Использование\".",
+        "en": "Send the new Usage block.",
+    },
+    "draft_prompt_usage_en": {
+        "ru": "Пришли английский блок Usage.",
+        "en": "Send the English Usage block.",
+    },
+    "draft_prompt_version": {
+        "ru": "Пришли версию плагина.",
+        "en": "Send the plugin version.",
+    },
+    "draft_prompt_min_version": {
+        "ru": "Пришли минимальную версию exteraGram.",
+        "en": "Send the minimum exteraGram version.",
+    },
+    "draft_prompt_category": {
+        "ru": "Выбери категорию черновика.",
+        "en": "Pick a category for the draft.",
+    },
+    "draft_prompt_file": {
+        "ru": "Пришли новый .plugin файл.",
+        "en": "Send the new .plugin file.",
+    },
+    "draft_prompt_name_en": {
+        "ru": "Пришли английское название.",
+        "en": "Send the English title.",
+    },
+    "draft_prompt_description_en": {
+        "ru": "Пришли английское описание.",
+        "en": "Send the English description.",
+    },
+    "draft_toggle_has_ui_on": {
+        "ru": "Настройки включены (✅)",
+        "en": "Settings enabled (✅)",
+    },
+    "draft_toggle_has_ui_off": {
+        "ru": "Настройки отключены (❌)",
+        "en": "Settings disabled (❌)",
+    },
+    "draft_submit_locked": {
+        "ru": "Сначала заполни обязательные поля.",
+        "en": "Please fill the required fields first.",
+    },
+    "draft_submit_button": {
+        "ru": "✅ Отправить на проверку",
+        "en": "✅ Submit for review",
+    },
+    "draft_cancel_button": {
+        "ru": "↩️ Отмена",
+        "en": "↩️ Cancel",
+    },
+    "draft_file_storage": {
+        "ru": "Файл в канале",
+        "en": "File in storage channel",
+    },
+    "draft_file_local": {
+        "ru": "Файл: {name}",
+        "en": "File: {name}",
+    },
+    "draft_field_name": {
+        "ru": "Название",
+        "en": "Name",
+    },
+    "draft_field_author": {
+        "ru": "Автор",
+        "en": "Author",
+    },
+    "draft_field_author_channel": {
+        "ru": "Канал автора",
+        "en": "Author channel",
+    },
+    "draft_field_description": {
+        "ru": "Описание",
+        "en": "Description",
+    },
+    "draft_field_usage": {
+        "ru": "Использование",
+        "en": "Usage",
+    },
+    "draft_field_version": {
+        "ru": "Версия",
+        "en": "Version",
+    },
+    "draft_field_min_version": {
+        "ru": "Минимальная версия",
+        "en": "Min version",
+    },
+    "draft_field_has_ui": {
+        "ru": "Есть настройки",
+        "en": "Has settings",
+    },
+    "draft_field_category": {
+        "ru": "Категория",
+        "en": "Category",
+    },
+    "draft_field_file": {
+        "ru": "Файл",
+        "en": "File",
+    },
     "existing_notice": {
         "ru": "⚠️ Плагин с таким идентификатором уже есть в каталоге: {title}",
         "en": "⚠️ A plugin with this identifier already exists: {title}",
@@ -297,9 +1028,25 @@ TEXTS = {
         "ru": "Не удалось обновить заявку. Попробуйте позже.",
         "en": "Failed to update the submission. Please try again later.",
     },
-    "edit_entry_missing": {
+    "request_not_found": {
         "ru": "Заявка не найдена.",
-        "en": "Submission not found.",
+        "en": "Request not found.",
+    },
+    "admin_plugin_file": {
+        "ru": "📎 Файл для проверки",
+        "en": "📎 File for review",
+    },
+    "admin_draft_title": {
+        "ru": "👮‍♂️ Заявка автора",
+        "en": "👮‍♂️ Submitter draft",
+    },
+    "admin_edit_button": {
+        "ru": "✏️ Редактор",
+        "en": "✏️ Edit",
+    },
+    "admin_approve_button": {
+        "ru": "✅ Одобрить",
+        "en": "✅ Approve",
     },
     "edit_field_save_failed": {
         "ru": "Не удалось сохранить поле.",
@@ -484,6 +1231,13 @@ def _get_welcome_photo() -> Optional[FSInputFile]:
     return None
 
 
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_html_tags(text: str) -> str:
+    return HTML_TAG_RE.sub("", text)
+
+
 def _get_photo_input(path: Path | None) -> Optional[FSInputFile]:
     if path and path.exists():
         return FSInputFile(path)
@@ -496,15 +1250,28 @@ async def _send_rich_media(
     caption: str,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
-    photo = _get_photo_input(photo_path)
-    if isinstance(target, CallbackQuery):
-        chat_id = None
-        if target.message:
-            chat_id = target.message.chat.id
-        elif target.from_user:
-            chat_id = target.from_user.id
-        if chat_id is None:
+    if isinstance(target, CallbackQuery) and target.message:
+        message = target.message
+        try:
+            if photo_path:
+                media = InputMediaPhoto(
+                    media=FSInputFile(photo_path),
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
+                await message.edit_media(media=media, reply_markup=reply_markup)
+            elif message.photo:
+                await message.edit_caption(caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            else:
+                await message.edit_text(caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             return
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc):
+                return
+            logging.warning("Failed to edit message, sending a new one: %s", exc)
+
+        chat_id = message.chat.id
+        photo = _get_photo_input(photo_path)
         if photo:
             await target.bot.send_photo(
                 chat_id,
@@ -520,26 +1287,85 @@ async def _send_rich_media(
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup,
             )
+        return
+
+    photo = _get_photo_input(photo_path)
+    if photo:
+        await target.answer_photo(
+            photo,
+            caption=caption,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
     else:
-        if photo:
-            await target.answer_photo(
-                photo,
+        await target.answer(caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+
+
+async def _send_plugin_file(
+    target: Message | CallbackQuery,
+    plugin: Dict[str, Any],
+    caption: str,
+) -> None:
+    storage_meta = plugin.get("storage") or {}
+    target_chat_id = _resolve_target_chat_id(target)
+    bot = getattr(target, "bot", None)
+    if bot is None:
+        logging.warning("Bot instance not available to send plugin file")
+        return
+
+    if storage_meta and target_chat_id:
+        chat_id = storage_meta.get("chat_id")
+        message_id = storage_meta.get("message_id")
+        if chat_id and message_id:
+            try:
+                await bot.copy_message(
+                    target_chat_id,
+                    chat_id,
+                    message_id,
+                    caption=caption,
+                    parse_mode="HTML",
+                )
+                return
+            except Exception as exc:
+                logging.warning("Failed to copy stored plugin file: %s", exc)
+
+    file_path = plugin.get("file_path")
+    if not file_path:
+        return
+    path = Path(file_path)
+    if not path.exists():
+        logging.warning("Plugin file %s not found on disk", file_path)
+        return
+    document = FSInputFile(path)
+    if isinstance(target, CallbackQuery):
+        if target.message:
+            await target.message.answer_document(document, caption=caption, parse_mode=ParseMode.HTML)
+        elif target.from_user:
+            await bot.send_document(
+                target.from_user.id,
+                document=document,
                 caption=caption,
                 parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
             )
-        else:
-            await target.answer(caption, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    else:
+        await target.answer_document(document, caption=caption, parse_mode=ParseMode.HTML)
 
 
-async def send_welcome_bundle(message: Message, language: str) -> None:
+def _resolve_target_chat_id(target: Message | CallbackQuery) -> Optional[int]:
+    if isinstance(target, CallbackQuery):
+        if target.message:
+            return target.message.chat.id
+        if target.from_user:
+            return target.from_user.id
+    else:
+        return target.chat.id
+    return None
+
+
+async def send_welcome_bundle(target: Message | CallbackQuery, language: str) -> None:
     caption = _build_welcome_caption(language)
     markup = main_menu_keyboard(language)
-    photo = _get_welcome_photo()
-    if photo:
-        await message.answer_photo(photo, caption=caption, parse_mode="HTML", reply_markup=markup)
-    else:
-        await message.answer(caption, parse_mode="HTML", reply_markup=markup)
+    await _send_rich_media(target, WELCOME_IMAGE_PATH, caption, markup)
 
 
 async def send_welcome_bundle_to_chat(bot: Bot, chat_id: int, language: str) -> None:
@@ -590,14 +1416,51 @@ def format_status_label(status: str, language: str) -> str:
 
 async def show_admin_menu_prompt(target: Message | CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminReview.menu)
-    text = "Выберите раздел:"
+    user_id = target.from_user.id if isinstance(target, CallbackQuery) and target.from_user else (target.from_user.id if isinstance(target, Message) and target.from_user else None)
+    caption = translate("admin_menu_prompt", await ensure_state_language(state, user_id))
     markup = admin_menu_inline()
+    await _send_rich_media(target, PROFILE_IMAGE_PATH, caption, markup)
+
+
+async def show_admin_queue(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    queue_type: str,
+    page: int = 0,
+) -> None:
+    await state.set_state(AdminReview.menu)
+    requests = get_queue_requests(queue_type)
+    per_page = 5
+    total = len(requests)
+    start = page * per_page
+    end = start + per_page
+    slice_items = requests[start:end]
     if isinstance(target, CallbackQuery):
-        if target.message:
-            await target.message.edit_text(text, reply_markup=markup)
-        await target.answer()
+        user_id = target.from_user.id if target.from_user else None
     else:
-        await target.answer(text, reply_markup=markup)
+        user_id = target.from_user.id if target.from_user else None
+    language = await ensure_state_language(state, user_id)
+
+    if not slice_items:
+        await _send_rich_media(
+            target,
+            PROFILE_IMAGE_PATH,
+            translate("admin_list_empty", language),
+            admin_menu_inline(),
+        )
+        return
+
+    labels = [
+        (format_user_request_label(entry, language), entry["id"])
+        for entry in slice_items
+    ]
+    has_prev = start > 0
+    has_next = end < total
+    markup = admin_queue_keyboard(queue_type, labels, page, has_prev, has_next)
+    queue_config = QUEUE_CONFIG.get(queue_type, {})
+    queue_title = queue_config.get("title", queue_type)
+    caption = translate("admin_requests_page_title", language, queue=queue_title, page=page + 1)
+    await _send_rich_media(target, PROFILE_IMAGE_PATH, caption, markup)
 
 
 def get_queue_requests(queue_type: str) -> list[Dict[str, Any]]:
@@ -665,6 +1528,38 @@ def ensure_plugin_file_named(plugin_id: str, source_path: Path) -> Path:
     return destination
 
 
+async def store_plugin_file(bot: Bot, plugin_id: str, file_path: Path) -> Optional[Dict[str, Any]]:
+    storage_config = CONFIG.get("storage", {})
+    channel_id = storage_config.get("file_storage_channel_id")
+    if not channel_id:
+        logging.warning("file_storage_channel_id is not configured; skipping upload for %s", plugin_id)
+        return None
+
+    try:
+        document = FSInputFile(file_path)
+        caption = f"Plugin: {plugin_id}"
+        message = await bot.send_document(channel_id, document=document, caption=caption)
+    except Exception as exc:
+        logging.error("Failed to upload plugin %s to storage channel: %s", plugin_id, exc)
+        return None
+
+    file = message.document
+    if not file:
+        logging.warning("Storage message for %s has no document", plugin_id)
+        return None
+
+    return {
+        "file_id": file.file_id,
+        "file_unique_id": file.file_unique_id,
+        "file_name": file.file_name,
+        "mime_type": file.mime_type,
+        "file_size": file.file_size,
+        "chat_id": channel_id,
+        "message_id": message.message_id,
+        "stored_at": message.date.isoformat() if hasattr(message, "date") else None,
+    }
+
+
 def get_formatted_text(message: Message) -> str:
     return message.html_text or message.text or ""
 
@@ -690,41 +1585,14 @@ def format_user_request_label(entry: Dict[str, Any], language: str) -> str:
     return f"{name}{version_part} — {status}"
 
 
-async def _delete_callback_message(callback: CallbackQuery) -> bool:
-    message = callback.message
-    if not message:
-        return False
-    try:
-        await message.delete()
-        return True
-    except TelegramBadRequest:
-        return False
-
-
-async def _send_new_callback_message(
-    callback: CallbackQuery,
-    text: str,
-    reply_markup: InlineKeyboardMarkup | None = None,
-) -> None:
-    chat_id = None
-    if callback.message:
-        chat_id = callback.message.chat.id
-    elif callback.from_user:
-        chat_id = callback.from_user.id
-    if chat_id is not None:
-        await callback.bot.send_message(chat_id, text, reply_markup=reply_markup)
-
-
 async def _send_catalog_search_prompt_message(
     callback: CallbackQuery,
     language: str,
     include_retry: bool = False,
 ) -> None:
-    await _send_new_callback_message(
-        callback,
-        translate("catalog_search_prompt", language),
-        catalog_search_prompt_keyboard(language, include_retry=include_retry),
-    )
+    caption = translate("catalog_search_prompt", language)
+    keyboard = catalog_search_prompt_keyboard(language, include_retry=include_retry)
+    await _send_rich_media(callback, CATALOG_IMAGE_PATH, caption, keyboard)
 
 
 async def _send_catalog_search_results(
@@ -733,22 +1601,17 @@ async def _send_catalog_search_results(
     query: str,
     language: str,
 ) -> None:
-    if not entries:
-        text = translate("catalog_search_empty", language, query=query)
-        markup = catalog_search_prompt_keyboard(language, include_retry=True)
-        if isinstance(target, CallbackQuery):
-            await _send_new_callback_message(target, text, markup)
-        else:
-            await target.answer(text, reply_markup=markup)
-        return
-
-    result_pairs = _build_catalog_search_results(entries, language)
-    keyboard = catalog_search_results_keyboard(result_pairs, language)
-    text = translate("catalog_search_results", language, count=len(entries), query=query)
-    if isinstance(target, CallbackQuery):
-        await _send_new_callback_message(target, text, keyboard)
-    else:
-        await target.answer(text, reply_markup=keyboard)
+    text = (
+        translate("catalog_search_results", language, count=len(entries), query=query)
+        if entries
+        else translate("catalog_search_empty", language, query=query)
+    )
+    keyboard = (
+        catalog_search_results_keyboard(_build_catalog_search_results(entries, language), language)
+        if entries
+        else catalog_search_prompt_keyboard(language, include_retry=True)
+    )
+    await _send_rich_media(target, CATALOG_IMAGE_PATH, text, keyboard)
 
 
 def format_user_request_details(entry: Dict[str, Any], language: str) -> str:
@@ -768,7 +1631,6 @@ async def send_profile_menu(
     target: Message | CallbackQuery,
     state: FSMContext,
     language: str,
-    force_new: bool = False,
 ) -> None:
     user = target.from_user if isinstance(target, Message) else target.from_user
     if not user or not user.id:
@@ -786,9 +1648,6 @@ async def send_profile_menu(
         f"{translate('profile_section_icon_packs', language)}: <b>{len(icon_packs)}</b>"
     )
     markup = profile_menu_keyboard(language, len(plugins), len(icon_packs))
-
-    if isinstance(target, CallbackQuery) and not force_new:
-        await _delete_callback_message(target)
 
     await _send_rich_media(target, PROFILE_IMAGE_PATH, caption, markup)
 
@@ -808,9 +1667,11 @@ async def send_profile_list(
     total = len(requests)
     if total == 0:
         title_key = "profile_section_plugins" if kind == "plugin" else "profile_section_icon_packs"
-        await callback.message.answer(
-            translate(title_key, language) + "\n" + translate("profile_no_items", language)
+        caption = (
+            f"<b>{translate(title_key, language)}</b>\n"
+            f"{translate('profile_no_items', language)}"
         )
+        await _send_rich_media(callback, PROFILE_IMAGE_PATH, caption, profile_menu_keyboard(language, 0, 0))
         await callback.answer()
         return
 
@@ -825,16 +1686,56 @@ async def send_profile_list(
     has_next = end < total
     keyboard = profile_items_keyboard(kind, labels, page, has_prev, has_next)
     section_key = "profile_section_plugins" if kind == "plugin" else "profile_section_icon_packs"
-    title = f"{translate(section_key, language)} — {page + 1}/{math.ceil(total / PROFILE_PAGE_SIZE)}"
-    if callback.data.startswith("profile:page:") and callback.message:
-        try:
-            await callback.message.edit_text(title, reply_markup=keyboard)
-        except TelegramBadRequest as exc:
-            if "message is not modified" not in str(exc):
-                raise
-    else:
-        await callback.message.answer(title, reply_markup=keyboard)
+    title = (
+        f"<b>{translate(section_key, language)}</b>\n"
+        f"{translate('profile_page_label', language, current=page + 1, total=math.ceil(total / PROFILE_PAGE_SIZE))}"
+    )
+    await _send_rich_media(callback, PROFILE_IMAGE_PATH, title, keyboard)
     await callback.answer()
+
+
+async def show_request_details(
+    callback: CallbackQuery,
+    state: FSMContext,
+    request_id: str,
+) -> None:
+    entry = get_request_by_id(request_id)
+    language = await get_language_for_callback(callback, state)
+    if not entry:
+        await callback.answer(translate("request_not_found", language), show_alert=True)
+        return
+
+    await state.set_state(AdminReview.review_item)
+    payload = copy.deepcopy(entry.get("payload") or {})
+    await state.update_data(current_request_id=request_id, admin_draft=payload)
+    await show_admin_draft_editor(callback, state, language, send_file=True)
+    details = html.escape(format_request_details(entry))
+    await callback.message.answer(
+        f"<pre>{details}</pre>",
+        parse_mode="HTML",
+        reply_markup=review_actions_keyboard(request_id),
+    )
+
+
+async def show_admin_draft_editor(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    language: str,
+    *,
+    send_file: bool = False,
+) -> None:
+    data = await state.get_data()
+    payload = data.get("admin_draft") or {}
+    caption = build_draft_editor_caption(data, language, context="admin")
+    keyboard = build_draft_editor_keyboard(data, language, context="admin")
+    await _send_rich_media(target, PLUGINS_IMAGE_PATH, caption, keyboard)
+    if send_file:
+        plugin = payload.get("plugin", {})
+        await _send_plugin_file(
+            target,
+            plugin,
+            f"<b>{translate('admin_plugin_file', language)}</b>",
+        )
 
 
 def _get_localized_block(entry: Dict[str, Any], language: str) -> Dict[str, Any]:
@@ -962,12 +1863,9 @@ def derive_plugin_category_key(plugin: Dict[str, Any]) -> Optional[str]:
 async def send_catalog_categories(
     target: Message | CallbackQuery,
     language: str,
-    force_new: bool = False,
 ) -> None:
     keyboard = catalog_categories_keyboard(get_catalog_categories(), language=language)
-    caption = f"<b>{translate('catalog_intro', language)}</b>\n{translate('catalog_empty', language)}"
-    if isinstance(target, CallbackQuery) and not force_new:
-        await _delete_callback_message(target)
+    caption = f"<b>{translate('catalog_intro', language)}</b>"
     await _send_rich_media(target, CATALOG_IMAGE_PATH, caption, keyboard)
     if isinstance(target, CallbackQuery):
         await target.answer()
@@ -978,7 +1876,6 @@ async def send_catalog_page(
     category_key: str,
     page: int,
     language: str,
-    force_new: bool = False,
 ) -> None:
     if category_key == ALL_CATEGORY_OPTION["key"]:
         category = ALL_CATEGORY_OPTION
@@ -1014,8 +1911,6 @@ async def send_catalog_page(
         nav_mode="category",
     )
     title = f"<b>{category['ru']} / {category['en']}</b>\nСтраница {page + 1}/{math.ceil(total / CATALOG_PAGE_SIZE)}"
-    if callback.message and not force_new:
-        await _delete_callback_message(callback)
     await _send_rich_media(callback, PLUGINS_IMAGE_PATH, title, keyboard)
     await callback.answer()
 
@@ -1060,8 +1955,6 @@ async def send_icons_page(
         nav_mode="category",
     )
     caption = f"<b>{category['ru']} / {category['en']}</b>\nСтраница {page + 1}/{math.ceil(total / CATALOG_PAGE_SIZE)}"
-    if callback.message:
-        await _delete_callback_message(callback)
     await _send_rich_media(callback, ICONPACKS_IMAGE_PATH, caption, keyboard)
     await callback.answer()
 
@@ -1070,7 +1963,6 @@ async def send_icons_list_page(
     callback: CallbackQuery,
     page: int,
     language: str,
-    force_new: bool = False,
 ) -> None:
     icons = list_published_icons()
     total = len(icons)
@@ -1100,8 +1992,6 @@ async def send_icons_list_page(
     )
     total_pages = max(1, math.ceil(total / CATALOG_PAGE_SIZE))
     title = translate("icons_list_title", language, current=page + 1, total=total_pages)
-    if callback.message and not force_new:
-        await _delete_callback_message(callback)
     await _send_rich_media(callback, ICONPACKS_IMAGE_PATH, title, keyboard)
     await callback.answer()
 
@@ -1125,14 +2015,58 @@ async def cmd_profile(message: Message, state: FSMContext) -> None:
     await send_profile_menu(message, state, language)
 
 
+@router.message(Command("catalog"))
+async def cmd_catalog(message: Message, state: FSMContext) -> None:
+    language = await get_language_for_message(message, state)
+    await send_catalog_categories(message, language)
+
+
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else None
+    logging.info("/admin invoked by %s", user_id)
     if not user_id or user_id not in ADMIN_IDS:
         await message.answer("У вас нет доступа к админ-панели.")
         return
 
     await show_admin_menu_prompt(message, state)
+
+
+@router.inline_query()
+async def handle_inline_catalog(query: InlineQuery, state: FSMContext) -> None:
+    user_id = query.from_user.id if query.from_user else None
+    language = await ensure_state_language(state, user_id)
+    text = (query.query or "").strip()
+    entries = search_plugins(text, limit=10)
+    if not entries:
+        await query.answer(
+            [],
+            switch_pm_text=translate("catalog_search_empty", language, query=text or "*"),
+            switch_pm_parameter="catalog",
+        )
+        return
+
+    results: list[InlineQueryResultArticle] = []
+    for entry in entries:
+        slug = entry.get("slug") or entry.get("id")
+        if not slug:
+            continue
+        title = format_catalog_item_label(entry, language, include_badges=False)
+        description = build_catalog_preview(entry, language)
+        plain_description = strip_html_tags(description).replace("\n", " ")[:256]
+        results.append(
+            InlineQueryResultArticle(
+                id=slug,
+                title=title,
+                description=plain_description,
+                input_message_content=InputTextMessageContent(
+                    message_text=description,
+                    parse_mode="HTML",
+                ),
+            )
+        )
+
+    await query.answer(results, cache_time=0, is_personal=True)
 
 
 def get_bot_token() -> str:
@@ -1183,34 +2117,27 @@ async def handle_language_choice(callback: CallbackQuery, state: FSMContext) -> 
     )
     await send_welcome_bundle(callback.message, code)
     await callback.answer()
-    await state.set_state(AdminReview.menu)
-    await callback.message.answer("Возврат в меню администратора.", reply_markup=admin_menu_keyboard())
-    await callback.answer()
 
 
 @router.callback_query(F.data == "menu:home")
 async def menu_home(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
     await state.set_state(UserSubmission.choose_action)
-    await _delete_callback_message(callback)
-    if callback.message:
-        await send_welcome_bundle(callback.message, language)
+    await send_welcome_bundle(callback, language)
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:catalog")
 async def menu_catalog(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
-    await _delete_callback_message(callback)
-    await send_catalog_categories(callback, language, force_new=True)
+    await send_catalog_categories(callback, language)
     await callback.answer()
 
 
 @router.callback_query(F.data == "menu:profile")
 async def menu_profile(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
-    await _delete_callback_message(callback)
-    await send_profile_menu(callback, state, language, force_new=True)
+    await send_profile_menu(callback, state, language)
     await callback.answer()
 
 
@@ -1218,7 +2145,6 @@ async def menu_profile(callback: CallbackQuery, state: FSMContext) -> None:
 async def menu_submit(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
     await state.set_state(UserSubmission.choose_submission_type)
-    await _delete_callback_message(callback)
     caption = f"<b>{translate('choose_submission_type', language)}</b>"
     await _send_rich_media(
         callback,
@@ -1240,7 +2166,7 @@ async def choose_submission_type(callback: CallbackQuery, state: FSMContext) -> 
         return
 
     await state.set_state(UserSubmission.waiting_file)
-    await _send_new_callback_message(callback, translate("send_plugin", language))
+    await _send_rich_media(callback, PLUGINS_IMAGE_PATH, translate("send_plugin", language), None)
     await callback.answer()
 
 
@@ -1248,31 +2174,11 @@ async def choose_submission_type(callback: CallbackQuery, state: FSMContext) -> 
 async def submission_handle_file(message: Message, state: FSMContext) -> None:
     document = message.document
     language = await get_language_for_message(message, state)
-    if not document or not document.file_name.endswith(".plugin"):
-        await message.answer(translate("invalid_extension", language))
-        return
-
     try:
-        file_path = await download_file(message.bot, document.file_id)
-    except Exception:
-        logging.exception("Failed to download file")
-        await message.answer(translate("download_error", language))
+        plugin_dict = await _ingest_plugin_document(message.bot, document)
+    except PluginFileError as exc:
+        await message.answer(translate(exc.key, language, **exc.params))
         return
-
-    try:
-        metadata = parse_plugin_file(file_path)
-    except (FileNotFoundError, PluginParseError) as exc:
-        await message.answer(translate("parse_error", language, error=str(exc)))
-        return
-
-    try:
-        plugin_file = ensure_plugin_file_named(metadata.id, file_path)
-    except Exception as exc:
-        logging.error("Failed to rename plugin file: %s", exc)
-        await message.answer(translate("file_save_error", language))
-        return
-
-    plugin_dict = metadata_to_dict(metadata, plugin_file)
     await state.update_data(plugin=plugin_dict, submission_type="plugin")
 
     existing = find_plugin_by_slug(plugin_dict.get("id"))
@@ -1344,18 +2250,20 @@ async def submission_choose_category(callback: CallbackQuery, state: FSMContext)
         category_key=category.get("key"),
         category_label=f"{category.get('ru', '')} / {category.get('en', '')}",
     )
-    await state.set_state(UserSubmission.confirm)
-    data = await state.get_data()
-    preview = html.escape(format_submission_preview(data))
-    caption = f"<b>{translate('category_selected', language)}</b>\n<pre>{preview}</pre>"
-    await _send_rich_media(callback, PLUGINS_IMAGE_PATH, caption, confirm_keyboard(language))
+    await state.set_state(UserSubmission.draft_editor)
+    await show_draft_editor(callback, state, language, send_file=True)
     await callback.answer()
 
 
-@router.callback_query(UserSubmission.confirm, F.data == "submission:confirm")
+@router.callback_query(UserSubmission.draft_editor, F.data == "draft:submit")
 async def submission_confirm(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
     data = await state.get_data()
+    if not draft_is_complete(data):
+        missing = ", ".join(get_draft_missing_fields(data, language))
+        await callback.answer(translate("draft_submit_locked", language) + f"\n{missing}", show_alert=True)
+        await show_draft_editor(callback, state, language)
+        return
     user_id = callback.from_user.id if callback.from_user else None
     submission = build_submission_payload(user_id, data)
     entry = add_request(submission, request_type="new")
@@ -1372,13 +2280,111 @@ async def submission_confirm(callback: CallbackQuery, state: FSMContext) -> None
     await callback.answer(translate("submission_sent", language))
 
 
-@router.callback_query(UserSubmission.confirm, F.data == "submission:cancel")
+@router.callback_query(UserSubmission.draft_editor, F.data == "draft:cancel")
 async def submission_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
     await reset_user_flow(state, language)
-    await _delete_callback_message(callback)
-    await send_welcome_bundle(callback.message if callback.message else callback, language)
+    await send_welcome_bundle(callback, language)
     await callback.answer(translate("submission_cancelled", language))
+
+
+@router.callback_query(
+    StateFilter(*USER_DRAFT_STATES),
+    F.data == "draft:menu",
+)
+async def draft_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    language = await get_language_for_callback(callback, state)
+    await state.set_state(UserSubmission.draft_editor)
+    await show_draft_editor(callback, state, language)
+    await callback.answer()
+
+
+@router.callback_query(UserSubmission.draft_editor, F.data.startswith("draft:field:"))
+async def draft_field_select(callback: CallbackQuery, state: FSMContext) -> None:
+    _, _, field_id = callback.data.split(":", 2)
+    await _handle_draft_field_select(callback, state, field_id, "user")
+
+
+@router.message(UserSubmission.draft_waiting_value)
+async def draft_value_input(message: Message, state: FSMContext) -> None:
+    await _handle_draft_value_input(message, state, "user")
+
+
+@router.message(UserSubmission.draft_waiting_file, F.document)
+async def draft_file_input(message: Message, state: FSMContext) -> None:
+    await _handle_draft_file_input(message, state, "user")
+
+
+@router.message(UserSubmission.draft_waiting_file)
+async def draft_file_input_fallback(message: Message, state: FSMContext) -> None:
+    await _handle_draft_file_fallback(message, state, "user")
+
+
+@router.callback_query(UserSubmission.draft_choose_category, F.data.startswith("category:"))
+async def draft_category_select(callback: CallbackQuery, state: FSMContext) -> None:
+    _, category_key = callback.data.split(":", 1)
+    language = await get_language_for_callback(callback, state)
+    category = get_category_by_key(category_key)
+    if not category:
+        await callback.answer(translate("category_unknown", language), show_alert=True)
+        return
+    await _handle_category_select(callback, state, category, "user")
+
+
+@router.callback_query(
+    StateFilter(*ADMIN_DRAFT_STATES),
+    F.data == "admin:draft:menu",
+)
+async def admin_draft_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    language = await get_language_for_callback(callback, state)
+    await state.set_state(AdminReview.review_item)
+    await show_admin_draft_editor(callback, state, language)
+    await callback.answer()
+
+
+@router.callback_query(AdminReview.review_item, F.data.startswith("admin:field:"))
+async def admin_draft_field_select(callback: CallbackQuery, state: FSMContext) -> None:
+    _, _, field_id = callback.data.split(":", 2)
+    await _handle_draft_field_select(callback, state, field_id, "admin")
+
+
+@router.callback_query(AdminReview.review_item, F.data == "admin:submit")
+async def admin_draft_submit(callback: CallbackQuery, state: FSMContext) -> None:
+    language = await get_language_for_callback(callback, state)
+    data = await state.get_data()
+    payload = data.get("admin_draft") or {}
+    if not admin_payload_is_complete(payload):
+        missing = ", ".join(get_admin_missing_fields(payload, language))
+        await callback.answer(translate("draft_submit_locked", language) + f"\n{missing}", show_alert=True)
+        await show_admin_draft_editor(callback, state, language)
+        return
+    await callback.answer(translate("draft_editor_submit_ready", language), show_alert=True)
+
+
+@router.message(AdminReview.draft_waiting_value)
+async def admin_draft_value_input(message: Message, state: FSMContext) -> None:
+    await _handle_draft_value_input(message, state, "admin")
+
+
+@router.message(AdminReview.draft_waiting_file, F.document)
+async def admin_draft_file_input(message: Message, state: FSMContext) -> None:
+    await _handle_draft_file_input(message, state, "admin")
+
+
+@router.message(AdminReview.draft_waiting_file)
+async def admin_draft_file_input_fallback(message: Message, state: FSMContext) -> None:
+    await _handle_draft_file_fallback(message, state, "admin")
+
+
+@router.callback_query(AdminReview.draft_choose_category, F.data.startswith("category:"))
+async def admin_draft_category_select(callback: CallbackQuery, state: FSMContext) -> None:
+    _, category_key = callback.data.split(":", 1)
+    language = await get_language_for_callback(callback, state)
+    category = get_category_by_key(category_key)
+    if not category:
+        await callback.answer(translate("category_unknown", language), show_alert=True)
+        return
+    await _handle_category_select(callback, state, category, "admin")
 
 
 @router.callback_query(F.data.startswith("profile:list:"))
@@ -1416,6 +2422,12 @@ async def profile_item_details(callback: CallbackQuery, state: FSMContext) -> No
         caption,
         profile_item_actions_keyboard(language, entry["id"]),
     )
+    plugin = payload.get("plugin", {})
+    await _send_plugin_file(
+        callback,
+        plugin,
+        f"<b>{translate('draft_plugin_file', language)}</b>",
+    )
     await callback.answer()
 
 
@@ -1449,8 +2461,7 @@ async def catalog_item_details(callback: CallbackQuery, state: FSMContext) -> No
         return
     preview = build_catalog_preview(entry, language)
     keyboard = catalog_plugin_keyboard(build_channel_link(entry), "menu:catalog")
-    await _delete_callback_message(callback)
-    await callback.message.answer(preview, parse_mode="HTML", reply_markup=keyboard)
+    await _send_rich_media(callback, PLUGINS_IMAGE_PATH, preview, keyboard)
     await callback.answer()
 
 
@@ -1464,8 +2475,7 @@ async def catalog_icon_details(callback: CallbackQuery, state: FSMContext) -> No
         return
     preview = build_catalog_preview(entry, language)
     keyboard = catalog_plugin_keyboard(build_channel_link(entry), "menu:catalog")
-    await _delete_callback_message(callback)
-    await callback.message.answer(preview, parse_mode="HTML", reply_markup=keyboard)
+    await _send_rich_media(callback, ICONPACKS_IMAGE_PATH, preview, keyboard)
     await callback.answer()
 
 
@@ -1480,7 +2490,6 @@ async def icons_list_callback(callback: CallbackQuery, state: FSMContext) -> Non
 async def catalog_search_start(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
     await state.set_state(UserSubmission.search_waiting_query)
-    await _delete_callback_message(callback)
     await _send_catalog_search_prompt_message(callback, language)
     await callback.answer()
 
@@ -1489,7 +2498,6 @@ async def catalog_search_start(callback: CallbackQuery, state: FSMContext) -> No
 async def catalog_search_again(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
     await state.set_state(UserSubmission.search_waiting_query)
-    await _delete_callback_message(callback)
     await _send_catalog_search_prompt_message(callback, language, include_retry=True)
     await callback.answer()
 
@@ -1498,7 +2506,7 @@ async def catalog_search_again(callback: CallbackQuery, state: FSMContext) -> No
 async def catalog_search_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     language = await get_language_for_callback(callback, state)
     await state.set_state(UserSubmission.choose_action)
-    await send_catalog_categories(callback, language, force_new=True)
+    await send_catalog_categories(callback, language)
     await callback.answer()
 
 
@@ -1514,14 +2522,33 @@ async def catalog_search_handle_query(message: Message, state: FSMContext) -> No
     await _send_catalog_search_results(message, plugins, query, language)
 
 
+@router.callback_query(F.data == "admin:menu")
+async def admin_menu_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    await show_admin_menu_prompt(callback, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:list:"))
+async def admin_list_callback(callback: CallbackQuery, state: FSMContext) -> None:
+    _, _, queue_type, page_str = callback.data.split(":")
+    page = int(page_str)
+    await show_admin_queue(callback, state, queue_type, page)
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("admin:open:"))
 async def admin_open_request_inline(callback: CallbackQuery, state: FSMContext) -> None:
-    parts = callback.data.split(":", 2)
-    if len(parts) < 3:
+    parts = callback.data.split(":")
+    if len(parts) == 3:
+        # Format: admin:open:<request_id>
+        request_id = parts[2]
+    elif len(parts) >= 4:
+        # Format: admin:open:<queue_type>:<request_id>
+        request_id = parts[3]
+    else:
         await callback.answer("Некорректный идентификатор", show_alert=True)
         return
-    request_id = parts[2]
-    await show_request_details(callback.message, state, request_id)
+    await show_request_details(callback, state, request_id)
     await callback.answer()
 
 
@@ -1532,6 +2559,22 @@ async def global_revise(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(current_request_id=request_id)
     await state.set_state(AdminReview.enter_revision_comment)
     await callback.message.answer("Опишите причину возврата (сообщение отправится автору).")
+    await callback.answer()
+
+
+@router.callback_query(AdminReview.review_item, F.data.startswith("approve:"))
+async def admin_approve_request(callback: CallbackQuery, state: FSMContext) -> None:
+    request_id = callback.data.split(":", 1)[1]
+    entry = get_request_by_id(request_id)
+    language = await get_language_for_callback(callback, state)
+    if not entry:
+        await callback.answer(translate("request_not_found", language), show_alert=True)
+        return
+
+    update_request_status(request_id, "approved")
+    preview = html.escape(build_publication_preview(entry))
+    text = translate("admin_request_approved", language, request_id=request_id[:6], preview=preview)
+    await callback.message.answer(text, parse_mode="HTML", reply_markup=publish_actions_keyboard(request_id))
     await callback.answer()
 
 
@@ -1665,7 +2708,7 @@ async def show_requests_page(message: Message, state: FSMContext, req_type: str)
     for req in page_items:
         plugin = req["payload"]["plugin"]
         btn_text = f"{plugin.get('name', 'Без названия')} (#{req['id'][:6]})"
-        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"open:{req['id']}")])
+        buttons.append([InlineKeyboardButton(text=btn_text, callback_data=f"admin:open:{req_type}:{req['id']}")])
 
     nav = []
     if page > 0:

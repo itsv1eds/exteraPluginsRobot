@@ -1,17 +1,11 @@
 {
-  "admins": [1282540315, 1900723425],
-  "roles": {
-    "super_admins": [1282540315],
-    "admins": [1282540315, 1900723425],
-    "moderators": [],
-    "reviewers": []
-  },
+  "admins": [1],
   "bot_token": "",
   "channel": {
-    "id": -1003869091631,
-    "username": "exteraPluginsSup",
-    "title": "exteraGram Utilities",
-    "default_tags": ["#Plugins@exteraPluginsSup"],
+    "id": -100,
+    "username": "аа",
+    "title": "",
+    "default_tags": [""],
     "locale_order": ["ru", "en"]
   },
   "categories": [
@@ -54,6 +48,7 @@
   "storage": {
     "database_path": "database.json",
     "pending_requests_path": "requests",
-    "attachments_dir": "uploads"
+    "attachments_dir": "uploads",
+    "file_storage_channel_id": -100
   }
 }

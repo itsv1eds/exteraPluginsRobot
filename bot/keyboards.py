@@ -48,6 +48,24 @@ EDIT_FIELD_BUTTONS = {
     "category": {"ru": "🏷 Категория", "en": "🏷 Category"},
 }
 
+DRAFT_EDITOR_BUTTONS = {
+    "name_ru": {"ru": "🇷🇺 Название", "en": "🇷🇺 Name"},
+    "name_en": {"ru": "🇺🇸 Название", "en": "🇺🇸 Name"},
+    "description_ru": {"ru": "🇷🇺 Описание", "en": "🇷🇺 Description"},
+    "description_en": {"ru": "🇺🇸 Описание", "en": "🇺🇸 Description"},
+    "usage_ru": {"ru": "🇷🇺 Использование", "en": "🇷🇺 Usage"},
+    "usage_en": {"ru": "🇺🇸 Использование", "en": "🇺🇸 Usage"},
+    "author": {"ru": "👤 Автор", "en": "👤 Author"},
+    "author_channel": {"ru": "📣 Канал автора", "en": "📣 Author channel"},
+    "version": {"ru": "🔢 Версия", "en": "🔢 Version"},
+    "min_version": {"ru": "🧩 Минимальная версия", "en": "🧩 Min version"},
+    "has_ui": {"ru": "⚙️ Настройки", "en": "⚙️ Settings"},
+    "category": {"ru": "🏷 Категория", "en": "🏷 Category"},
+    "file": {"ru": "📎 Файл", "en": "📎 File"},
+    "has_ui_on": {"ru": "⚙️ Настройки: ✅", "en": "⚙️ Settings: ✅"},
+    "has_ui_off": {"ru": "⚙️ Настройки: ❌", "en": "⚙️ Settings: ❌"},
+}
+
 def _t(options: Mapping[str, str], language: str) -> str:
     return options.get(language) or options.get("ru") or next(iter(options.values()))
 

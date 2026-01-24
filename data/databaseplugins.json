@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "updated_at": "2026-01-23T17:57:23.833703",
+  "plugins": [
+    {
+      "slug": "qr-code-generator",
+      "status": "published",
+      "category": null,
+      "authors": {
+        "ru": "@exteraDevPlugins, @exteraGram",
+        "en": "@exteraDevPlugins, @exteraGram",
+        "channels": null
+      },
+      "ru": {
+        "name": "QR Code Generator",
+        "description": "Генерирует QR-код",
+        "usage": ".qr [текст или ссылка]",
+        "min_version": null,
+        "settings_label": "✅",
+        "updated_on": "2025-06-27"
+      },
+      "en": {
+        "name": "QR Code Generator",
+        "description": "Generates a QR code",
+        "usage": ".qr [text or link]",
+        "min_version": null,
+        "settings_label": "✅",
+        "updated_on": "2025-06-27"
+      },
+      "settings": {
+        "has_ui": true
+      },
+      "requirements": {
+        "min_version": null
+      },
+      "checked": {
+        "version": null,
+        "date": null,
+        "raw": null
+      },
+      "channel_message": {
+        "chat_id": 2189715950,
+        "message_id": 94,
+        "date": "2025-04-18T22:26:00",
+        "edited": "2026-01-21T15:55:10",
+        "link": "https://t.me/exteraPluginsSup/94"
+      },
+      "raw_blocks": {
+        "ru": "Название: QR Code Generator\nАвторы: @exteraDev & @immat0x1\nКаналы авторов: @exteraDevPlugins, @exteraGram\nОписание: Генерирует QR-код\nИспользование: .qr [текст или ссылка]\nНастройки: ✅\nОбновлено: 27.06.25",
+        "en": "Title: QR Code Generator\nAuthors: @exteraDev & @immat0x1\nAuthor channels: @exteraDevPlugins, @exteraGram\nDescription: Generates a QR code\nUsage: .qr [text or link]\nSettings: ✅\nUpdated: 27.06.25"
+      },
+      "migrated_at": "2026-01-23T17:57:23.825200"
+    }
+  ]
+}

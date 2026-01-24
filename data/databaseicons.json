@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "updated_at": "2026-01-23T17:57:23.833703",
+  "iconpacks": [
+    {
+      "slug": "plumpypack",
+      "status": "published",
+      "category": null,
+      "authors": {
+        "ru": "@ytility",
+        "en": "@ytility",
+        "channels": null
+      },
+      "ru": {
+        "name": "PlumpyPack",
+        "description": null,
+        "usage": null,
+        "min_version": null,
+        "settings_label": null,
+        "updated_on": "2025-12-31"
+      },
+      "en": {
+        "name": "PlumpyPack",
+        "description": null,
+        "usage": null,
+        "min_version": null,
+        "settings_label": null,
+        "updated_on": "2025-12-31"
+      },
+      "settings": {
+        "has_ui": null
+      },
+      "requirements": {
+        "min_version": null
+      },
+      "checked": {
+        "version": null,
+        "date": null,
+        "raw": null
+      },
+      "channel_message": {
+        "chat_id": 2189715950,
+        "message_id": 449,
+        "date": "2025-12-31T21:14:59",
+        "edited": "2026-01-21T19:54:48",
+        "link": "https://t.me/exteraPluginsSup/449"
+      },
+      "raw_blocks": {
+        "ru": "Название: PlumpyPack\nАвтор: @yzewe\nКанал автора: @ytility\nОбновлено: 31.12.25",
+        "en": "Title: PlumpyPack\nAuthor: @yzewe\nAuthor channel: @ytility\nUpdated: 31.12.25"
+      },
+      "migrated_at": "2026-01-23T17:57:23.832939"
+    }
+  ]
+    }
+

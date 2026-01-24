@@ -1,0 +1,59 @@
+{
+  "admins": [1282540315, 1900723425],
+  "roles": {
+    "super_admins": [1282540315],
+    "admins": [1282540315, 1900723425],
+    "moderators": [],
+    "reviewers": []
+  },
+  "bot_token": "",
+  "channel": {
+    "id": -1003869091631,
+    "username": "exteraPluginsSup",
+    "title": "exteraGram Utilities",
+    "default_tags": ["#Plugins@exteraPluginsSup"],
+    "locale_order": ["ru", "en"]
+  },
+  "categories": [
+    {
+      "key": "informational",
+      "ru": "Информационные",
+      "en": "Informational",
+      "tag_ru": "#Информационные",
+      "tag_en": "#Informational"
+    },
+    {
+      "key": "utilities",
+      "ru": "Утилиты",
+      "en": "Utilities",
+      "tag_ru": "#Утилиты",
+      "tag_en": "#Utilities"
+    },
+    {
+      "key": "customization",
+      "ru": "Кастомизация",
+      "en": "Customization",
+      "tag_ru": "#Кастомизация",
+      "tag_en": "#Customization"
+    },
+    {
+      "key": "fun",
+      "ru": "Развлечения",
+      "en": "Fun",
+      "tag_ru": "#Развлечения",
+      "tag_en": "#Fun"
+    },
+    {
+      "key": "library",
+      "ru": "Библиотека",
+      "en": "Library",
+      "tag_ru": "#Библиотека",
+      "tag_en": "#Library"
+    }
+  ],
+  "storage": {
+    "database_path": "database.json",
+    "pending_requests_path": "requests",
+    "attachments_dir": "uploads"
+  }
+}

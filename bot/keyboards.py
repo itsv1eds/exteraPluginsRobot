@@ -1,401 +1,394 @@
-from typing import Iterable, Mapping, Optional, Sequence
+from typing import List, Optional, Tuple
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-
-LANGUAGE_OPTIONS = {
-    "ru": "🇷🇺 Русский",
-    "en": "🇺🇸 English",
-}
+from bot.texts import t
 
 
-MAIN_MENU_BUTTONS = {
-    "profile": {"ru": "👤 Профиль", "en": "👤 Profile"},
-    "catalog": {"ru": "📚 Каталог", "en": "📚 Catalog"},
-    "submit": {"ru": "📝 Отправить плагин/пак", "en": "📝 Submit plugin/icon pack"},
-}
-
-SUBMISSION_TYPE_BUTTONS = {
-    "plugin": {"ru": "🧩 Плагин", "en": "🧩 Plugin"},
-    "icon_pack": {"ru": "🎨 Пак иконок", "en": "🎨 Icon pack"},
-}
-
-SUBMISSION_ACTION_BUTTONS = {
-    "confirm": {"ru": "✅ Отправить", "en": "✅ Send"},
-    "cancel": {"ru": "↩️ Назад", "en": "↩️ Back"},
-}
-
-PROFILE_SECTION_BUTTONS = {
-    "plugins": {"ru": "🧩 Мои плагины", "en": "🧩 My plugins"},
-    "icon_packs": {"ru": "🎨 Мои паки", "en": "🎨 My icon packs"},
-}
-
-PROFILE_ITEM_ACTIONS = {
-    "update": {"ru": "Обновить", "en": "Update"},
-}
-
-CATALOG_SEARCH_BUTTON = {"ru": "🔍 Поиск", "en": "🔍 Search"}
-CATALOG_SEARCH_ACTIONS = {
-    "retry": {"ru": "🔄 Новый поиск", "en": "🔄 New search"},
-    "cancel": {"ru": "↩️ Каталог", "en": "↩️ Catalog"},
-}
-
-EDIT_FIELD_BUTTONS = {
-    "file": {"ru": "📁 Файл", "en": "📁 File"},
-    "description": {"ru": "📝 Описание", "en": "📝 Description"},
-    "usage": {"ru": "⚙️ Использование", "en": "⚙️ Usage"},
-    "channel": {"ru": "📣 Канал", "en": "📣 Channel"},
-    "category": {"ru": "🏷 Категория", "en": "🏷 Category"},
-}
-
-DRAFT_EDITOR_BUTTONS = {
-    "name_ru": {"ru": "🇷🇺 Название", "en": "🇷🇺 Name"},
-    "name_en": {"ru": "🇺🇸 Название", "en": "🇺🇸 Name"},
-    "description_ru": {"ru": "🇷🇺 Описание", "en": "🇷🇺 Description"},
-    "description_en": {"ru": "🇺🇸 Описание", "en": "🇺🇸 Description"},
-    "usage_ru": {"ru": "🇷🇺 Использование", "en": "🇷🇺 Usage"},
-    "usage_en": {"ru": "🇺🇸 Использование", "en": "🇺🇸 Usage"},
-    "author": {"ru": "👤 Автор", "en": "👤 Author"},
-    "author_channel": {"ru": "📣 Канал автора", "en": "📣 Author channel"},
-    "version": {"ru": "🔢 Версия", "en": "🔢 Version"},
-    "min_version": {"ru": "🧩 Минимальная версия", "en": "🧩 Min version"},
-    "has_ui": {"ru": "⚙️ Настройки", "en": "⚙️ Settings"},
-    "category": {"ru": "🏷 Категория", "en": "🏷 Category"},
-    "file": {"ru": "📎 Файл", "en": "📎 File"},
-    "has_ui_on": {"ru": "⚙️ Настройки: ✅", "en": "⚙️ Settings: ✅"},
-    "has_ui_off": {"ru": "⚙️ Настройки: ❌", "en": "⚙️ Settings: ❌"},
-}
-
-def _t(options: Mapping[str, str], language: str) -> str:
-    return options.get(language) or options.get("ru") or next(iter(options.values()))
+def language_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang:ru"),
+        InlineKeyboardButton(text="🇺🇸 English", callback_data="lang:en"),
+    ]])
 
 
-def _single_column(buttons: Sequence[InlineKeyboardButton]) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[button] for button in buttons])
-
-
-def language_keyboard() -> InlineKeyboardMarkup:
-    buttons = [
-        InlineKeyboardButton(text=label, callback_data=f"lang:{code}")
-        for code, label in LANGUAGE_OPTIONS.items()
-    ]
-    return _single_column(buttons)
-
-
-def main_menu_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
-    buttons = [
-        InlineKeyboardButton(text=_t(MAIN_MENU_BUTTONS["profile"], language), callback_data="menu:profile"),
-        InlineKeyboardButton(text=_t(MAIN_MENU_BUTTONS["catalog"], language), callback_data="menu:catalog"),
-        InlineKeyboardButton(text=_t(MAIN_MENU_BUTTONS["submit"], language), callback_data="menu:submit"),
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=[[buttons[0], buttons[1]], [buttons[2]]])
-
-
-def submission_type_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
-    buttons = [
-        InlineKeyboardButton(
-            text=_t(SUBMISSION_TYPE_BUTTONS["plugin"], language),
-            callback_data="submit:type:plugin",
-        ),
-        InlineKeyboardButton(
-            text=_t(SUBMISSION_TYPE_BUTTONS["icon_pack"], language),
-            callback_data="submit:type:icon_pack",
-        ),
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=[[buttons[0], buttons[1]]])
-
-
-def category_keyboard(options: Iterable[Mapping[str, str]], language: str) -> InlineKeyboardMarkup:
-    def _label(option: Mapping[str, str]) -> str:
-        return (
-            option.get(language)
-            or option.get("ru")
-            or option.get("en")
-            or option.get("key", "Категория")
-        )
-
-    buttons = [
-        InlineKeyboardButton(
-            text=_label(option),
-            callback_data=f"category:{option['key']}",
-        )
-        for option in options
-    ]
-    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def confirm_keyboard(language: str = "ru") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=_t(SUBMISSION_ACTION_BUTTONS["confirm"], language),
-                    callback_data="submission:confirm",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text=_t(SUBMISSION_ACTION_BUTTONS["cancel"], language),
-                    callback_data="submission:cancel",
-                )
-            ],
-        ]
-    )
-
-
-def profile_menu_keyboard(language: str, plugin_count: int, icon_count: int) -> InlineKeyboardMarkup:
-    plugin_label = f"{_t(PROFILE_SECTION_BUTTONS['plugins'], language)} ({plugin_count})"
-    icon_label = f"{_t(PROFILE_SECTION_BUTTONS['icon_packs'], language)} ({icon_count})"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=plugin_label, callback_data="profile:list:plugin:0")],
-            [InlineKeyboardButton(text=icon_label, callback_data="profile:list:icon_pack:0")],
-            [InlineKeyboardButton(text=_t(SUBMISSION_ACTION_BUTTONS["cancel"], language), callback_data="menu:home")],
-        ]
-    )
-
-
-def profile_items_keyboard(
-    kind: str,
-    items: list[tuple[str, str]],
-    page: int,
-    has_prev: bool,
-    has_next: bool,
-) -> InlineKeyboardMarkup:
-    inline_keyboard: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=label, callback_data=f"profile:item:{kind}:{request_id}")]
-        for label, request_id in items
-    ]
-    nav: list[InlineKeyboardButton] = []
-    if has_prev:
-        nav.append(
-            InlineKeyboardButton(
-                text="⬅️",
-                callback_data=f"profile:page:{kind}:{page-1}",
-            )
-        )
-    if has_next:
-        nav.append(
-            InlineKeyboardButton(
-                text="➡️",
-                callback_data=f"profile:page:{kind}:{page+1}",
-            )
-        )
-    if nav:
-        inline_keyboard.append(nav)
-    inline_keyboard.append([InlineKeyboardButton(text="↩️", callback_data="menu:profile")])
-    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
-
-
-def profile_item_actions_keyboard(language: str, request_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=_t(PROFILE_ITEM_ACTIONS["update"], language), callback_data=f"profile:update:{request_id}")],
-            [InlineKeyboardButton(text="↩️", callback_data="menu:profile")],
-        ]
-    )
-
-
-def edit_menu_keyboard(language: str) -> InlineKeyboardMarkup:
-    buttons = [
-        [
-            InlineKeyboardButton(text=_t(EDIT_FIELD_BUTTONS["file"], language), callback_data="edit:field:file"),
-            InlineKeyboardButton(text=_t(EDIT_FIELD_BUTTONS["description"], language), callback_data="edit:field:description"),
-        ],
-        [
-            InlineKeyboardButton(text=_t(EDIT_FIELD_BUTTONS["usage"], language), callback_data="edit:field:usage"),
-            InlineKeyboardButton(text=_t(EDIT_FIELD_BUTTONS["channel"], language), callback_data="edit:field:channel"),
-        ],
-        [
-            InlineKeyboardButton(text=_t(EDIT_FIELD_BUTTONS["category"], language), callback_data="edit:field:category"),
-        ],
-        [
-            InlineKeyboardButton(text=_t(SUBMISSION_ACTION_BUTTONS["confirm"], language), callback_data="edit:submit"),
-        ],
-        [
-            InlineKeyboardButton(text=_t(SUBMISSION_ACTION_BUTTONS["cancel"], language), callback_data="edit:cancel"),
-        ],
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-
-def edit_back_keyboard(language: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="↩️", callback_data="edit:menu")],
-            [InlineKeyboardButton(text=_t(SUBMISSION_ACTION_BUTTONS["cancel"], language), callback_data="edit:cancel")],
-        ]
-    )
-
-
-def catalog_categories_keyboard(categories: Iterable[Mapping[str, str]], language: str) -> InlineKeyboardMarkup:
-    def _label(cat: Mapping[str, str]) -> str:
-        return (
-            cat.get(language)
-            or cat.get("ru")
-            or cat.get("en")
-            or cat.get("key", "Категория")
-        )
-
-    buttons = [
-        InlineKeyboardButton(text=_label(cat), callback_data=f"catalog:category:{cat['key']}:0")
-        for cat in categories
-    ]
-    rows = [[InlineKeyboardButton(text=_t(CATALOG_SEARCH_BUTTON, language), callback_data="catalog:search")]]
-    rows.extend([buttons[i : i + 2] for i in range(0, len(buttons), 2)])
-    icon_text = "🎨 Иконки" if language == "ru" else "🎨 Icon packs"
-    rows.append([InlineKeyboardButton(text=icon_text, callback_data="icons:list:0")])
-    back_text = "↩️ Главное меню" if language == "ru" else "↩️ Main menu"
-    rows.append([InlineKeyboardButton(text=back_text, callback_data="menu:home")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def catalog_search_prompt_keyboard(language: str, include_retry: bool = False) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    if include_retry:
-        rows.append([
-            InlineKeyboardButton(
-                text=_t(CATALOG_SEARCH_ACTIONS["retry"], language), callback_data="catalog:search:again"
-            )
-        ])
-    rows.append([
-        InlineKeyboardButton(
-            text=_t(CATALOG_SEARCH_ACTIONS["cancel"], language), callback_data="catalog:search:cancel"
-        )
+def main_menu_kb(lang: str) -> InlineKeyboardMarkup:
+    catalog = "📚 Каталог" if lang == "ru" else "📚 Catalog"
+    submit = "📝 Предложить" if lang == "ru" else "📝 Submit"
+    profile = "👤 Профиль" if lang == "ru" else "👤 Profile"
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=catalog, callback_data="catalog")],
+        [InlineKeyboardButton(text=submit, callback_data="submit")],
+        [InlineKeyboardButton(text=profile, callback_data="profile")],
     ])
+
+
+def submit_type_kb(lang: str) -> InlineKeyboardMarkup:
+    plugin = "🧩 Новый плагин" if lang == "ru" else "🧩 New plugin"
+    icons = "🎨 Пак иконок" if lang == "ru" else "🎨 Icon pack"
+    idea = t("btn_idea", lang)
+    
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=plugin, callback_data="submit:plugin")],
+        [InlineKeyboardButton(text=icons, callback_data="submit:icons")],
+        [InlineKeyboardButton(text=idea, url="https://t.me/exteraForum")],
+        [InlineKeyboardButton(text=t("btn_back", lang), callback_data="home")],
+    ])
+
+
+def cancel_kb(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="cancel"),
+    ]])
+
+
+def categories_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
+    buttons = []
+    for cat in categories:
+        label = cat.get(lang) or cat.get("ru") or cat.get("key")
+        buttons.append(InlineKeyboardButton(
+            text=label,
+            callback_data=f"cat:{cat.get('key')}",
+        ))
+    
+    rows = [buttons[i:i+2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="cancel")])
+    
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def catalog_search_results_keyboard(
-    results: list[tuple[str, str]],
-    language: str,
+def comment_skip_kb(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t("btn_skip", lang), callback_data="comment:skip"),
+    ]])
+
+
+def confirm_kb(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=t("btn_confirm", lang), callback_data="confirm"),
+            InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="cancel"),
+        ],
+    ])
+
+
+def draft_edit_kb(
+    prefix: str,
+    submit_label: str,
+    include_back: bool = False,
+    include_cancel: bool = False,
+    include_checked_on: bool = True,
+    include_delete: bool = False,
 ) -> InlineKeyboardMarkup:
-    inline_keyboard: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=label, callback_data=callback_data)]
-        for label, callback_data in results
+    rows = [
+        [
+            InlineKeyboardButton(text="Название", callback_data=f"{prefix}:edit:name"),
+            InlineKeyboardButton(text="Автор", callback_data=f"{prefix}:edit:author"),
+        ],
+        [
+            InlineKeyboardButton(text="Описание", callback_data=f"{prefix}:edit:description"),
+            InlineKeyboardButton(text="Использование", callback_data=f"{prefix}:edit:usage"),
+        ],
+        [
+            InlineKeyboardButton(text="Настройки", callback_data=f"{prefix}:edit:settings"),
+            InlineKeyboardButton(text="Мин. версия", callback_data=f"{prefix}:edit:min_version"),
+        ],
     ]
-    inline_keyboard.append(
-        [InlineKeyboardButton(text=_t(CATALOG_SEARCH_ACTIONS["retry"], language), callback_data="catalog:search:again")]
-    )
-    inline_keyboard.append(
-        [InlineKeyboardButton(text=_t(CATALOG_SEARCH_ACTIONS["cancel"], language), callback_data="catalog:search:cancel")]
-    )
-    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+    if include_checked_on:
+        rows.append([InlineKeyboardButton(text="Проверено", callback_data=f"{prefix}:edit:checked_on")])
+    rows.append([InlineKeyboardButton(text="Категория", callback_data=f"{prefix}:edit:category")])
+    rows.append([InlineKeyboardButton(text=submit_label, callback_data=f"{prefix}:submit")])
+    if include_delete:
+        rows.append([InlineKeyboardButton(text=t("btn_delete", "ru"), callback_data=f"{prefix}:delete")])
+    if include_back:
+        rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"{prefix}:back")])
+    if include_cancel:
+        rows.append([InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def catalog_navigation_keyboard(
-    prefix: str,
-    category_key: str,
-    page: int,
-    has_prev: bool,
-    has_next: bool,
-    mode: str = "category",
-) -> list[InlineKeyboardButton]:
+def draft_lang_kb(prefix: str, field: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🇷🇺 RU", callback_data=f"{prefix}:lang:{field}:ru"),
+            InlineKeyboardButton(text="🇺🇸 EN", callback_data=f"{prefix}:lang:{field}:en"),
+        ],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"{prefix}:back")],
+    ])
+
+
+def description_lang_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🇷🇺 Русский", callback_data="desc_lang:ru"),
+            InlineKeyboardButton(text="🇺🇸 English", callback_data="desc_lang:en"),
+        ],
+    ])
+
+
+def draft_category_kb(prefix: str, categories: list) -> InlineKeyboardMarkup:
     buttons = []
-    if has_prev:
+    for cat in categories:
+        label = cat.get("ru") or cat.get("en") or cat.get("key")
         buttons.append(
-            InlineKeyboardButton(text="⬅️", callback_data=_catalog_nav_callback(prefix, category_key, page - 1, mode))
+            InlineKeyboardButton(
+                text=label,
+                callback_data=f"{prefix}:cat:{cat.get('key')}",
+            )
         )
-    if has_next:
-        buttons.append(
-            InlineKeyboardButton(text="➡️", callback_data=_catalog_nav_callback(prefix, category_key, page + 1, mode))
-        )
-    return buttons
+
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"{prefix}:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _catalog_nav_callback(prefix: str, category_key: str, page: int, mode: str) -> str:
-    if mode == "list":
-        return f"{prefix}:list:{page}"
-    return f"{prefix}:category:{category_key}:{page}"
+def user_plugins_kb(plugins: List[Tuple[str, str]], lang: str) -> InlineKeyboardMarkup:
+    rows = []
+    for name, slug in plugins:
+        rows.append([InlineKeyboardButton(text=f"🧩 {name}", callback_data=f"upd:{slug}")])
+    
+    rows.append([InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def catalog_items_keyboard(
-    category_key: str,
-    items: list[tuple[str, str]],
+def catalog_main_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
+    rows = []
+    
+    rows.append([InlineKeyboardButton(text=t("btn_search", lang), callback_data="search")])
+    
+    all_label = "📦 Все плагины" if lang == "ru" else "📦 All plugins"
+    rows.append([InlineKeyboardButton(text=all_label, callback_data="cat:_all:0")])
+    
+    cat_buttons = []
+    for cat in categories:
+        label = cat.get(lang) or cat.get("ru")
+        cat_buttons.append(InlineKeyboardButton(
+            text=label,
+            callback_data=f"cat:{cat.get('key')}:0",
+        ))
+    rows.extend([cat_buttons[i:i+2] for i in range(0, len(cat_buttons), 2)])
+    
+    icons_label = "🎨 Иконки" if lang == "ru" else "🎨 Icons"
+    rows.append([InlineKeyboardButton(text=icons_label, callback_data="icons:0")])
+    
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data="home")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def paginated_list_kb(
+    items: List[Tuple[str, str]],
     page: int,
-    has_prev: bool,
-    has_next: bool,
-    prefix: str,
+    total_pages: int,
+    nav_prefix: str,
     back_callback: str,
-    nav_mode: str = "category",
 ) -> InlineKeyboardMarkup:
-    inline_keyboard = [
-        [InlineKeyboardButton(text=label, callback_data=f"{prefix}:item:{slug}")]
-        for label, slug in items
-    ]
-    nav = catalog_navigation_keyboard(prefix, category_key, page, has_prev, has_next, nav_mode)
+    rows = [[InlineKeyboardButton(text=label, callback_data=cb)] for label, cb in items]
+    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"{nav_prefix}:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"{nav_prefix}:{page+1}"))
+    
     if nav:
-        inline_keyboard.append(nav)
-    inline_keyboard.append([InlineKeyboardButton(text="↩️", callback_data=back_callback)])
-    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
-
-
-def catalog_plugin_keyboard(link: Optional[str], back_callback: str) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    if link:
-        rows.append([InlineKeyboardButton(text="🔗 Открыть пост", url=link)])
-    rows.append([InlineKeyboardButton(text="↩️", callback_data=back_callback)])
+        rows.append(nav)
+    
+    rows.append([InlineKeyboardButton(text="🔙", callback_data=back_callback)])
+    
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_menu_inline() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Новые заявки", callback_data="admin:list:new:0")],
-            [InlineKeyboardButton(text="Обновления", callback_data="admin:list:update:0")],
-        ]
-    )
-
-
-def admin_menu_keyboard() -> InlineKeyboardMarkup:
-    return admin_menu_inline()
-
-
-def admin_queue_keyboard(
-    queue_type: str,
-    items: list[tuple[str, str]],
-    page: int,
-    has_prev: bool,
-    has_next: bool,
+def plugin_detail_kb(
+    link: Optional[str],
+    back: str,
+    lang: str,
+    update_callback: Optional[str] = None,
+    delete_callback: Optional[str] = None,
 ) -> InlineKeyboardMarkup:
-    inline_keyboard = [
-        [InlineKeyboardButton(text=label, callback_data=f"admin:open:{request_id}")]
-        for label, request_id in items
-    ]
-
-    buttons = []
-    if has_prev:
-        buttons.append(
-            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:list:{queue_type}:{page-1}")
-        )
-    if has_next:
-        buttons.append(
-            InlineKeyboardButton(text="➡️ Вперёд", callback_data=f"admin:list:{queue_type}:{page+1}")
-        )
-    if buttons:
-        inline_keyboard.append(buttons)
-
-    inline_keyboard.append([InlineKeyboardButton(text="↩️ Назад", callback_data="admin:menu")])
-    return InlineKeyboardMarkup(inline_keyboard=inline_keyboard)
+    rows = []
+    if link:
+        rows.append([InlineKeyboardButton(text=t("btn_open", lang), url=link)])
+    if update_callback:
+        rows.append([InlineKeyboardButton(text=t("btn_update", lang), callback_data=update_callback)])
+    if delete_callback:
+        rows.append([InlineKeyboardButton(text=t("btn_delete", lang), callback_data=delete_callback)])
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=back)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def review_actions_keyboard(request_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{request_id}"),
-                InlineKeyboardButton(text="✏️ Вернуть", callback_data=f"revise:{request_id}"),
-            ],
-            [InlineKeyboardButton(text="↩️ В меню", callback_data="admin:menu")],
-        ]
-    )
+def search_kb(lang: str, show_retry: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if show_retry:
+        rows.append([InlineKeyboardButton(text=t("btn_retry", lang), callback_data="search")])
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data="catalog")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def publish_actions_keyboard(request_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Опубликовать", callback_data=f"publish:{request_id}"),],
-            [InlineKeyboardButton(text="↩️ В меню", callback_data="admin:menu")],
-        ]
-    )
+def profile_kb(lang: str, has_plugins: bool, has_icons: bool) -> InlineKeyboardMarkup:
+    rows = []
+    
+    if has_plugins:
+        label = "🧩 Мои плагины" if lang == "ru" else "🧩 My plugins"
+        rows.append([InlineKeyboardButton(text=label, callback_data="my:plugins:0")])
+    
+    if has_icons:
+        label = "🎨 Мои паки" if lang == "ru" else "🎨 My packs"
+        rows.append([InlineKeyboardButton(text=label, callback_data="my:icons:0")])
+
+    rows.append([InlineKeyboardButton(text=t("btn_support", lang), url="https://t.me/itsv2eds")])
+    
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data="home")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📥 Заявки", callback_data="adm:queue:all:0"),
+        ],
+        [
+            InlineKeyboardButton(text="🧩 Редактировать", callback_data="adm:edit_plugins"),
+            InlineKeyboardButton(text="👤 Привязать автора", callback_data="adm:link_author"),
+        ],
+        [
+            InlineKeyboardButton(text="🚫 Заблокированные", callback_data="adm:banned:0"),
+            InlineKeyboardButton(text="⚙️ Настройки", callback_data="adm:config"),
+        ],
+        [InlineKeyboardButton(text="📣 Рассылка", callback_data="adm:broadcast")],
+    ])
+
+
+def admin_config_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👥 Админы", callback_data="adm:config:admins")],
+        [InlineKeyboardButton(text="📣 Канал", callback_data="adm:config:channel")],
+        [InlineKeyboardButton(text="🔙", callback_data="adm:menu")],
+    ])
+
+
+def admin_broadcast_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отправить", callback_data="adm:broadcast:confirm")],
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data="adm:broadcast:cancel")],
+    ])
+
+
+def admin_queue_kb(
+    items: List[Tuple[str, str]],
+    page: int,
+    total_pages: int,
+    queue_type: str,
+    back_callback: str = "adm:menu",
+) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"adm:review:{rid}")] for label, rid in items]
+    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"adm:queue:{queue_type}:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"adm:queue:{queue_type}:{page+1}"))
+    
+    if nav:
+        rows.append(nav)
+    
+    rows.append([InlineKeyboardButton(text="🔙", callback_data=back_callback)])
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_banned_kb(
+    items: List[Tuple[str, int]],
+    page: int,
+    total_pages: int,
+) -> InlineKeyboardMarkup:
+    rows = []
+    for label, user_id in items:
+        rows.append([
+            InlineKeyboardButton(text=label, callback_data=f"adm:user_info:{user_id}"),
+            InlineKeyboardButton(text="🔓", callback_data=f"adm:unban:{user_id}"),
+        ])
+    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"adm:banned:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"adm:banned:{page+1}"))
+    
+    if nav:
+        rows.append(nav)
+    
+    rows.append([InlineKeyboardButton(text="🔙", callback_data=back_callback)])
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_review_kb(
+    request_id: str,
+    user_id: int,
+    submit_label: str = "✅ Опубликовать",
+    submit_callback: str | None = None,
+) -> InlineKeyboardMarkup:
+    submit_callback = submit_callback or f"adm:prepublish:{request_id}"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text=submit_label, callback_data=submit_callback),
+            InlineKeyboardButton(text="⚙️ Ещё...", callback_data=f"adm:actions:{request_id}:{user_id}"),
+        ],
+        [InlineKeyboardButton(text="🔙", callback_data="adm:menu")],
+    ])
+
+
+def admin_actions_kb(request_id: str, user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"adm:reject:{request_id}"),
+            InlineKeyboardButton(text="🚫 Забанить", callback_data=f"adm:ban:{request_id}:{user_id}"),
+        ],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data=f"adm:back_review:{request_id}:{user_id}")],
+    ])
+
+
+def admin_reject_kb(request_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📝 С причиной", callback_data=f"adm:reject_comment:{request_id}"),
+            InlineKeyboardButton(text="🔇 Тихо", callback_data=f"adm:reject_silent:{request_id}"),
+        ],
+        [InlineKeyboardButton(text="🔙", callback_data=f"adm:menu")],
+    ])
+
+
+def admin_confirm_ban_kb(request_id: str, user_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚫 Подтвердить бан", callback_data=f"adm:ban_confirm:{request_id}:{user_id}")],
+        [InlineKeyboardButton(text="🔙 Отмена", callback_data=f"adm:back_review:{request_id}:{user_id}")],
+    ])
+
+
+def admin_plugins_list_kb(
+    plugins: List[Tuple[str, str]],
+    page: int,
+    total_pages: int,
+    select_prefix: str = "adm:select_plugin",
+    list_prefix: str = "adm:plugins_list",
+    back_callback: str = "adm:menu",
+) -> InlineKeyboardMarkup:
+    rows = []
+    for name, slug in plugins:
+        rows.append([InlineKeyboardButton(text=f"🧩 {name}", callback_data=f"{select_prefix}:{slug}")])
+    
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"{list_prefix}:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"{list_prefix}:{page+1}"))
+    
+    if nav:
+        rows.append(nav)
+    
+    rows.append([InlineKeyboardButton(text="🔙", callback_data="adm:menu")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=rows)

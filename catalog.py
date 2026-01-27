@@ -137,6 +137,55 @@ def find_icon_by_slug(slug: Optional[str]) -> Optional[CatalogEntry]:
     return None
 
 
+def find_user_plugins(user_id: int, username: str = "") -> List[CatalogEntry]:
+    results = []
+    
+    for plugin in list_published_plugins():
+        submitters = plugin.get("submitters", [])
+        for sub in submitters:
+            if sub.get("user_id") == user_id:
+                results.append(plugin)
+                break
+        else:
+            if username:
+                handle = f"@{username.lower()}"
+                authors = plugin.get("authors", {})
+                handles = authors.get("handles", [])
+                
+                if any(h.lower() == handle for h in handles):
+                    results.append(plugin)
+                    continue
+                
+                for locale in ("ru", "en"):
+                    author_text = (authors.get(locale) or "").lower()
+                    if handle in author_text:
+                        results.append(plugin)
+                        break
+    
+    return results
+
+
+def find_user_icons(user_id: int, username: str = "") -> List[CatalogEntry]:
+    results = []
+    
+    for icon in list_published_icons():
+        submitters = icon.get("submitters", [])
+        for sub in submitters:
+            if sub.get("user_id") == user_id:
+                results.append(icon)
+                break
+        else:
+            if username:
+                handle = f"@{username.lower()}"
+                authors = icon.get("authors", {})
+                handles = authors.get("handles", [])
+                
+                if any(h.lower() == handle for h in handles):
+                    results.append(icon)
+    
+    return results
+
+
 def find_plugins_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
     normalized: Set[str] = {
         _normalize_handle(handle) for handle in handles if handle
@@ -155,8 +204,8 @@ def find_plugins_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
                 [
                     authors.get("ru"),
                     authors.get("en"),
-                    raw_blocks.get("ru"),
-                    raw_blocks.get("en"),
+                    raw_blocks.get("ru") if isinstance(raw_blocks.get("ru"), str) else "",
+                    raw_blocks.get("en") if isinstance(raw_blocks.get("en"), str) else "",
                 ],
             )
         ).lower()
@@ -185,8 +234,8 @@ def find_icons_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
                 [
                     authors.get("ru"),
                     authors.get("en"),
-                    raw_blocks.get("ru"),
-                    raw_blocks.get("en"),
+                    raw_blocks.get("ru") if isinstance(raw_blocks.get("ru"), str) else "",
+                    raw_blocks.get("en") if isinstance(raw_blocks.get("en"), str) else "",
                 ],
             )
         ).lower()

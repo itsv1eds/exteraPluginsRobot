@@ -1,8 +1,8 @@
 .DS_Store
-bot/__pycache__
-/DataBase
+config.json
+*__pycache__
+/sessions
 /uploads
 /data
-/__pycache__
-config.json
+
 

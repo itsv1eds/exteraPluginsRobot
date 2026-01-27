@@ -1,54 +1,56 @@
 {
-  "admins": [1],
+  "admins": [123456789],
   "bot_token": "",
+  "publish_channel": "username",
+  "userbot": {
+    "api_id": 123456789,
+    "api_hash": ""
+  },
   "channel": {
-    "id": -100,
-    "username": "аа",
-    "title": "",
-    "default_tags": [""],
+    "id": -100123456789,
+    "username": "username",
+    "title": "channel name",
+    "default_tags": ["#Plugins@exteraPluginsSup"],
     "locale_order": ["ru", "en"]
   },
   "categories": [
     {
       "key": "informational",
-      "ru": "Информационные",
-      "en": "Informational",
+      "ru": "📊 Информационные",
+      "en": "📊 Informational",
       "tag_ru": "#Информационные",
       "tag_en": "#Informational"
     },
     {
       "key": "utilities",
-      "ru": "Утилиты",
-      "en": "Utilities",
+      "ru": "🛠 Утилиты",
+      "en": "🛠 Utilities",
       "tag_ru": "#Утилиты",
       "tag_en": "#Utilities"
     },
     {
       "key": "customization",
-      "ru": "Кастомизация",
-      "en": "Customization",
+      "ru": "🎨 Кастомизация",
+      "en": "🎨 Customization",
       "tag_ru": "#Кастомизация",
       "tag_en": "#Customization"
     },
     {
       "key": "fun",
-      "ru": "Развлечения",
-      "en": "Fun",
+      "ru": "🎮 Развлечения",
+      "en": "🎮 Fun",
       "tag_ru": "#Развлечения",
       "tag_en": "#Fun"
     },
     {
       "key": "library",
-      "ru": "Библиотека",
-      "en": "Library",
+      "ru": "📚 Библиотека",
+      "en": "📚 Library",
       "tag_ru": "#Библиотека",
       "tag_en": "#Library"
     }
   ],
   "storage": {
-    "database_path": "database.json",
-    "pending_requests_path": "requests",
-    "attachments_dir": "uploads",
-    "file_storage_channel_id": -100
+    "attachments_dir": "uploads"
   }
 }

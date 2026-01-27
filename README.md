@@ -11,4 +11,4 @@ bot: @exteraPluginsRobot
 # Setup
 1. Install dependencies
 2. Configure `config.json`
-3. Run bot by ```python3 -m bot.main```
+3. Run bot by ```python3 main.py```

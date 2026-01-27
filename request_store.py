@@ -11,7 +11,7 @@ def add_request(payload: Dict[str, Any], request_type: str = "new") -> Dict[str,
     plugin = payload.get("plugin", {})
     plugin_id = plugin.get("id")
     base_id = plugin_id if plugin_id else uuid4().hex
-    existing_ids = {req["id"] for req in requests}
+    existing_ids = {req.get("id") for req in requests if req.get("id")}
     final_id = base_id
     suffix = 1
     while final_id in existing_ids:

@@ -27,6 +27,10 @@ def load_config() -> Dict[str, Any]:
     return _read_json(CONFIG_PATH)
 
 
+def save_config(data: Dict[str, Any]) -> None:
+    _save_json(CONFIG_PATH, data)
+
+
 def _load_json(path: Path, kind: str) -> Dict[str, Any]:
     if not path.exists():
         raise StorageError(f"{kind} not found: {path}")

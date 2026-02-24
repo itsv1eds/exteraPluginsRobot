@@ -19,21 +19,21 @@ async def cmd_full_sync(args: argparse.Namespace) -> None:
     try:
         userbot = await get_userbot()
         if not userbot:
-            print("❌ Юзербот не настроен")
+            print("Юзербот не настроен")
             sys.exit(1)
         
         stats = await userbot.full_sync(limit=args.limit)
         
         print()
-        print("✅ Синхронизация завершена!")
+        print("Синхронизация завершена!")
         print(f"   📦 Плагинов: {stats.get('plugins', 0)}")
         print(f"   🎨 Иконпаков: {stats.get('icons', 0)}")
         print(f"   ⏭️  Пропущено: {stats.get('skipped', 0)}")
-        print(f"   ❌ Ошибок: {stats.get('errors', 0)}")
+        print(f"   Ошибок: {stats.get('errors', 0)}")
         
     except Exception as e:
         logger.exception("Sync failed")
-        print(f"❌ Ошибка: {e}")
+        print(f"Ошибка: {e}")
         sys.exit(1)
 
 
@@ -69,24 +69,25 @@ async def cmd_status(args: argparse.Namespace) -> None:
 async def cmd_clear(args: argparse.Namespace) -> None:
     from pathlib import Path
     import json
+    from storage import DATA_DIR
     
-    data_dir = Path("data")
+    data_dir = DATA_DIR
     
     if args.what in ("all", "plugins"):
         (data_dir / "databaseplugins.json").write_text('{"plugins": []}', encoding="utf-8")
-        print("✅ Плагины очищены")
+        print("Плагины очищены")
     
     if args.what in ("all", "icons"):
         (data_dir / "databaseicons.json").write_text('{"iconpacks": []}', encoding="utf-8")
-        print("✅ Иконки очищены")
+        print("Иконки очищены")
     
     if args.what in ("all", "requests"):
         (data_dir / "databaserequests.json").write_text('{"requests": []}', encoding="utf-8")
-        print("✅ Заявки очищены")
+        print("Заявки очищены")
     
     if args.what in ("all", "users"):
         (data_dir / "databaseusers.json").write_text('{"users": {}}', encoding="utf-8")
-        print("✅ Пользователи очищены")
+        print("Пользователи очищены")
 
 
 def main() -> None:

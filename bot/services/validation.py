@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional, Tuple
 from packaging import version as pkg_version
 
-from catalog import find_plugin_by_slug, list_published_plugins
+from catalog import find_icon_by_slug, find_plugin_by_slug, list_published_plugins
 from bot.services.publish import make_slug
 
 
@@ -57,7 +57,7 @@ def validate_update_submission(
 def check_duplicate_pending(plugin_id: str, plugin_name: str) -> Tuple[bool, Optional[str]]:
     from request_store import get_requests
     
-    pending = get_requests(status="pending")
+    pending = get_requests(status="pending") + get_requests(status="draft")
     
     slug = make_slug(plugin_name)
     
@@ -75,4 +75,39 @@ def check_duplicate_pending(plugin_id: str, plugin_name: str) -> Tuple[bool, Opt
         if req_slug == slug:
             return True, req.get("id")
     
+    return False, None
+
+
+def validate_icon_submission(icon: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    icon_id = icon.get("id", "")
+    icon_name = icon.get("name", "")
+    if not icon_id or not icon_name:
+        return False, "missing_icon_info"
+
+    slug = make_slug(icon_name)
+    existing = find_icon_by_slug(slug)
+    if existing:
+        return False, "icon_already_exists"
+
+    return True, None
+
+
+def check_duplicate_icon_pending(icon_id: str, icon_name: str) -> Tuple[bool, Optional[str]]:
+    from request_store import get_requests
+
+    pending = get_requests(status="pending") + get_requests(status="draft")
+    slug = make_slug(icon_name)
+
+    for req in pending:
+        payload = req.get("payload", {})
+        req_icon = payload.get("icon", {})
+        req_id = req_icon.get("id", "")
+        req_name = req_icon.get("name", "")
+        req_slug = make_slug(req_name)
+
+        if req_id and icon_id and req_id.lower() == icon_id.lower():
+            return True, req.get("id")
+        if req_slug == slug:
+            return True, req.get("id")
+
     return False, None

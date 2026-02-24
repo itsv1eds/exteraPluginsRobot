@@ -8,11 +8,11 @@ from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message, MessageEntity
+from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from bot.context import get_language, get_lang
-from bot.constants import CUSTOM_EMOJI_ID, EMOJI_TEXT, utf16_length
-from bot.helpers import answer, extract_html_text
+from bot.callback_tokens import decode_slug
+from bot.helpers import answer, extract_html_text, try_react_pray
 from bot.keyboards import (
     cancel_kb,
     comment_skip_kb,
@@ -28,17 +28,56 @@ from bot.keyboards import (
     user_plugins_kb,
 )
 from bot.keyboards import admin_review_kb
-from bot.cache import get_admins, get_categories
-from bot.services.submission import PluginData, build_submission_payload, process_plugin_file
-from bot.services.publish import build_channel_post
-from bot.services.validation import check_duplicate_pending, validate_new_submission, validate_update_submission
+from bot.cache import get_admins_icons, get_admins_plugins, get_categories
+from bot.services.submission import (
+    PluginData,
+    build_icon_submission_payload,
+    build_submission_payload,
+    process_icon_file,
+    process_plugin_file,
+)
+from bot.services.publish import build_channel_post, update_plugin
+from bot.services.validation import (
+    check_duplicate_icon_pending,
+    check_duplicate_pending,
+    validate_icon_submission,
+    validate_new_submission,
+    validate_update_submission,
+)
 from bot.states import UserFlow
 from bot.texts import t
 from catalog import find_plugin_by_slug, find_user_plugins
-from request_store import add_request
+from request_store import (
+    add_draft_request,
+    add_request,
+    delete_request_and_file,
+    promote_draft_request,
+    update_request_payload,
+)
 from user_store import get_user_language, is_user_banned, set_user_language
 
 router = Router(name="user-flow")
+
+
+async def _ensure_not_banned(target: Message | CallbackQuery, state: FSMContext) -> bool:
+    user_id = None
+    if isinstance(target, CallbackQuery):
+        user_id = target.from_user.id if target.from_user else None
+    else:
+        user_id = target.from_user.id if target.from_user else None
+
+    if not user_id:
+        return True
+
+    if is_user_banned(user_id):
+        lang = await get_language(target, state)
+        if isinstance(target, CallbackQuery):
+            await target.answer(t("user_banned_short", lang), show_alert=True)
+        else:
+            await target.answer(t("user_banned", lang), parse_mode=ParseMode.HTML)
+        return False
+
+    return True
 
 
 def _build_draft_entry(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -65,13 +104,71 @@ def _render_draft_text(data: Dict[str, Any]) -> str:
     return build_channel_post({"payload": payload})
 
 
+async def _render_home(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
+    await state.clear()
+    await state.update_data(lang=lang)
+    await state.set_state(UserFlow.idle)
+    await answer(cb, t("welcome", lang), main_menu_kb(lang), "welcome")
+
+
+async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
+    await state.set_state(UserFlow.choosing_submission_type)
+    await answer(cb, t("choose_type", lang), submit_type_kb(lang), "suggestion")
+
+
+async def _sync_submission_draft(
+    state: FSMContext,
+    user_id: int,
+    username: str,
+    submission_type: str = "plugin",
+) -> None:
+    data = await state.get_data()
+    draft_id = data.get("draft_request_id")
+
+    if submission_type == "icon":
+        icon = data.get("icon", {})
+        if not icon:
+            return
+        payload = {
+            "user_id": user_id,
+            "username": username,
+            "icon": icon,
+            "submission_type": "icon",
+        }
+    else:
+        plugin = data.get("plugin", {})
+        if not plugin:
+            return
+        payload = {
+            "user_id": user_id,
+            "username": username,
+            "plugin": plugin,
+            "description_ru": data.get("description_ru"),
+            "description_en": data.get("description_en"),
+            "usage_ru": data.get("usage_ru"),
+            "usage_en": data.get("usage_en"),
+            "category_key": data.get("category_key"),
+            "category_label": data.get("category_label"),
+            "submission_type": "plugin",
+        }
+
+    if draft_id:
+        update_request_payload(draft_id, payload)
+    else:
+        entry = add_draft_request(payload, request_type="new")
+        await state.update_data(draft_request_id=entry.get("id"))
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     user_id = message.from_user.id if message.from_user else None
 
     if is_user_banned(user_id):
-        await message.answer("🚫 Вы заблокированы")
+        await message.answer(
+            t("user_banned", "ru"),
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     if get_user_language(user_id):
@@ -81,7 +178,11 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         await answer(message, t("welcome", lang), main_menu_kb(lang), "welcome")
     else:
         await state.set_state(UserFlow.choosing_language)
-        await message.answer(t("language_prompt", "ru"), reply_markup=language_kb())
+        await message.answer(
+            t("language_prompt", "ru"),
+            reply_markup=language_kb(),
+            parse_mode=ParseMode.HTML,
+        )
 
 
 @router.message(Command("lang"))
@@ -89,7 +190,11 @@ async def cmd_lang(message: Message, state: FSMContext) -> None:
     if is_user_banned(message.from_user.id):
         return
     await state.set_state(UserFlow.choosing_language)
-    await message.answer(t("language_prompt", "ru"), reply_markup=language_kb())
+    await message.answer(
+        t("language_prompt", "ru"),
+        reply_markup=language_kb(),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @router.callback_query(F.data.startswith("lang:"))
@@ -122,39 +227,58 @@ async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "cancel")
 async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
-    await state.set_state(UserFlow.idle)
-    await answer(cb, t("submission_cancelled", lang), main_menu_kb(lang), "welcome")
-    await cb.answer()
+    data = await state.get_data()
+    draft_id = data.get("draft_request_id")
+    if draft_id:
+        delete_request_and_file(draft_id)
 
+    current_state = await state.get_state() or ""
+    state_name = current_state.split(":")[-1]
 
-@router.message(F.text == ".test")
-async def on_test_command(message: Message) -> None:
-    await message.answer(
-        EMOJI_TEXT,
-        entities=[
-            MessageEntity(
-                type="custom_emoji",
-                offset=0,
-                length=utf16_length(EMOJI_TEXT),
-                custom_emoji_id=CUSTOM_EMOJI_ID,
-            )
-        ],
-    )
+    if state_name in {
+        "uploading_file",
+        "uploading_update_file",
+        "uploading_icon_file",
+        "choosing_description_language",
+        "editing_description_translation",
+        "editing_usage_ru",
+        "editing_usage_en",
+        "choosing_category",
+        "confirming_submission",
+        "confirming_update",
+        "entering_changelog",
+        "choosing_plugin_to_update",
+    }:
+        await _render_submit_type(cb, state, lang)
+    else:
+        await _render_home(cb, state, lang)
+
+    try:
+        await cb.answer(t("submission_cancelled", lang))
+    except Exception:
+        pass
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "submit")
 async def on_submit(cb: CallbackQuery, state: FSMContext) -> None:
     if is_user_banned(cb.from_user.id):
-        await cb.answer("🚫 Заблокированы", show_alert=True)
+        lang = await get_language(cb, state)
+        await cb.answer(t("user_banned_short", lang), show_alert=True)
         return
     lang = await get_language(cb, state)
     await state.set_state(UserFlow.choosing_submission_type)
-    await answer(cb, t("choose_type", lang), submit_type_kb(lang), "plugins")
+    await answer(cb, t("choose_type", lang), submit_type_kb(lang), "suggestion")
     await cb.answer()
 
 
 @router.callback_query(UserFlow.choosing_submission_type, F.data == "submit:plugin")
 async def on_submit_plugin(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
     lang = await get_language(cb, state)
     await state.set_state(UserFlow.uploading_file)
     await answer(cb, t("upload_plugin", lang), cancel_kb(lang), "plugins")
@@ -163,6 +287,8 @@ async def on_submit_plugin(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(UserFlow.choosing_submission_type, F.data == "submit:update")
 async def on_submit_update(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
     lang = await get_language(cb, state)
     user = cb.from_user
     user_plugins = find_user_plugins(user.id, user.username or "")
@@ -180,7 +306,7 @@ async def on_submit_update(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(UserFlow.choosing_plugin_to_update, F.data.startswith("upd:"))
 async def on_choose_plugin_update(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
-    slug = cb.data.split(":")[1]
+    slug = decode_slug(cb.data.split(":")[1])
     plugin = find_plugin_by_slug(slug)
 
     if not plugin:
@@ -196,8 +322,10 @@ async def on_choose_plugin_update(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("profile:delete:"))
 async def on_profile_delete(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
     lang = await get_language(cb, state)
-    slug = cb.data.split(":", 2)[2]
+    slug = decode_slug(cb.data.split(":", 2)[2])
     plugin = find_plugin_by_slug(slug)
 
     if not plugin:
@@ -230,8 +358,10 @@ async def on_profile_delete(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("profile:update:"))
 async def on_profile_update(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
     lang = await get_language(cb, state)
-    slug = cb.data.split(":", 2)[2]
+    slug = decode_slug(cb.data.split(":", 2)[2])
     plugin = find_plugin_by_slug(slug)
 
     if not plugin:
@@ -247,10 +377,13 @@ async def on_profile_update(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(UserFlow.uploading_update_file, F.document)
 async def on_update_file(message: Message, state: FSMContext) -> None:
+    if not await _ensure_not_banned(message, state):
+        return
     lang = await get_language(message, state)
     data = await state.get_data()
     old_plugin = data.get("old_plugin", {})
     old_version = data.get("old_version", "")
+    is_admin = message.from_user.id in get_admins_plugins() if message.from_user else False
 
     if message.document and message.document.file_size:
         if message.document.file_size > 8 * 1024 * 1024:
@@ -260,16 +393,21 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
     try:
         plugin = await process_plugin_file(message.bot, message.document)
     except ValueError as e:
-        await message.answer(t("parse_error", lang, error=str(e)))
+        key, _, details = str(e).partition(":")
+        if key == "parse_error" and details:
+            await message.answer(t("parse_error", lang, error=details))
+        else:
+            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
         return
 
-    is_valid, error = validate_update_submission(plugin.to_dict(), old_plugin)
-    if not is_valid:
-        if error == "version_not_higher":
-            await message.answer(t("version_not_higher", lang, current=old_version))
-        else:
-            await message.answer(t(error, lang))
-        return
+    if not is_admin:
+        is_valid, error = validate_update_submission(plugin.to_dict(), old_plugin)
+        if not is_valid:
+            if error == "version_not_higher":
+                await message.answer(t("version_not_higher", lang, current=old_version))
+            else:
+                await message.answer(t(error, lang))
+            return
 
     await state.update_data(plugin=plugin.to_dict())
     await state.set_state(UserFlow.entering_changelog)
@@ -312,6 +450,8 @@ async def on_changelog(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(UserFlow.confirming_update, F.data == "confirm")
 async def on_confirm_update(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
     lang = await get_language(cb, state)
     data = await state.get_data()
     user = cb.from_user
@@ -341,13 +481,81 @@ async def on_confirm_update(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(UserFlow.choosing_submission_type, F.data == "submit:icons")
 async def on_submit_icons(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
     lang = await get_language(cb, state)
-    await cb.answer(t("icons_soon", lang), show_alert=True)
+    await state.set_state(UserFlow.uploading_icon_file)
+    await answer(cb, t("upload_icon", lang), cancel_kb(lang), "iconpacks")
+    await cb.answer()
+
+
+@router.message(UserFlow.uploading_icon_file, F.document)
+async def on_icon_file(message: Message, state: FSMContext) -> None:
+    if not await _ensure_not_banned(message, state):
+        return
+    lang = await get_language(message, state)
+
+    if message.document and message.document.file_size:
+        if message.document.file_size > 8 * 1024 * 1024:
+            await message.answer(t("file_too_large", lang))
+            return
+
+    try:
+        icon = await process_icon_file(message.bot, message.document)
+    except ValueError as e:
+        key, _, details = str(e).partition(":")
+        if key == "parse_error" and details:
+            await message.answer(t("parse_error", lang, error=details))
+        else:
+            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
+        return
+
+    await state.update_data(icon=icon.to_dict())
+
+    is_valid, error = validate_icon_submission(icon.to_dict())
+    if not is_valid:
+        await message.answer(t(error, lang))
+        return
+
+    is_duplicate, _ = check_duplicate_icon_pending(icon.id, icon.name)
+    if is_duplicate:
+        await message.answer(t("icon_pending", lang))
+        return
+    await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "icon")
+
+    preview = t(
+        "icon_parsed",
+        lang,
+        name=icon.name or "—",
+        author=icon.author or "—",
+        version=icon.version or "—",
+        count=icon.count or 0,
+    )
+    await answer(message, preview, None, None)
+
+    payload = build_icon_submission_payload(message.from_user.id, message.from_user.username or "", icon)
+    await state.update_data(
+        pending_payload=payload,
+        pending_request_type="new",
+        pending_reply_key="submission_sent",
+    )
+    await state.set_state(UserFlow.entering_admin_comment)
+    await answer(message, t("ask_admin_comment", lang), comment_skip_kb(lang), "iconpacks")
+
+
+@router.message(UserFlow.uploading_icon_file)
+async def on_icon_file_invalid(message: Message, state: FSMContext) -> None:
+    lang = await get_language(message, state)
+    await message.answer(t("invalid_icon_file", lang))
 
 
 @router.message(UserFlow.uploading_file, F.document)
 async def on_file(message: Message, state: FSMContext) -> None:
+    if not await _ensure_not_banned(message, state):
+        return
     lang = await get_language(message, state)
+
+    await try_react_pray(message)
 
     if message.document and message.document.file_size:
         if message.document.file_size > 8 * 1024 * 1024:
@@ -357,7 +565,11 @@ async def on_file(message: Message, state: FSMContext) -> None:
     try:
         plugin = await process_plugin_file(message.bot, message.document)
     except ValueError as e:
-        await message.answer(t("parse_error", lang, error=str(e)))
+        key, _, details = str(e).partition(":")
+        if key == "parse_error" and details:
+            await message.answer(t("parse_error", lang, error=details))
+        else:
+            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
         return
 
     is_valid, error = validate_new_submission(plugin.to_dict())
@@ -374,6 +586,7 @@ async def on_file(message: Message, state: FSMContext) -> None:
         plugin=plugin.to_dict(),
         description_raw=plugin.description,
     )
+    await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
     await state.set_state(UserFlow.choosing_description_language)
 
     draft_text = _render_draft_text(await state.get_data())
@@ -401,6 +614,8 @@ async def on_description_language(cb: CallbackQuery, state: FSMContext) -> None:
         await state.update_data(description_en=raw_desc, description_source_lang="en")
         prompt = t("enter_description_ru", lang)
 
+    await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
+
     await state.set_state(UserFlow.editing_description_translation)
     await answer(cb, prompt, None, None)
     await cb.answer()
@@ -422,6 +637,8 @@ async def on_description_translation(message: Message, state: FSMContext) -> Non
     else:
         await state.update_data(description_ru=text)
 
+    await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
+
     await state.set_state(UserFlow.editing_usage_ru)
     lang = await get_language(message, state)
     await message.answer(
@@ -440,6 +657,7 @@ async def on_usage_ru(message: Message, state: FSMContext) -> None:
         await message.answer(t("need_text", lang))
         return
     await state.update_data(usage_ru=text)
+    await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
     await state.set_state(UserFlow.editing_usage_en)
     await answer(message, t("enter_usage_en", lang), cancel_kb(lang))
 
@@ -452,18 +670,19 @@ async def on_usage_en(message: Message, state: FSMContext) -> None:
         await message.answer(t("need_text", lang))
         return
     await state.update_data(usage_en=text)
+    await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
     await state.set_state(UserFlow.choosing_category)
     from bot.cache import get_categories
 
     await answer(message, t("choose_category", lang), categories_kb(get_categories(), lang))
 
 
-@router.callback_query(UserFlow.choosing_category, F.data.startswith("cat:"))
+@router.callback_query(UserFlow.choosing_category, F.data.startswith("submit:cat:"))
 async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
     from bot.cache import get_categories
 
     lang = await get_language(cb, state)
-    cat_key = cb.data.split(":")[1]
+    cat_key = cb.data.split(":")[2]
     category = next((c for c in get_categories() if c.get("key") == cat_key), None)
 
     if not category:
@@ -472,6 +691,7 @@ async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
 
     cat_label = f"{category.get('ru', '')} / {category.get('en', '')}"
     await state.update_data(category_key=cat_key, category_label=cat_label)
+    await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
     await state.set_state(UserFlow.confirming_submission)
 
     draft_text = _render_draft_text(await state.get_data())
@@ -479,7 +699,7 @@ async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(
         cb,
         draft_text,
-        draft_edit_kb("draft", "✅ Отправить админу", include_cancel=True, include_checked_on=False),
+        draft_edit_kb("draft", t("btn_send_to_admin", lang), include_cancel=True, include_checked_on=False),
         "plugins",
     )
     await cb.answer()
@@ -520,26 +740,18 @@ async def on_draft_language(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(edit_field=field, edit_lang=lang_choice)
     await state.set_state(UserFlow.editing_draft_field)
 
-    data = await state.get_data()
-    draft_message_id = data.get("draft_message_id")
-    if draft_message_id:
-        try:
-            await cb.bot.edit_message_text(
-                "Введите текст (RU):" if lang_choice == "ru" else "Введите текст (EN):",
-                chat_id=cb.message.chat.id,
-                message_id=draft_message_id,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            await answer(cb, "Введите текст (RU):" if lang_choice == "ru" else "Введите текст (EN):", None, None)
-    else:
-        await answer(cb, "Введите текст (RU):" if lang_choice == "ru" else "Введите текст (EN):", None, None)
+    lang = await get_language(cb, state)
+    prompt = t("admin_prompt_enter_text_ru", lang) if lang_choice == "ru" else t("admin_prompt_enter_text_en", lang)
+
+    msg = await answer(cb, prompt, None, None)
+    if msg:
+        await state.update_data(draft_message_id=msg.message_id)
     await cb.answer()
 
 
 @router.callback_query(UserFlow.confirming_submission, F.data.startswith("draft:cat:"))
 async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
     cat_key = cb.data.split(":")[2]
     category = next((c for c in get_categories() if c.get("key") == cat_key), None)
     if category:
@@ -547,6 +759,7 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
             category_key=cat_key,
             category_label=f"{category.get('ru', '')} / {category.get('en', '')}",
         )
+        await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
 
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
@@ -554,7 +767,7 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(
         cb,
         draft_text,
-        draft_edit_kb("draft", "✅ Отправить админу", include_cancel=True, include_checked_on=False),
+        draft_edit_kb("draft", t("btn_send_to_admin", lang), include_cancel=True, include_checked_on=False),
         "plugins",
     )
     await cb.answer()
@@ -562,12 +775,13 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(UserFlow.confirming_submission, F.data == "draft:back")
 async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
     await answer(
         cb,
         draft_text,
-        draft_edit_kb("draft", "✅ Отправить админу", include_cancel=True, include_checked_on=False),
+        draft_edit_kb("draft", t("btn_send_to_admin", lang), include_cancel=True, include_checked_on=False),
         "plugins",
     )
     await cb.answer()
@@ -577,7 +791,11 @@ async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_draft_field_value(message: Message, state: FSMContext) -> None:
     text = extract_html_text(message).strip()
     if not text:
-        await message.answer("✏️ Введите текст", disable_web_page_preview=True)
+        await message.answer(
+            t("need_text", "ru"),
+            disable_web_page_preview=True,
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     data = await state.get_data()
@@ -601,12 +819,13 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
         await state.update_data(plugin=plugin)
     elif field == "settings":
         value = text.lower()
-        has_settings = value in {"да", "yes", "1", "✅", "true"}
+        has_settings = value in {"да", "yes", "1", "true"}
         plugin = data.get("plugin", {})
         plugin["has_ui_settings"] = has_settings
         await state.update_data(plugin=plugin)
 
     await state.update_data(edit_field=None, edit_lang=None)
+    await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
     await state.set_state(UserFlow.confirming_submission)
 
     draft_text = _render_draft_text(await state.get_data())
@@ -619,30 +838,39 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
                 chat_id=message.chat.id,
                 message_id=draft_message_id,
                 parse_mode=ParseMode.HTML,
-                reply_markup=draft_edit_kb("draft", "✅ Отправить админу", include_cancel=True, include_checked_on=False),
+                reply_markup=draft_edit_kb("draft", t("btn_send_to_admin", "ru"), include_cancel=True, include_checked_on=False),
                 disable_web_page_preview=True,
             )
         except Exception:
             await answer(
                 message,
                 draft_text,
-                draft_edit_kb("draft", "✅ Отправить админу", include_cancel=True, include_checked_on=False),
+                draft_edit_kb("draft", t("btn_send_to_admin", "ru"), include_cancel=True, include_checked_on=False),
                 "plugins",
             )
     else:
         await answer(
             message,
             draft_text,
-            draft_edit_kb("draft", "✅ Отправить админу", include_cancel=True, include_checked_on=False),
+            draft_edit_kb("draft", t("btn_send_to_admin", "ru"), include_cancel=True, include_checked_on=False),
             "plugins",
         )
 
 
 @router.callback_query(UserFlow.confirming_submission, F.data == "draft:submit")
 async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
     lang = await get_language(cb, state)
     data = await state.get_data()
     user = cb.from_user
+
+    if cb.message:
+        await cb.message.answer(
+            t("rules_before_submit", lang),
+            disable_web_page_preview=True,
+            parse_mode=ParseMode.HTML,
+        )
 
     plugin_dict = data.get("plugin", {})
     plugin = PluginData(
@@ -681,11 +909,15 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(UserFlow.entering_admin_comment, F.data == "comment:skip")
 async def on_admin_comment_skip(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
     await _finalize_submission(cb, state, comment=None)
 
 
 @router.message(UserFlow.entering_admin_comment)
 async def on_admin_comment(message: Message, state: FSMContext) -> None:
+    if not await _ensure_not_banned(message, state):
+        return
     text = extract_html_text(message).strip()
     await _finalize_submission(message, state, comment=text or None)
 
@@ -695,6 +927,8 @@ async def _finalize_submission(
     state: FSMContext,
     comment: str | None,
 ) -> None:
+    if not await _ensure_not_banned(target, state):
+        return
     data = await state.get_data()
     payload = data.get("pending_payload", {})
     request_type = data.get("pending_request_type", "new")
@@ -704,10 +938,17 @@ async def _finalize_submission(
     if comment:
         payload["admin_comment"] = comment
 
-    entry = add_request(payload, request_type=request_type)
+    draft_id = data.get("draft_request_id")
+    if draft_id:
+        entry = promote_draft_request(draft_id, payload)
+        if entry is None:
+            entry = add_request(payload, request_type=request_type)
+    else:
+        entry = add_request(payload, request_type=request_type)
     asyncio.create_task(notify_admins_request(target.bot, entry))
 
     await state.set_state(UserFlow.idle)
+    await state.update_data(draft_request_id=None)
     await answer(target, t(reply_key, lang), main_menu_kb(lang), "welcome")
     if isinstance(target, CallbackQuery):
         await target.answer()
@@ -715,59 +956,79 @@ async def _finalize_submission(
 
 async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
     payload = entry.get("payload", {})
+    name = payload.get("plugin", {}).get("name") or payload.get("icon", {}).get("name", "")
     plugin = payload.get("plugin", {})
+    icon = payload.get("icon", {})
     user_id = payload.get("user_id", 0)
     username = payload.get("username", "")
     request_type = entry.get("type", "new")
     admin_comment = payload.get("admin_comment")
+    submission_type = payload.get("submission_type") or ("icon" if icon else "plugin")
 
     user_link = f"@{username}" if username else f"<code>{user_id}</code>"
-    settings = "✅" if plugin.get("has_ui_settings") else "❌"
+    settings = "Yes" if plugin.get("has_ui_settings") else "No"
 
     if request_type == "update":
         changelog = payload.get("changelog", "—")
         old_plugin = payload.get("old_plugin", {})
         old_version = old_plugin.get("ru", {}).get("version") or "?"
 
-        text = (
-            f"🔄 <b>Обновление</b>\n\n"
-            f"<b>ID:</b> <code>{entry['id']}</code>\n"
-            f"<b>Плагин:</b> {plugin.get('name', '—')}\n"
-            f"<b>Версия:</b> {old_version} → {plugin.get('version', '—')}\n"
-            f"<b>Мин. версия:</b> {plugin.get('min_version', '—')}\n\n"
-            f"<b>Изменения:</b>\n<blockquote>{changelog}</blockquote>\n\n"
-            f"<b>От:</b> {user_link}"
+        text = t(
+            "admin_request_update",
+            "ru",
+            id=entry["id"],
+            name=plugin.get("name", "—"),
+            old_version=old_version,
+            version=plugin.get("version", "—"),
+            min_version=plugin.get("min_version", "—"),
+            changelog=changelog,
+            user=user_link,
         )
     elif request_type == "delete":
         delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
-        text = (
-            f"🗑 <b>Удаление</b>\n\n"
-            f"<b>ID:</b> <code>{entry['id']}</code>\n"
-            f"<b>Плагин:</b> {plugin.get('name', '—')}\n"
-            f"<b>Slug:</b> <code>{delete_slug}</code>\n\n"
-            f"<b>От:</b> {user_link}"
+        text = t(
+            "admin_request_delete",
+            "ru",
+            id=entry["id"],
+            name=plugin.get("name", "—"),
+            slug=delete_slug,
+            user=user_link,
+        )
+    elif submission_type == "icon":
+        icon = payload.get("icon", {})
+        text = t(
+            "admin_request_icon",
+            "ru",
+            id=entry["id"],
+            name=icon.get("name", "—"),
+            author=icon.get("author", "—"),
+            version=icon.get("version", "—"),
+            count=icon.get("count", 0),
+            user=user_link,
         )
     else:
         draft_text = build_channel_post(entry)
-        text = (
-            f"📥 <b>Новый плагин</b>\n\n"
-            f"<b>ID:</b> <code>{entry['id']}</code>\n\n"
-            f"{draft_text}\n\n"
-            f"<b>От:</b> {user_link}"
+        text = t(
+            "admin_request_plugin",
+            "ru",
+            id=entry["id"],
+            draft=draft_text,
+            user=user_link,
         )
 
-    file_path = plugin.get("file_path")
+    file_path = plugin.get("file_path") or icon.get("file_path")
     if request_type == "delete":
         kb = admin_review_kb(
             entry["id"],
             user_id,
-            submit_label="🗑 Удалить",
+            submit_label=t("btn_delete", "ru"),
             submit_callback=f"adm:delete:{entry['id']}",
         )
     else:
         kb = admin_review_kb(entry["id"], user_id)
 
-    for admin_id in get_admins():
+    target_admins = get_admins_icons() if submission_type == "icon" else get_admins_plugins()
+    for admin_id in target_admins:
         try:
             if file_path and Path(file_path).exists():
                 await bot.send_document(
@@ -789,7 +1050,7 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
             if admin_comment:
                 await bot.send_message(
                     admin_id,
-                    f"💬 <b>Комментарий:</b>\n<blockquote>{html.escape(admin_comment)}</blockquote>",
+                    t("admin_request_comment", "ru", comment=html.escape(admin_comment)),
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )

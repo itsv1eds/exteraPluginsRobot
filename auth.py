@@ -1,5 +1,6 @@
 import asyncio
-from pathlib import Path
+import logging
+import pathlib
 from telethon import TelegramClient
 from telethon.errors import (
     SessionPasswordNeededError,

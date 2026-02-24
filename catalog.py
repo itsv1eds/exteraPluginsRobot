@@ -3,62 +3,115 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from storage import load_icons, load_plugins
 
-
 CatalogEntry = Dict[str, Any]
+
+_plugins_cache: Optional[List[CatalogEntry]] = None
+_icons_cache: Optional[List[CatalogEntry]] = None
+_published_plugins_cache: Optional[List[CatalogEntry]] = None
+_published_icons_cache: Optional[List[CatalogEntry]] = None
+_slug_index: Dict[str, CatalogEntry] = {}
+_icon_slug_index: Dict[str, CatalogEntry] = {}
+
+
+def invalidate_catalog_cache() -> None:
+    global _plugins_cache, _icons_cache, _published_plugins_cache, _published_icons_cache
+    global _slug_index, _icon_slug_index
+    _plugins_cache = None
+    _icons_cache = None
+    _published_plugins_cache = None
+    _published_icons_cache = None
+    _slug_index.clear()
+    _icon_slug_index.clear()
 
 
 def _load_plugins() -> List[CatalogEntry]:
+    global _plugins_cache, _slug_index
+    if _plugins_cache is not None:
+        return _plugins_cache
+    
     database = load_plugins()
-    return database.get("plugins", [])
+    _plugins_cache = database.get("plugins", [])
+    
+    _slug_index.clear()
+    for plugin in _plugins_cache:
+        slug = _normalize_slug(plugin.get("slug"))
+        if slug:
+            _slug_index[slug] = plugin
+    
+    return _plugins_cache
 
 
 def _load_icons() -> List[CatalogEntry]:
+    global _icons_cache, _icon_slug_index
+    if _icons_cache is not None:
+        return _icons_cache
+    
     database = load_icons()
-    return database.get("iconpacks", [])
+    _icons_cache = database.get("iconpacks", [])
+    
+    _icon_slug_index.clear()
+    for icon in _icons_cache:
+        slug = _normalize_slug(icon.get("slug"))
+        if slug:
+            _icon_slug_index[slug] = icon
+    
+    return _icons_cache
+
+
+def _get_published_plugins() -> List[CatalogEntry]:
+    global _published_plugins_cache
+    if _published_plugins_cache is not None:
+        return _published_plugins_cache
+    
+    _published_plugins_cache = [p for p in _load_plugins() if p.get("status") == "published"]
+    return _published_plugins_cache
+
+
+def _get_published_icons() -> List[CatalogEntry]:
+    global _published_icons_cache
+    if _published_icons_cache is not None:
+        return _published_icons_cache
+    
+    _published_icons_cache = [i for i in _load_icons() if i.get("status") == "published"]
+    return _published_icons_cache
 
 
 def list_published_plugins(limit: Optional[int] = None) -> List[CatalogEntry]:
-    entries = [plugin for plugin in _load_plugins() if plugin.get("status") == "published"]
+    entries = _get_published_plugins()
     if limit is not None:
         return entries[:limit]
     return entries
 
 
 def list_published_icons(limit: Optional[int] = None) -> List[CatalogEntry]:
-    entries = [icon for icon in _load_icons() if icon.get("status") == "published"]
+    entries = _get_published_icons()
     if limit is not None:
         return entries[:limit]
     return entries
 
 
 def list_plugins_by_category(category_key: str) -> List[CatalogEntry]:
-    entries = list_published_plugins()
+    entries = _get_published_plugins()
     if category_key in (None, "", "_all"):
         return entries
-    return [
-        plugin
-        for plugin in entries
-        if plugin.get("category") == category_key
-    ]
+    return [p for p in entries if p.get("category") == category_key]
 
 
 def list_icons_by_category(category_key: str) -> List[CatalogEntry]:
-    entries = list_published_icons()
+    entries = _get_published_icons()
     if category_key in (None, "", "_all"):
         return entries
-    return [
-        icon
-        for icon in entries
-        if icon.get("category") == category_key
-    ]
+    return [i for i in entries if i.get("category") == category_key]
 
 
 def search_plugins(query: str, limit: int = 10) -> List[CatalogEntry]:
     normalized = query.strip().lower()
-    entries = list_published_plugins()
+    entries = _get_published_plugins()
+    
     if not normalized:
-        random.shuffle(entries)
-        return entries[:limit]
+        result = entries.copy()
+        random.shuffle(result)
+        return result[:limit]
 
     def matches(plugin: CatalogEntry) -> bool:
         haystack_parts: List[str] = []
@@ -74,17 +127,19 @@ def search_plugins(query: str, limit: int = 10) -> List[CatalogEntry]:
         haystack = " ".join(filter(None, haystack_parts)).lower()
         return normalized in haystack
 
-    results = [plugin for plugin in entries if matches(plugin)]
+    results = [p for p in entries if matches(p)]
     random.shuffle(results)
     return results[:limit]
 
 
 def search_icons(query: str, limit: int = 10) -> List[CatalogEntry]:
     normalized = query.strip().lower()
-    entries = list_published_icons()
+    entries = _get_published_icons()
+    
     if not normalized:
-        random.shuffle(entries)
-        return entries[:limit]
+        result = entries.copy()
+        random.shuffle(result)
+        return result[:limit]
 
     def matches(icon: CatalogEntry) -> bool:
         haystack_parts: List[str] = []
@@ -99,7 +154,7 @@ def search_icons(query: str, limit: int = 10) -> List[CatalogEntry]:
         haystack = " ".join(filter(None, haystack_parts)).lower()
         return normalized in haystack
 
-    results = [icon for icon in entries if matches(icon)]
+    results = [i for i in entries if matches(i)]
     random.shuffle(results)
     return results[:limit]
 
@@ -121,36 +176,38 @@ def find_plugin_by_slug(slug: Optional[str]) -> Optional[CatalogEntry]:
     target = _normalize_slug(slug)
     if not target:
         return None
-    for plugin in _load_plugins():
-        if _normalize_slug(plugin.get("slug")) == target:
-            return plugin
-    return None
+    
+    _load_plugins()
+    return _slug_index.get(target)
 
 
 def find_icon_by_slug(slug: Optional[str]) -> Optional[CatalogEntry]:
     target = _normalize_slug(slug)
     if not target:
         return None
-    for icon in _load_icons():
-        if _normalize_slug(icon.get("slug")) == target:
-            return icon
-    return None
+    
+    _load_icons()
+    return _icon_slug_index.get(target)
 
 
 def find_user_plugins(user_id: int, username: str = "") -> List[CatalogEntry]:
     results = []
+    handle = f"@{username.lower()}" if username else ""
     
-    for plugin in list_published_plugins():
+    for plugin in _get_published_plugins():
         submitters = plugin.get("submitters", [])
+        
         for sub in submitters:
             if sub.get("user_id") == user_id:
                 results.append(plugin)
                 break
         else:
-            if username:
-                handle = f"@{username.lower()}"
+            if handle:
                 authors = plugin.get("authors", {})
                 handles = authors.get("handles", [])
+                raw_blocks = plugin.get("raw_blocks", {}) or {}
+                raw_ru = raw_blocks.get("ru") if isinstance(raw_blocks.get("ru"), dict) else {}
+                raw_en = raw_blocks.get("en") if isinstance(raw_blocks.get("en"), dict) else {}
                 
                 if any(h.lower() == handle for h in handles):
                     results.append(plugin)
@@ -161,22 +218,37 @@ def find_user_plugins(user_id: int, username: str = "") -> List[CatalogEntry]:
                     if handle in author_text:
                         results.append(plugin)
                         break
+                else:
+                    raw_author_text = " ".join(
+                        filter(
+                            None,
+                            [
+                                (raw_ru.get("author") or ""),
+                                (raw_ru.get("author_channel") or ""),
+                                (raw_en.get("author") or ""),
+                                (raw_en.get("author_channel") or ""),
+                            ],
+                        )
+                    ).lower()
+                    if handle and handle in raw_author_text:
+                        results.append(plugin)
     
     return results
 
 
 def find_user_icons(user_id: int, username: str = "") -> List[CatalogEntry]:
     results = []
+    handle = f"@{username.lower()}" if username else ""
     
-    for icon in list_published_icons():
+    for icon in _get_published_icons():
         submitters = icon.get("submitters", [])
+        
         for sub in submitters:
             if sub.get("user_id") == user_id:
                 results.append(icon)
                 break
         else:
-            if username:
-                handle = f"@{username.lower()}"
+            if handle:
                 authors = icon.get("authors", {})
                 handles = authors.get("handles", [])
                 
@@ -187,9 +259,7 @@ def find_user_icons(user_id: int, username: str = "") -> List[CatalogEntry]:
 
 
 def find_plugins_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
-    normalized: Set[str] = {
-        _normalize_handle(handle) for handle in handles if handle
-    }
+    normalized: Set[str] = {_normalize_handle(h) for h in handles if h}
     normalized.discard("")
     if not normalized:
         return []
@@ -197,15 +267,19 @@ def find_plugins_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
     results: List[CatalogEntry] = []
     for plugin in _load_plugins():
         authors = plugin.get("authors", {})
-        raw_blocks = plugin.get("raw_blocks", {})
+        raw_blocks = plugin.get("raw_blocks", {}) or {}
+        raw_ru = raw_blocks.get("ru") if isinstance(raw_blocks.get("ru"), dict) else {}
+        raw_en = raw_blocks.get("en") if isinstance(raw_blocks.get("en"), dict) else {}
         haystack = " ".join(
             filter(
                 None,
                 [
                     authors.get("ru"),
                     authors.get("en"),
-                    raw_blocks.get("ru") if isinstance(raw_blocks.get("ru"), str) else "",
-                    raw_blocks.get("en") if isinstance(raw_blocks.get("en"), str) else "",
+                    raw_ru.get("author") or "",
+                    raw_en.get("author") or "",
+                    raw_ru.get("author_channel") or "",
+                    raw_en.get("author_channel") or "",
                 ],
             )
         ).lower()
@@ -217,9 +291,7 @@ def find_plugins_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
 
 
 def find_icons_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
-    normalized: Set[str] = {
-        _normalize_handle(handle) for handle in handles if handle
-    }
+    normalized: Set[str] = {_normalize_handle(h) for h in handles if h}
     normalized.discard("")
     if not normalized:
         return []

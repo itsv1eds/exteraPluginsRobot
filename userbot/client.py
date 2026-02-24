@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -11,12 +12,21 @@ from telethon.extensions import html as telethon_html
 from channel_parser import parse_channel_post
 from storage import load_plugins, save_plugins, load_icons, save_icons, load_config
 from bot.cache import invalidate
+from catalog import invalidate_catalog_cache
 
 logger = logging.getLogger(__name__)
 
 CONFIG = load_config()
-SYNC_CHANNEL_USERNAME = CONFIG.get("channel", {}).get("username", "")
-SYNC_CHANNEL_ID = CONFIG.get("channel", {}).get("id", -100123456789)
+SYNC_CHANNEL_USERNAME = CONFIG.get("channel", {}).get("username", "exteraPluginsSup")
+SYNC_CHANNEL_ID = CONFIG.get("channel", {}).get("id", -1003869091631)
+ICONS_CHANNEL_USERNAME = CONFIG.get("icons_channel", {}).get("username", "exteraIcons")
+ICONS_CHANNEL_ID = CONFIG.get("icons_channel", {}).get("id", None)
+
+
+def _invalidate_all() -> None:
+    invalidate("plugins")
+    invalidate("icons")
+    invalidate_catalog_cache()
 
 
 class UserbotClient:
@@ -39,6 +49,8 @@ class UserbotClient:
         self.client = TelegramClient(session_path, api_id, api_hash)
         self._publish_entity = None
         self._sync_entity = None
+        self._icons_publish_entity = None
+        self._icons_sync_entity = None
         self._started = False
     
     @classmethod
@@ -76,24 +88,42 @@ class UserbotClient:
     
     async def get_publish_entity(self):
         if not self._publish_entity:
-            # Try channel ID first (more reliable)
             try:
                 self._publish_entity = await self.client.get_entity(SYNC_CHANNEL_ID)
             except Exception:
-                # Fallback to username
                 channel = CONFIG.get("publish_channel", "exteraPluginsSup")
                 self._publish_entity = await self.client.get_entity(channel)
         return self._publish_entity
     
     async def get_sync_entity(self):
         if not self._sync_entity:
-            # Try channel ID first (more reliable)
             try:
                 self._sync_entity = await self.client.get_entity(SYNC_CHANNEL_ID)
             except Exception:
-                # Fallback to username
                 self._sync_entity = await self.client.get_entity(SYNC_CHANNEL_USERNAME)
         return self._sync_entity
+
+    async def get_icons_publish_entity(self):
+        if not self._icons_publish_entity:
+            try:
+                if ICONS_CHANNEL_ID:
+                    self._icons_publish_entity = await self.client.get_entity(ICONS_CHANNEL_ID)
+                else:
+                    raise ValueError("Missing icons channel ID")
+            except Exception:
+                self._icons_publish_entity = await self.client.get_entity(ICONS_CHANNEL_USERNAME)
+        return self._icons_publish_entity
+
+    async def get_icons_sync_entity(self):
+        if not self._icons_sync_entity:
+            try:
+                if ICONS_CHANNEL_ID:
+                    self._icons_sync_entity = await self.client.get_entity(ICONS_CHANNEL_ID)
+                else:
+                    raise ValueError("Missing icons channel ID")
+            except Exception:
+                self._icons_sync_entity = await self.client.get_entity(ICONS_CHANNEL_USERNAME)
+        return self._icons_sync_entity
 
     def _parse_html(self, text: str) -> tuple[str, list]:
         start_token = "\uFFF0BQ_START\uFFF0"
@@ -202,6 +232,141 @@ class UserbotClient:
             "chat_id": entity.id,
             "link": f"https://t.me/{channel_username}/{message.id}",
         }
+
+
+    async def publish_post(self, text: str) -> Dict[str, Any]:
+        entity = await self.get_publish_entity()
+        message = await self.client.send_message(
+            entity,
+            text,
+            parse_mode="html",
+            link_preview=False,
+        )
+
+        channel_username = CONFIG.get("publish_channel", "xzcvzxa")
+
+        return {
+            "message_id": message.id,
+            "chat_id": entity.id,
+            "link": f"https://t.me/{channel_username}/{message.id}",
+        }
+
+    async def schedule_post(self, text: str, schedule_date: datetime) -> Dict[str, Any]:
+        entity = await self.get_publish_entity()
+        message = await self.client.send_message(
+            entity,
+            text,
+            parse_mode="html",
+            link_preview=False,
+            schedule=schedule_date,
+        )
+
+        channel_username = CONFIG.get("publish_channel", "xzcvzxa")
+
+        return {
+            "message_id": message.id,
+            "chat_id": entity.id,
+            "link": f"https://t.me/{channel_username}/{message.id}",
+            "scheduled_at": schedule_date.isoformat(),
+        }
+
+    async def schedule_plugin(
+        self,
+        text: str,
+        schedule_date: datetime,
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        entity = await self.get_publish_entity()
+
+        if file_path and Path(file_path).exists():
+            message = await self.client.send_file(
+                entity,
+                file=file_path,
+                caption=text,
+                parse_mode="html",
+                schedule=schedule_date,
+            )
+        else:
+            message = await self.client.send_message(
+                entity,
+                text,
+                parse_mode="html",
+                link_preview=False,
+                schedule=schedule_date,
+            )
+
+        channel_username = CONFIG.get("publish_channel", "xzcvzxa")
+
+        return {
+            "message_id": message.id,
+            "chat_id": entity.id,
+            "link": f"https://t.me/{channel_username}/{message.id}",
+            "scheduled_at": schedule_date.isoformat(),
+        }
+
+    async def schedule_icon(
+        self,
+        text: str,
+        schedule_date: datetime,
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        entity = await self.get_icons_publish_entity()
+
+        if file_path and Path(file_path).exists():
+            message = await self.client.send_file(
+                entity,
+                file=file_path,
+                caption=text,
+                parse_mode="html",
+                schedule=schedule_date,
+            )
+        else:
+            message = await self.client.send_message(
+                entity,
+                text,
+                parse_mode="html",
+                link_preview=False,
+                schedule=schedule_date,
+            )
+
+        channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
+
+        return {
+            "message_id": message.id,
+            "chat_id": entity.id,
+            "link": f"https://t.me/{channel_username}/{message.id}",
+            "scheduled_at": schedule_date.isoformat(),
+        }
+
+    async def publish_icon(
+        self,
+        text: str,
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        entity = await self.get_icons_publish_entity()
+
+        if file_path and Path(file_path).exists():
+            message = await self.client.send_file(
+                entity,
+                file=file_path,
+                caption=text,
+                parse_mode="html",
+            )
+        else:
+            message = await self.client.send_message(
+                entity,
+                text,
+                parse_mode="html",
+                link_preview=False,
+            )
+
+        channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
+
+        return {
+            "message_id": message.id,
+            "chat_id": entity.id,
+            "link": f"https://t.me/{channel_username}/{message.id}",
+        }
     
     async def update_message(
         self,
@@ -219,9 +384,9 @@ class UserbotClient:
                     entity,
                     message_id,
                     text,
-                    parse_mode="html",
                     file=file_path,
                     attributes=attributes,
+                    parse_mode="html",
                 )
             else:
                 await self.client.edit_message(
@@ -243,18 +408,57 @@ class UserbotClient:
             logger.error(f"Failed to update message {message_id}: {e}")
             raise
 
+
+    async def update_icon_message(
+        self,
+        message_id: int,
+        text: str,
+        file_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        entity = await self.get_icons_publish_entity()
+
+        try:
+            if file_path and Path(file_path).exists():
+                file_name = Path(file_path).name
+                attributes = [DocumentAttributeFilename(file_name)]
+                await self.client.edit_message(
+                    entity,
+                    message_id,
+                    text,
+                    file=file_path,
+                    attributes=attributes,
+                    parse_mode="html",
+                )
+            else:
+                await self.client.edit_message(
+                    entity,
+                    message_id,
+                    text,
+                    parse_mode="html",
+                )
+
+            channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
+
+            return {
+                "message_id": message_id,
+                "chat_id": entity.id,
+                "link": f"https://t.me/{channel_username}/{message_id}",
+                "updated": True,
+            }
+        except Exception as e:
+            logger.error(f"Failed to update icon message {message_id}: {e}")
+            raise
+
     async def delete_message(self, message_id: int) -> None:
         entity = await self.get_publish_entity()
         await self.client.delete_messages(entity, message_id)
     
     async def full_sync(self, limit: int = 0) -> Dict[str, int]:
         stats = {"plugins": 0, "icons": 0, "skipped": 0, "errors": 0}
-        
-        entity = await self.get_sync_entity()
-        
+
         plugins_db = load_plugins()
         icons_db = load_icons()
-        
+
         existing_plugin_ids = {
             p.get("channel_message", {}).get("message_id")
             for p in plugins_db.get("plugins", [])
@@ -263,72 +467,80 @@ class UserbotClient:
             i.get("channel_message", {}).get("message_id")
             for i in icons_db.get("iconpacks", [])
         }
-        
-        all_messages: List[Message] = []
-        async for msg in self.client.iter_messages(entity, limit=limit or None):
-            all_messages.append(msg)
-        
-        logger.info(f"Fetched {len(all_messages)} messages")
-        
-        media_groups: Dict[int, List[Message]] = {}
-        standalone: List[Message] = []
-        
-        for msg in all_messages:
-            if msg.grouped_id:
-                media_groups.setdefault(msg.grouped_id, []).append(msg)
-            else:
-                standalone.append(msg)
-        
-        for group_id, messages in media_groups.items():
-            try:
-                result = self._process_group(messages, entity)
-                if not result:
-                    stats["skipped"] += len(messages)
-                    continue
-                
-                entry, content_type, msg_id = result
-                
-                if content_type == "plugin" and msg_id not in existing_plugin_ids:
-                    plugins_db.setdefault("plugins", []).append(entry)
-                    existing_plugin_ids.add(msg_id)
-                    stats["plugins"] += 1
-                elif content_type == "icon" and msg_id not in existing_icon_ids:
-                    icons_db.setdefault("iconpacks", []).append(entry)
-                    existing_icon_ids.add(msg_id)
-                    stats["icons"] += 1
+
+        async def sync_entity(entity, target: str) -> None:
+            all_messages: List[Message] = []
+            async for msg in self.client.iter_messages(entity, limit=limit or None):
+                all_messages.append(msg)
+
+            logger.info(f"Fetched {len(all_messages)} messages")
+
+            media_groups: Dict[int, List[Message]] = {}
+            standalone: List[Message] = []
+
+            for msg in all_messages:
+                if msg.grouped_id:
+                    media_groups.setdefault(msg.grouped_id, []).append(msg)
                 else:
-                    stats["skipped"] += 1
-            except Exception as e:
-                logger.error(f"Error processing group {group_id}: {e}")
-                stats["errors"] += 1
-        
-        for msg in standalone:
-            try:
-                result = self._process_standalone(msg, entity)
-                if not result:
-                    stats["skipped"] += 1
-                    continue
-                
-                entry, content_type = result
-                
-                if content_type == "plugin" and msg.id not in existing_plugin_ids:
-                    plugins_db.setdefault("plugins", []).append(entry)
-                    existing_plugin_ids.add(msg.id)
-                    stats["plugins"] += 1
-                elif content_type == "icon" and msg.id not in existing_icon_ids:
-                    icons_db.setdefault("iconpacks", []).append(entry)
-                    existing_icon_ids.add(msg.id)
-                    stats["icons"] += 1
-                else:
-                    stats["skipped"] += 1
-            except Exception as e:
-                logger.error(f"Error processing message {msg.id}: {e}")
-                stats["errors"] += 1
-        
+                    standalone.append(msg)
+
+            for group_id, messages in media_groups.items():
+                try:
+                    result = self._process_group(messages, entity)
+                    if not result:
+                        stats["skipped"] += len(messages)
+                        continue
+
+                    entry, content_type, msg_id = result
+
+                    if content_type == "plugin" and target == "plugins" and msg_id not in existing_plugin_ids:
+                        plugins_db.setdefault("plugins", []).append(entry)
+                        existing_plugin_ids.add(msg_id)
+                        stats["plugins"] += 1
+                    elif content_type == "icon" and target == "icons" and msg_id not in existing_icon_ids:
+                        icons_db.setdefault("iconpacks", []).append(entry)
+                        existing_icon_ids.add(msg_id)
+                        stats["icons"] += 1
+                    else:
+                        stats["skipped"] += 1
+                except Exception as e:
+                    logger.error(f"Error processing group {group_id}: {e}")
+                    stats["errors"] += 1
+
+            for msg in standalone:
+                try:
+                    result = self._process_standalone(msg, entity)
+                    if not result:
+                        stats["skipped"] += 1
+                        continue
+
+                    entry, content_type = result
+
+                    if content_type == "plugin" and target == "plugins" and msg.id not in existing_plugin_ids:
+                        plugins_db.setdefault("plugins", []).append(entry)
+                        existing_plugin_ids.add(msg.id)
+                        stats["plugins"] += 1
+                    elif content_type == "icon" and target == "icons" and msg.id not in existing_icon_ids:
+                        icons_db.setdefault("iconpacks", []).append(entry)
+                        existing_icon_ids.add(msg.id)
+                        stats["icons"] += 1
+                    else:
+                        stats["skipped"] += 1
+                except Exception as e:
+                    logger.error(f"Error processing message {msg.id}: {e}")
+                    stats["errors"] += 1
+
+        plugin_entity = await self.get_sync_entity()
+        await sync_entity(plugin_entity, "plugins")
+
+        if ICONS_CHANNEL_ID or ICONS_CHANNEL_USERNAME:
+            icons_entity = await self.get_icons_sync_entity()
+            await sync_entity(icons_entity, "icons")
+
         save_plugins(plugins_db)
         save_icons(icons_db)
-        invalidate()
-        
+        _invalidate_all()
+
         logger.info(f"Sync complete: {stats}")
         return stats
     

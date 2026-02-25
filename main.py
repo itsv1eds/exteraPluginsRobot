@@ -20,6 +20,26 @@ class PollingFilter(logging.Filter):
         return "getUpdates" not in msg and "Updates handled" not in msg
 
 
+def _resolve_level(level_name: str | None, default: int) -> int:
+    if not level_name:
+        return default
+    value = str(level_name).upper()
+    parsed = getattr(logging, value, None)
+    return parsed if isinstance(parsed, int) else default
+
+
+def _configure_external_loggers() -> None:
+    config = get_config()
+    logging_cfg = config.get("logging", {}) if isinstance(config, dict) else {}
+    levels = logging_cfg.get("levels", {}) if isinstance(logging_cfg, dict) else {}
+
+    aiogram_event_level = _resolve_level(levels.get("aiogram.event"), logging.WARNING)
+    telethon_uploads_level = _resolve_level(levels.get("telethon.client.uploads"), logging.WARNING)
+
+    logging.getLogger("aiogram.event").setLevel(aiogram_event_level)
+    logging.getLogger("telethon.client.uploads").setLevel(telethon_uploads_level)
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -29,13 +49,17 @@ logger = logging.getLogger(__name__)
 logging.getLogger("aiogram.event").addFilter(PollingFilter())
 logging.getLogger("aiogram.dispatcher").addFilter(PollingFilter())
 logging.getLogger("httpx").addFilter(PollingFilter())
+_configure_external_loggers()
 
 
 async def start_userbot() -> None:
     from userbot.client import get_userbot
-    userbot = await get_userbot()
-    if userbot:
-        logger.info("Userbot started in background")
+    try:
+        userbot = await get_userbot()
+        if userbot:
+            logger.info("Userbot started in background")
+    except Exception:
+        logger.exception("Failed to initialize userbot in background")
 
 
 async def on_startup(bot: Bot) -> None:

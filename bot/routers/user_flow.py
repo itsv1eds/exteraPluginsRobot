@@ -1,5 +1,6 @@
 import asyncio
 import html
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
@@ -57,6 +58,18 @@ from request_store import (
 from user_store import get_user_language, is_user_banned, set_user_language
 
 router = Router(name="user-flow")
+logger = logging.getLogger(__name__)
+
+
+def _submission_type(payload: Dict[str, Any]) -> str:
+    icon = payload.get("icon", {})
+    return payload.get("submission_type") or ("icon" if icon else "plugin")
+
+
+def _submission_name(payload: Dict[str, Any], submission_type: str) -> str:
+    if submission_type == "icon":
+        return (payload.get("icon", {}) or {}).get("name", "") or "unknown"
+    return (payload.get("plugin", {}) or {}).get("name", "") or "unknown"
 
 
 async def _ensure_not_banned(target: Message | CallbackQuery, state: FSMContext) -> bool:
@@ -165,8 +178,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     user_id = message.from_user.id if message.from_user else None
 
     if is_user_banned(user_id):
+        lang = get_lang(user_id)
         await message.answer(
-            t("user_banned", "ru"),
+            t("user_banned", lang),
             parse_mode=ParseMode.HTML,
         )
         return
@@ -177,9 +191,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         await state.set_state(UserFlow.idle)
         await answer(message, t("welcome", lang), main_menu_kb(lang), "welcome")
     else:
+        lang = get_lang(user_id)
         await state.set_state(UserFlow.choosing_language)
         await message.answer(
-            t("language_prompt", "ru"),
+            t("language_prompt", lang),
             reply_markup=language_kb(),
             parse_mode=ParseMode.HTML,
         )
@@ -189,9 +204,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 async def cmd_lang(message: Message, state: FSMContext) -> None:
     if is_user_banned(message.from_user.id):
         return
+    lang = get_lang(message.from_user.id if message.from_user else None)
     await state.set_state(UserFlow.choosing_language)
     await message.answer(
-        t("language_prompt", "ru"),
+        t("language_prompt", lang),
         reply_markup=language_kb(),
         parse_mode=ParseMode.HTML,
     )
@@ -206,9 +222,6 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
 
 
     if cb.from_user:
-        get_user_language(cb.from_user.id)
-        from user_store import set_user_language
-
         set_user_language(cb.from_user.id, lang)
     await state.update_data(lang=lang)
     await state.set_state(UserFlow.idle)
@@ -699,7 +712,13 @@ async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(
         cb,
         draft_text,
-        draft_edit_kb("draft", t("btn_send_to_admin", lang), include_cancel=True, include_checked_on=False),
+        draft_edit_kb(
+            "draft",
+            t("btn_send_to_admin", lang),
+            include_cancel=True,
+            include_checked_on=False,
+            lang=lang,
+        ),
         "plugins",
     )
     await cb.answer()
@@ -708,25 +727,26 @@ async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(UserFlow.confirming_submission, F.data.startswith("draft:edit:"))
 async def on_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
     field = cb.data.split(":")[2]
+    lang = await get_language(cb, state)
 
     if field in {"description", "usage"}:
         await state.update_data(edit_field=field)
-        await answer(cb, "Выберите язык:", draft_lang_kb("draft", field), None)
+        await answer(cb, t("admin_choose_language", lang), draft_lang_kb("draft", field, lang=lang), None)
         await cb.answer()
         return
 
     if field == "category":
         await state.update_data(edit_field=field)
-        await answer(cb, "Выберите категорию:", draft_category_kb("draft", get_categories()), None)
+        await answer(cb, t("admin_choose_category", lang), draft_category_kb("draft", get_categories(), lang=lang), None)
         await cb.answer()
         return
 
     prompt = {
-        "name": "Введите новое название:",
-        "author": "Введите автора:",
-        "settings": "Есть настройки? (да/нет)",
-        "min_version": "Введите минимальную версию:",
-    }.get(field, "Введите значение:")
+        "name": t("admin_prompt_new_name", lang),
+        "author": t("admin_prompt_author", lang),
+        "settings": t("admin_prompt_has_settings", lang),
+        "min_version": t("admin_prompt_min_version", lang),
+    }.get(field, t("admin_prompt_value", lang))
 
     await state.update_data(edit_field=field)
     await state.set_state(UserFlow.editing_draft_field)
@@ -767,7 +787,13 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(
         cb,
         draft_text,
-        draft_edit_kb("draft", t("btn_send_to_admin", lang), include_cancel=True, include_checked_on=False),
+        draft_edit_kb(
+            "draft",
+            t("btn_send_to_admin", lang),
+            include_cancel=True,
+            include_checked_on=False,
+            lang=lang,
+        ),
         "plugins",
     )
     await cb.answer()
@@ -781,7 +807,13 @@ async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(
         cb,
         draft_text,
-        draft_edit_kb("draft", t("btn_send_to_admin", lang), include_cancel=True, include_checked_on=False),
+        draft_edit_kb(
+            "draft",
+            t("btn_send_to_admin", lang),
+            include_cancel=True,
+            include_checked_on=False,
+            lang=lang,
+        ),
         "plugins",
     )
     await cb.answer()
@@ -789,10 +821,11 @@ async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(UserFlow.editing_draft_field)
 async def on_draft_field_value(message: Message, state: FSMContext) -> None:
+    lang = await get_language(message, state)
     text = extract_html_text(message).strip()
     if not text:
         await message.answer(
-            t("need_text", "ru"),
+            t("need_text", lang),
             disable_web_page_preview=True,
             parse_mode=ParseMode.HTML,
         )
@@ -838,21 +871,39 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
                 chat_id=message.chat.id,
                 message_id=draft_message_id,
                 parse_mode=ParseMode.HTML,
-                reply_markup=draft_edit_kb("draft", t("btn_send_to_admin", "ru"), include_cancel=True, include_checked_on=False),
+                reply_markup=draft_edit_kb(
+                    "draft",
+                    t("btn_send_to_admin", lang),
+                    include_cancel=True,
+                    include_checked_on=False,
+                    lang=lang,
+                ),
                 disable_web_page_preview=True,
             )
         except Exception:
             await answer(
                 message,
                 draft_text,
-                draft_edit_kb("draft", t("btn_send_to_admin", "ru"), include_cancel=True, include_checked_on=False),
+                draft_edit_kb(
+                    "draft",
+                    t("btn_send_to_admin", lang),
+                    include_cancel=True,
+                    include_checked_on=False,
+                    lang=lang,
+                ),
                 "plugins",
             )
     else:
         await answer(
             message,
             draft_text,
-            draft_edit_kb("draft", t("btn_send_to_admin", "ru"), include_cancel=True, include_checked_on=False),
+            draft_edit_kb(
+                "draft",
+                t("btn_send_to_admin", lang),
+                include_cancel=True,
+                include_checked_on=False,
+                lang=lang,
+            ),
             "plugins",
         )
 
@@ -945,6 +996,19 @@ async def _finalize_submission(
             entry = add_request(payload, request_type=request_type)
     else:
         entry = add_request(payload, request_type=request_type)
+
+    submission_type = _submission_type(payload)
+    logger.info(
+        "event=submission.created request_id=%s request_type=%s submission_type=%s user_id=%s username=%s item=%s has_comment=%s",
+        entry.get("id"),
+        entry.get("type", request_type),
+        submission_type,
+        payload.get("user_id"),
+        payload.get("username") or "-",
+        _submission_name(payload, submission_type),
+        bool(comment),
+    )
+
     asyncio.create_task(notify_admins_request(target.bot, entry))
 
     await state.set_state(UserFlow.idle)
@@ -956,79 +1020,89 @@ async def _finalize_submission(
 
 async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
     payload = entry.get("payload", {})
-    name = payload.get("plugin", {}).get("name") or payload.get("icon", {}).get("name", "")
     plugin = payload.get("plugin", {})
     icon = payload.get("icon", {})
     user_id = payload.get("user_id", 0)
     username = payload.get("username", "")
     request_type = entry.get("type", "new")
     admin_comment = payload.get("admin_comment")
-    submission_type = payload.get("submission_type") or ("icon" if icon else "plugin")
+    submission_type = _submission_type(payload)
+    request_id = entry.get("id", "?")
 
     user_link = f"@{username}" if username else f"<code>{user_id}</code>"
-    settings = "Yes" if plugin.get("has_ui_settings") else "No"
-
-    if request_type == "update":
-        changelog = payload.get("changelog", "—")
-        old_plugin = payload.get("old_plugin", {})
-        old_version = old_plugin.get("ru", {}).get("version") or "?"
-
-        text = t(
-            "admin_request_update",
-            "ru",
-            id=entry["id"],
-            name=plugin.get("name", "—"),
-            old_version=old_version,
-            version=plugin.get("version", "—"),
-            min_version=plugin.get("min_version", "—"),
-            changelog=changelog,
-            user=user_link,
-        )
-    elif request_type == "delete":
-        delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
-        text = t(
-            "admin_request_delete",
-            "ru",
-            id=entry["id"],
-            name=plugin.get("name", "—"),
-            slug=delete_slug,
-            user=user_link,
-        )
-    elif submission_type == "icon":
-        icon = payload.get("icon", {})
-        text = t(
-            "admin_request_icon",
-            "ru",
-            id=entry["id"],
-            name=icon.get("name", "—"),
-            author=icon.get("author", "—"),
-            version=icon.get("version", "—"),
-            count=icon.get("count", 0),
-            user=user_link,
-        )
-    else:
-        draft_text = build_channel_post(entry)
-        text = t(
-            "admin_request_plugin",
-            "ru",
-            id=entry["id"],
-            draft=draft_text,
-            user=user_link,
-        )
-
     file_path = plugin.get("file_path") or icon.get("file_path")
-    if request_type == "delete":
-        kb = admin_review_kb(
-            entry["id"],
-            user_id,
-            submit_label=t("btn_delete", "ru"),
-            submit_callback=f"adm:delete:{entry['id']}",
-        )
-    else:
-        kb = admin_review_kb(entry["id"], user_id)
-
     target_admins = get_admins_icons() if submission_type == "icon" else get_admins_plugins()
+
+    logger.info(
+        "event=submission.notify_admins.start request_id=%s request_type=%s submission_type=%s item=%s admins=%s",
+        request_id,
+        request_type,
+        submission_type,
+        _submission_name(payload, submission_type),
+        len(target_admins),
+    )
+
+    delivered = 0
+    failed = 0
     for admin_id in target_admins:
+        admin_lang = get_lang(admin_id)
+        if request_type == "update":
+            changelog = payload.get("changelog", "—")
+            old_plugin = payload.get("old_plugin", {})
+            old_locale = old_plugin.get(admin_lang) or old_plugin.get("ru") or {}
+            old_version = old_locale.get("version") or "?"
+            text = t(
+                "admin_request_update",
+                admin_lang,
+                id=entry["id"],
+                name=plugin.get("name", "—"),
+                old_version=old_version,
+                version=plugin.get("version", "—"),
+                min_version=plugin.get("min_version", "—"),
+                changelog=changelog,
+                user=user_link,
+            )
+            kb = admin_review_kb(entry["id"], user_id, lang=admin_lang)
+        elif request_type == "delete":
+            delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
+            text = t(
+                "admin_request_delete",
+                admin_lang,
+                id=entry["id"],
+                name=plugin.get("name", "—"),
+                slug=delete_slug,
+                user=user_link,
+            )
+            kb = admin_review_kb(
+                entry["id"],
+                user_id,
+                submit_label=t("btn_delete", admin_lang),
+                submit_callback=f"adm:delete:{entry['id']}",
+                lang=admin_lang,
+            )
+        elif submission_type == "icon":
+            text = t(
+                "admin_request_icon",
+                admin_lang,
+                id=entry["id"],
+                name=icon.get("name", "—"),
+                author=icon.get("author", "—"),
+                version=icon.get("version", "—"),
+                count=icon.get("count", 0),
+                user=user_link,
+            )
+            kb = admin_review_kb(entry["id"], user_id, lang=admin_lang)
+        else:
+            draft_text = build_channel_post(entry)
+            text = t(
+                "admin_request_plugin",
+                admin_lang,
+                id=entry["id"],
+                draft=draft_text,
+                user=user_link,
+            )
+            kb = admin_review_kb(entry["id"], user_id, lang=admin_lang)
+
         try:
             if file_path and Path(file_path).exists():
                 await bot.send_document(
@@ -1037,7 +1111,6 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
                     caption=text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=kb,
-                    disable_web_page_preview=True,
                 )
             else:
                 await bot.send_message(
@@ -1050,10 +1123,25 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
             if admin_comment:
                 await bot.send_message(
                     admin_id,
-                    t("admin_request_comment", "ru", comment=html.escape(admin_comment)),
+                    t("admin_request_comment", admin_lang, comment=html.escape(admin_comment)),
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )
+            delivered += 1
         except Exception:
-            pass
+            failed += 1
+            logger.warning(
+                "event=submission.notify_admins.failed request_id=%s admin_id=%s submission_type=%s",
+                request_id,
+                admin_id,
+                submission_type,
+                exc_info=True,
+            )
         continue
+
+    logger.info(
+        "event=submission.notify_admins.done request_id=%s delivered=%s failed=%s",
+        request_id,
+        delivered,
+        failed,
+    )

@@ -3,6 +3,9 @@ from typing import Any, Dict, List
 from storage import StorageError, load_subscriptions, save_subscriptions
 
 
+ALL_SUBSCRIPTION_KEY = "all"
+
+
 def _load_db() -> Dict[str, Any]:
     try:
         return load_subscriptions()
@@ -55,7 +58,8 @@ def list_subscribers(slug: str) -> List[int]:
     subs = db.get("subscriptions", {})
     users = []
     for uid, user_subs in subs.items():
-        if slug in (user_subs or []):
+        user_subs = user_subs or []
+        if slug in user_subs or ALL_SUBSCRIPTION_KEY in user_subs:
             try:
                 users.append(int(uid))
             except ValueError:

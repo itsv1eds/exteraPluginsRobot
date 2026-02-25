@@ -363,10 +363,13 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "btn_skip": {"ru": "Пропустить", "en": "Skip"},
     "btn_submit": {"ru": "Предложить", "en": "Submit"},
     "btn_subscribe": {"ru": "Уведомлять", "en": "Notify"},
-    "btn_subscriptions": {"ru": "Подписки", "en": "Subscriptions"},
+    "btn_subscriptions": {"ru": "Уведомления", "en": "Notifications"},
     "btn_support": {"ru": "Техподдержка", "en": "Support"},
     "btn_unsubscribe": {"ru": "Не уведомлять", "en": "Mute"},
     "btn_update": {"ru": "Обновить", "en": "Update"},
+
+    "btn_notify_all_on": {"ru": "Все плагины: ✅", "en": "All plugins: ✅"},
+    "btn_notify_all_off": {"ru": "Все плагины: ❌", "en": "All plugins: ❌"},
 
     "rules_before_submit": {
         "ru": "Обязательно прочитайте правила распространения плагинов перед отправкой заявки администратору: https://teletype.in/@exterasquad/forum-rules-ru#veFl",
@@ -619,20 +622,29 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "subscribed": {
-        "ru": "Подписка включена",
-        "en": "Subscribed",
+        "ru": "Уведомления включены",
+        "en": "Notifications enabled",
     },
     "version_same": {
         "ru": "Версия не изменилась",
         "en": "Version is unchanged",
     },
     "subscriptions_empty": {
-        "ru": "Нет подписок",
-        "en": "No subscriptions",
+        "ru": "Нет уведомлений",
+        "en": "No notifications",
     },
     "subscriptions_title": {
-        "ru": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> Мои подписки",
-        "en": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> My subscriptions",
+        "ru": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> Мои уведомления",
+        "en": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> My notifications",
+    },
+
+    "notify_all_title": {
+        "ru": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> Уведомления на все плагины",
+        "en": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> All plugins notifications",
+    },
+    "notify_all_item": {
+        "ru": "Уведомления на все плагины",
+        "en": "All plugins notifications",
     },
 
     "admin_rejected_done": {
@@ -669,8 +681,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "🕐 Schedule",
     },
     "unsubscribed": {
-        "ru": "Подписка отключена",
-        "en": "Unsubscribed",
+        "ru": "Уведомления отключены",
+        "en": "Notifications disabled",
     },
 
     "update_sent": {

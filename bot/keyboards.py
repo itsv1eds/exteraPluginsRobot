@@ -57,6 +57,17 @@ def categories_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def notify_all_kb(lang: str, enabled: bool, back: str = "profile") -> InlineKeyboardMarkup:
+    toggle_cb = "profile:notify_all:toggle"
+    toggle_label = t("btn_notify_all_on", lang) if enabled else t("btn_notify_all_off", lang)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=toggle_label, callback_data=toggle_cb, style="success")],
+            [InlineKeyboardButton(text=t("btn_back", lang), callback_data=back, style="danger")],
+        ]
+    )
+
+
 def icon_draft_edit_kb(
     prefix: str = "adm_icon",
     submit_label: Optional[str] = None,
@@ -285,7 +296,12 @@ def search_kb(lang: str, show_retry: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def profile_kb(lang: str, has_plugins: bool, has_icons: bool) -> InlineKeyboardMarkup:
+def profile_kb(
+    lang: str,
+    has_plugins: bool,
+    has_icons: bool,
+    notify_all_enabled: bool = False,
+) -> InlineKeyboardMarkup:
     rows = []
     
     if has_plugins:

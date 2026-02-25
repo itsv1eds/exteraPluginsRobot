@@ -44,6 +44,7 @@ from subscription_store import (
     list_subscriptions,
     remove_subscription,
 )
+from subscription_store import ALL_SUBSCRIPTION_KEY
 
 router = Router(name="catalog-flow")
 
@@ -187,6 +188,7 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
 
     text = build_plugin_preview(plugin, lang)
     link = plugin.get("channel_message", {}).get("link")
+    notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False
     subscribed = is_subscribed(cb.from_user.id, slug) if cb.from_user else False
     subscribe_label = t("btn_unsubscribe", lang) if subscribed else t("btn_subscribe", lang)
     data = await state.get_data()
@@ -198,8 +200,16 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
             link,
             back,
             lang,
-            subscribe_callback=f"sub:toggle:{encode_slug(slug)}:catalog",
-            subscribe_label=subscribe_label,
+            subscribe_callback=(
+                "profile:subscriptions"
+                if notify_all_enabled
+                else f"sub:toggle:{encode_slug(slug)}:catalog"
+            ),
+            subscribe_label=(
+                t("btn_notify_all_on", lang)
+                if notify_all_enabled
+                else subscribe_label
+            ),
         ),
         "plugins",
     )
@@ -218,6 +228,7 @@ async def on_my_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
 
     text = build_plugin_preview(plugin, lang)
     link = plugin.get("channel_message", {}).get("link")
+    notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False
     subscribed = is_subscribed(cb.from_user.id, slug) if cb.from_user else False
     subscribe_label = t("btn_unsubscribe", lang) if subscribed else t("btn_subscribe", lang)
     data = await state.get_data()
@@ -231,8 +242,16 @@ async def on_my_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
             lang,
             update_callback=f"profile:update:{encode_slug(slug)}",
             delete_callback=f"profile:delete:{encode_slug(slug)}",
-            subscribe_callback=f"sub:toggle:{encode_slug(slug)}:my",
-            subscribe_label=subscribe_label,
+            subscribe_callback=(
+                "profile:subscriptions"
+                if notify_all_enabled
+                else f"sub:toggle:{encode_slug(slug)}:my"
+            ),
+            subscribe_label=(
+                t("btn_notify_all_on", lang)
+                if notify_all_enabled
+                else subscribe_label
+            ),
         ),
         "profile",
     )
@@ -248,6 +267,11 @@ async def on_toggle_subscription(cb: CallbackQuery, state: FSMContext) -> None:
 
     if not cb.from_user:
         await cb.answer()
+        return
+
+    if is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY):
+        await cb.answer(t("btn_notify_all_on", lang), show_alert=True)
+        await _show_subscriptions(cb, state, page=0)
         return
 
     if is_subscribed(cb.from_user.id, slug):
@@ -393,8 +417,35 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
     if not user_plugins and not user_icons:
         text += f"\n\n{t('profile_empty', lang)}"
 
-    await answer(cb, text, profile_kb(lang, bool(user_plugins), bool(user_icons)), "profile")
+    notify_all_enabled = is_subscribed(user.id, ALL_SUBSCRIPTION_KEY)
+    await answer(
+        cb,
+        text,
+        profile_kb(lang, bool(user_plugins), bool(user_icons), notify_all_enabled=notify_all_enabled),
+        "profile",
+    )
     await cb.answer()
+
+
+@router.callback_query(F.data.startswith("subs:all_toggle:"))
+async def on_subscriptions_all_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    user = cb.from_user
+    if not user:
+        await cb.answer()
+        return
+
+    page = int(cb.data.split(":")[2])
+
+    enabled = is_subscribed(user.id, ALL_SUBSCRIPTION_KEY)
+    if enabled:
+        remove_subscription(user.id, ALL_SUBSCRIPTION_KEY)
+        await cb.answer(t("unsubscribed", lang))
+    else:
+        add_subscription(user.id, ALL_SUBSCRIPTION_KEY)
+        await cb.answer(t("subscribed", lang))
+
+    await _show_subscriptions(cb, state, page=page)
 
 
 @router.callback_query(F.data == "profile:subscriptions")
@@ -416,6 +467,9 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
         return
 
     slugs = list_subscriptions(user.id)
+    all_enabled = ALL_SUBSCRIPTION_KEY in slugs
+    if all_enabled:
+        slugs = [ALL_SUBSCRIPTION_KEY]
     if not slugs:
         await answer(target, t("subscriptions_empty", lang), search_kb(lang), "profile")
         await target.answer()
@@ -428,6 +482,9 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
 
     items = []
     for slug in page_slugs:
+        if slug == ALL_SUBSCRIPTION_KEY:
+            continue
+
         plugin = find_plugin_by_slug(slug)
         locale = plugin.get(lang) if plugin else {}
         name = (locale.get("name") if locale else None) or slug
@@ -435,12 +492,20 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
 
     caption = f"{t('subscriptions_title', lang)}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
     await state.update_data(catalog_back="profile:subscriptions")
-    await answer(
-        target,
-        caption,
-        paginated_list_kb(items, page, total_pages, "subs:page", "profile"),
-        "profile",
+
+    kb = paginated_list_kb(items, page, total_pages, "subs:page", "profile")
+    toggle_label = t("btn_notify_all_on", lang) if all_enabled else t("btn_notify_all_off", lang)
+    kb.inline_keyboard.insert(
+        0,
+        [
+            InlineKeyboardButton(
+                text=toggle_label,
+                callback_data=f"subs:all_toggle:{page}",
+                style="success",
+            )
+        ],
     )
+    await answer(target, caption, kb, "profile")
     await target.answer()
 
 

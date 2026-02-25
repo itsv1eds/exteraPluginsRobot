@@ -369,6 +369,8 @@ async def _scheduled_publish_loop(bot) -> None:
             try:
                 from bot.services.publish import publish_icon, publish_plugin
 
+                logger.info("Publishing scheduled request %s", request_id)
+
                 if payload.get("submission_type") == "icon" or payload.get("icon"):
                     result = await publish_icon(entry)
                     notify_key = "notify_icon_published"
@@ -379,6 +381,9 @@ async def _scheduled_publish_loop(bot) -> None:
                     notify_key = "notify_published"
                     name = (payload.get("plugin") or {}).get("name", "")
                     version = (payload.get("plugin") or {}).get("version")
+
+                update_request_payload(request_id, {"scheduled_at": None})
+                update_request_status(request_id, "published")
 
                 user_id = payload.get("user_id")
                 if user_id:

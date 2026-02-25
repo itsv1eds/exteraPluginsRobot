@@ -163,7 +163,11 @@ async def publish_plugin(entry: Dict[str, Any]) -> Dict[str, Any]:
     update_request_status(entry.get("id"), "published")
     
     config = get_config()
-    channel_username = config.get("publish_channel", "xzcvzxa")
+    channel_username = (
+        (config.get("channel", {}) or {}).get("username")
+        or config.get("publish_channel")
+        or "xzcvzxa"
+    )
     
     add_to_catalog(
         entry,
@@ -200,7 +204,10 @@ async def publish_icon(entry: Dict[str, Any]) -> Dict[str, Any]:
     update_request_status(entry.get("id"), "published")
 
     config = get_config()
-    channel_username = config.get("icons_channel", {}).get("username", "exteraIcons")
+    channel_username = (
+        (config.get("icons_channel", {}) or {}).get("username")
+        or "exteraIcons"
+    )
 
     add_icon_to_catalog(
         entry,

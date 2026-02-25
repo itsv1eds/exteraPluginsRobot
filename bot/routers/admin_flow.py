@@ -50,6 +50,8 @@ from bot.keyboards import (
 from bot.services.publish import (
     add_submitter_to_plugin,
     add_submitter_to_iconpack,
+    add_to_catalog,
+    add_icon_to_catalog,
     build_channel_post,
     build_icon_channel_post,
     publish_icon,
@@ -335,6 +337,72 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(AdminFlow.menu)
     await answer(message, t("admin_title", "ru"), admin_menu_kb(_admin_menu_role(message)), "profile")
+
+
+@router.message(Command("sync_catalog"))
+async def cmd_sync_catalog(message: Message) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+
+    text = (message.text or "").strip()
+    parts = text.split()
+    if len(parts) < 3:
+        await message.answer(
+            "Использование: /sync_catalog <t.me link> <request_id>",
+            disable_web_page_preview=True,
+        )
+        return
+
+    link = parts[1].strip()
+    request_id = parts[2].strip()
+
+    entry = get_request_by_id(request_id)
+    if not entry:
+        await message.answer(t("not_found", "ru"))
+        return
+
+    try:
+        # link: https://t.me/<username>/<message_id>
+        raw = link.split("?")[0].rstrip("/")
+        msg_id_str = raw.rsplit("/", 1)[-1]
+        msg_id = int(msg_id_str)
+        channel_username = raw.split("/")[-2]
+    except Exception:
+        await message.answer("Неверная ссылка")
+        return
+
+    cfg = get_config()
+    payload = entry.get("payload", {})
+
+    if payload.get("submission_type") == "icon" or payload.get("icon"):
+        chat_id = (cfg.get("icons_channel", {}) or {}).get("id")
+        if not chat_id:
+            await message.answer("icons_channel.id не задан в config")
+            return
+        add_icon_to_catalog(
+            entry,
+            msg_id,
+            chat_id,
+            channel_username,
+            payload.get("user_id"),
+            payload.get("username", ""),
+        )
+    else:
+        chat_id = (cfg.get("channel", {}) or {}).get("id")
+        if not chat_id:
+            await message.answer("channel.id не задан в config")
+            return
+        add_to_catalog(
+            entry,
+            msg_id,
+            chat_id,
+            channel_username,
+            payload.get("user_id"),
+            payload.get("username", ""),
+        )
+
+    update_request_status(request_id, "published")
+    await message.answer("Добавлено в каталог")
 
 
 @router.callback_query(F.data == "adm:cancel")

@@ -1,0 +1,49 @@
+{
+  "admins_super": [
+    1282540315
+  ],
+  "admins_plugins": [],
+  "admins_icons": [],
+  "bot_token": "",
+  "publish_channel": "",
+  "userbot": {
+    "api_id": 123,
+    "api_hash": ""
+  },
+  "channel": {
+    "id": -100123,
+    "username": "mychannel",
+    "title": "ExteraPluginsTest",
+    "default_tags": [
+      "#Plugins@exteraPluginsSup"
+    ],
+    "locale_order": [
+      "ru",
+      "en"
+    ]
+  },
+  "icons_channel": {
+    "id": -100123,
+    "username": "exteraIconsTest",
+    "title": "exteraIcons",
+    "default_tags": [
+      "#IconPack@exteraIcons"
+    ],
+    "locale_order": [
+      "ru",
+      "en"
+    ]
+  },
+  "storage": {
+    "data_dir": "data/data",
+    "base_dir": "",
+    "uploads_dir": "uploads"
+  },
+  "logging": {
+    "levels": {
+      "aiogram.event": "WARNING",
+      "telethon.client.uploads": "WARNING"
+    }
+  },
+  "updated_at": "2026-01-27T05:06:51.215877"
+}

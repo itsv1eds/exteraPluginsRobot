@@ -22,6 +22,7 @@ from bot.callback_tokens import decode_slug, encode_slug
 from bot.helpers import answer, strip_html
 from bot.keyboards import (
     catalog_main_kb,
+    page_picker_kb,
     paginated_list_kb,
     plugin_detail_kb,
     profile_kb,
@@ -136,6 +137,42 @@ async def on_catalog(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
+@router.callback_query(F.data == "page:noop")
+async def on_page_noop(cb: CallbackQuery) -> None:
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("page:picker|"))
+async def on_page_picker(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    payload = cb.data.split("|")
+    if len(payload) != 4:
+        await cb.answer()
+        return
+
+    nav_prefix = payload[1]
+    try:
+        page = int(payload[2])
+        total_pages = int(payload[3])
+    except ValueError:
+        await cb.answer()
+        return
+
+    if not cb.message:
+        await cb.answer()
+        return
+
+    await cb.message.edit_reply_markup(
+        reply_markup=page_picker_kb(
+            nav_prefix=nav_prefix,
+            current_page=page,
+            total_pages=total_pages,
+            lang=lang,
+        )
+    )
+    await cb.answer()
+
+
 @router.callback_query(F.data.startswith("cat:"))
 async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
     parts = cb.data.split(":")
@@ -172,7 +209,7 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(catalog_back=f"cat:{cat_key}:{page}")
 
     image_key = "cat_all" if cat_key == "_all" else f"cat_{cat_key}"
-    await answer(cb, caption, paginated_list_kb(items, page, total_pages, f"cat:{cat_key}", "catalog"), image_key)
+    await answer(cb, caption, paginated_list_kb(items, page, total_pages, f"cat:{cat_key}", "catalog", lang=lang), image_key)
     await cb.answer()
 
 
@@ -340,7 +377,7 @@ async def on_search_query(message: Message, state: FSMContext) -> None:
 
     text = t("search_results", lang, count=len(results))
     await state.update_data(catalog_back="search:0")
-    await answer(message, text, paginated_list_kb(items, 0, 1, "search", "catalog"), "catalog")
+    await answer(message, text, paginated_list_kb(items, 0, 1, "search", "catalog", lang=lang), "catalog")
 
 
 @router.callback_query(F.data.startswith("icons:"))
@@ -370,7 +407,7 @@ async def on_icons_list(cb: CallbackQuery, state: FSMContext) -> None:
 
     caption = f"{t('icons_title', lang)}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
     await state.update_data(catalog_back=f"icons:{page}")
-    await answer(cb, caption, paginated_list_kb(items, page, total_pages, "icons", "catalog"), "iconpacks")
+    await answer(cb, caption, paginated_list_kb(items, page, total_pages, "icons", "catalog", lang=lang), "iconpacks")
     await cb.answer()
 
 
@@ -493,7 +530,7 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
     caption = f"{t('subscriptions_title', lang)}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
     await state.update_data(catalog_back="profile:subscriptions")
 
-    kb = paginated_list_kb(items, page, total_pages, "subs:page", "profile")
+    kb = paginated_list_kb(items, page, total_pages, "subs:page", "profile", lang=lang)
     toggle_label = t("btn_notify_all_on", lang) if all_enabled else t("btn_notify_all_off", lang)
     kb.inline_keyboard.insert(
         0,
@@ -547,7 +584,7 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
 
     title = t("icons_title" if kind == "icons" else "catalog_title", lang)
     caption = f"{title}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
-    await answer(cb, caption, paginated_list_kb(items, page, total_pages, f"my:{kind}", "profile"), "profile")
+    await answer(cb, caption, paginated_list_kb(items, page, total_pages, f"my:{kind}", "profile", lang=lang), "profile")
     await cb.answer()
 
 

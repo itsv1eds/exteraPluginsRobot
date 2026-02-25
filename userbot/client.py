@@ -52,6 +52,7 @@ class UserbotClient:
         self._icons_publish_entity = None
         self._icons_sync_entity = None
         self._started = False
+        self._disabled = False
     
     @classmethod
     async def get_instance(cls) -> Optional["UserbotClient"]:
@@ -68,17 +69,31 @@ class UserbotClient:
                 cls._instance = cls(int(api_id), str(api_hash))
             
             if not cls._instance._started:
-                await cls._instance.start()
+                started = await cls._instance.start()
+                if not started:
+                    return None
             
             return cls._instance
     
-    async def start(self) -> None:
+    async def start(self) -> bool:
         if self._started:
-            return
-        
-        await self.client.start()
+            return True
+        if self._disabled:
+            return False
+
+        await self.client.connect()
+        if not await self.client.is_user_authorized():
+            self._disabled = True
+            await self.client.disconnect()
+            logger.warning(
+                "Userbot session is not authorized. Run `python auth.py` "
+                "or `docker compose run --rm --profile tools auth` first."
+            )
+            return False
+
         self._started = True
         logger.info("Userbot started")
+        return True
     
     async def stop(self) -> None:
         if self._started:

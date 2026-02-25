@@ -1,0 +1,29 @@
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: extera-plugins-bot
+    restart: unless-stopped
+    command: ["python", "main.py"]
+    environment:
+      DATA_DIR: /app/data/data
+    network_mode: bridge
+    volumes:
+      - ./config.json:/app/config.json
+      - ./data:/app/data
+      - ./sessions:/app/sessions
+
+  auth:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: extera-plugins-auth
+    profiles: ["tools"]
+    command: ["python", "auth.py"]
+    stdin_open: true
+    tty: true
+    network_mode: bridge
+    volumes:
+      - ./config.json:/app/config.json
+      - ./sessions:/app/sessions

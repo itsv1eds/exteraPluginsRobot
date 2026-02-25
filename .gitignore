@@ -4,5 +4,5 @@ config.json
 /sessions
 /uploads
 /data
-
-
+/docs
+config.json

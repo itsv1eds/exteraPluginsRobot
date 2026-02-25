@@ -1,6 +1,6 @@
 import asyncio
 import logging
-import pathlib
+from pathlib import Path
 from telethon import TelegramClient
 from telethon.errors import (
     SessionPasswordNeededError,
@@ -10,7 +10,7 @@ from telethon.errors import (
     PhoneNumberBannedError,
 )
 import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from storage import load_config
 
 CONFIG = load_config()
@@ -45,13 +45,12 @@ async def authorize():
    
     phone = input("📱 Введите номер телефона (с +): ").strip()
    
-    # Попытки запроса кода (на случай временных ошибок)
     for attempt in range(1, 4):
         try:
             print(f"🔄 Попытка {attempt}/3: запрос кода...")
             sent_code = await client.send_code_request(
                 phone,
-                force_sms=True,  # Пытаемся заставить SMS (редко работает, но пробуем)
+                force_sms=True,
             )
             print("✅ Запрос кода прошёл успешно!")
             print(f"   Тип доставки: {sent_code.type}")
@@ -60,7 +59,7 @@ async def authorize():
                 print("   → Код должен прийти в чат 'Telegram' в официальном приложении")
             elif sent_code.type == "sms":
                 print("   → Код должен прийти по SMS")
-            break  # Успех — выходим из цикла
+            break
         except FloodWaitError as e:
             print(f"⏳ FloodWait: нужно подождать {e.seconds} секунд")
             await asyncio.sleep(e.seconds + 10)
@@ -82,7 +81,7 @@ async def authorize():
     print()
     print("📨 Ожидаем код...")
    
-    for _ in range(5):  # 5 попыток ввода кода
+    for _ in range(5):
         code = input("🔢 Введите код из Telegram (или SMS): ").strip()
        
         try:

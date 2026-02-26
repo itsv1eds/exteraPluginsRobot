@@ -578,8 +578,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "<tg-emoji emoji-id=\"5208443540631229262\">❌</tg-emoji> <b>Submission rejected</b>\n\n{comment}",
     },
     "notify_subscription_update": {
-        "ru": "Плагин <b>{name}</b> обновился до версии <b>{version}</b>",
-        "en": "Plugin <b>{name}</b> updated to <b>{version}</b>",
+        "ru": "Плагин {name} обновился до версии <b>{version}</b>\n\n<b>Что нового:</b>\n<blockquote expandable>{changelog}</blockquote>",
+        "en": "Plugin {name} updated to <b>{version}</b>\n\n<b>What's new:</b>\n<blockquote expandable>{changelog}</blockquote>",
     },
     "notify_update_published": {
         "ru": "Обновление <b>{name}</b> опубликовано (v<b>{version}</b>)",

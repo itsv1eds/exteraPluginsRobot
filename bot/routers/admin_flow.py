@@ -318,21 +318,35 @@ def _render_request_draft(entry: dict) -> str:
     return build_channel_post({"payload": patched_payload})
 
 
-async def _notify_subscribers(bot, slug: str | None, plugin: dict) -> None:
+async def _notify_subscribers(
+    bot,
+    slug: str | None,
+    plugin: dict,
+    changelog: str | None = None,
+) -> None:
     if not slug:
         return
 
     entry = find_plugin_by_slug(slug) or {}
+    plugin_link = (entry.get("channel_message", {}) or {}).get("link")
+    changes = changelog or "—"
 
     for user_id in list_subscribers(slug):
         lang = get_lang(user_id)
         locale = _localized_block(entry, lang)
-        name = plugin.get("name") or locale.get("name") or slug
+        raw_name = plugin.get("name") or locale.get("name") or slug
+        name = f'<a href="{plugin_link}"><b>{raw_name}</b></a>' if plugin_link else f"<b>{raw_name}</b>"
         version = plugin.get("version") or locale.get("version") or "—"
         try:
             await bot.send_message(
                 user_id,
-                t("notify_subscription_update", lang, name=name, version=version),
+                t(
+                    "notify_subscription_update",
+                    lang,
+                    name=name,
+                    version=version,
+                    changelog=changes,
+                ),
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
@@ -2789,7 +2803,12 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             old_plugin = payload.get("old_plugin", {})
             result = await update_plugin(entry, old_plugin)
             update_slug = payload.get("update_slug") or payload.get("plugin", {}).get("id")
-            await _notify_subscribers(cb.bot, update_slug, payload.get("plugin", {}))
+            await _notify_subscribers(
+                cb.bot,
+                update_slug,
+                payload.get("plugin", {}),
+                payload.get("changelog"),
+            )
             notify_key = "notify_update_published"
         elif submission_type == "icon":
             result = await publish_icon(entry)
@@ -3070,5 +3089,3 @@ async def on_admin_ban_confirm(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer()
     except Exception:
         pass
-
-

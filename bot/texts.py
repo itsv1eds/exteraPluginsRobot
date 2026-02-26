@@ -411,11 +411,19 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "catalog_field_link": {"ru": "Ссылка", "en": "Link"},
     "catalog_field_min_version": {"ru": "Минимальная версия", "en": "Min version"},
     "catalog_inline_header": {
-        "ru": '<a href=\"tg://emoji?id=5208601792996217243">🧩</a><b>{name}</b> by <code>{author}</code>',
-        "en": '<a href=\"tg://emoji?id=5208601792996217243">🧩</a><b>{name}</b> by <code>{author}</code>',
+        "ru": '<a href=\"tg://emoji?id=5208601792996217243">🧩</a> <b>{name}</b> by <code>{author}</code>',
+        "en": '<a href=\"tg://emoji?id=5208601792996217243">🧩</a> <b>{name}</b> by <code>{author}</code>',
     },
     "catalog_inline_download": {"ru": "Download", "en": "Download"},
     "catalog_inline_no_description": {"ru": "—", "en": "—"},
+    "catalog_inline_quick_donate": {
+        "ru": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Поддержать канал:</b> {url}',
+        "en": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Support the channel:</b> {url}',
+    },
+    "catalog_inline_quick_inform": {
+        "ru": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Прочитай этот пост:</b> {url}',
+        "en": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Read this post:</b> {url}',
+    },
     "catalog_title": {
         "ru": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Каталог плагинов</b>",
         "en": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Plugin Catalog</b>",
@@ -570,8 +578,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "<tg-emoji emoji-id=\"5208443540631229262\">❌</tg-emoji> <b>Submission rejected</b>\n\n{comment}",
     },
     "notify_subscription_update": {
-        "ru": "Плагин <b>{name}</b> обновился до версии <b>{version}</b>",
-        "en": "Plugin <b>{name}</b> updated to <b>{version}</b>",
+        "ru": "Плагин {name} обновился до версии <b>{version}</b>\n\n<b>Что нового:</b>\n<blockquote expandable>{changelog}</blockquote>",
+        "en": "Plugin {name} updated to <b>{version}</b>\n\n<b>What's new:</b>\n<blockquote expandable>{changelog}</blockquote>",
     },
     "notify_update_published": {
         "ru": "Обновление <b>{name}</b> опубликовано (v<b>{version}</b>)",

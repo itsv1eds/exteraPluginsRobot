@@ -1,10 +1,8 @@
 import asyncio
-import json
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from storage import DATA_DIR
+from storage import load_users, save_users
 
 _users_cache: Dict[str, Dict[str, Any]] = {}
 _cache_loaded: bool = False
@@ -13,60 +11,63 @@ _dirty: bool = False
 _last_save: float = 0
 _SAVE_INTERVAL = 5.0
 
-DATA_FILE = DATA_DIR / "users.json"
 
-
-def _load_from_disk() -> Dict[str, Any]:
-    if not DATA_FILE.exists():
-        return {"users": {}}
+def _load_from_storage() -> Dict[str, Any]:
     try:
-        with DATA_FILE.open("r", encoding="utf-8") as f:
-            return json.load(f)
+        data = load_users()
     except Exception:
+        data = {"users": {}}
+    if not isinstance(data, dict):
         return {"users": {}}
+    users = data.get("users")
+    if not isinstance(users, dict):
+        data["users"] = {}
+    return data
 
 
-def _save_to_disk_sync(data: Dict[str, Any]) -> None:
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with DATA_FILE.open("w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def _save_to_storage_sync(data: Dict[str, Any]) -> None:
+    payload = data if isinstance(data, dict) else {"users": {}}
+    users = payload.get("users")
+    if not isinstance(users, dict):
+        payload = {"users": {}}
+    save_users(payload)
 
 
 async def _ensure_loaded() -> None:
     global _users_cache, _cache_loaded
-    
+
     if _cache_loaded:
         return
-    
+
     async with _cache_lock:
         if _cache_loaded:
             return
-        
-        data = await asyncio.to_thread(_load_from_disk)
+
+        data = await asyncio.to_thread(_load_from_storage)
         _users_cache = data.get("users", {})
         _cache_loaded = True
 
 
 async def _schedule_save() -> None:
     global _dirty, _last_save
-    
+
     _dirty = True
     now = time.time()
-    
+
     if now - _last_save < _SAVE_INTERVAL:
         return
-    
+
     _last_save = now
     _dirty = False
-    
+
     data = {"users": _users_cache.copy()}
-    await asyncio.to_thread(_save_to_disk_sync, data)
+    await asyncio.to_thread(_save_to_storage_sync, data)
 
 
 def _ensure_loaded_sync() -> None:
     global _users_cache, _cache_loaded
     if not _cache_loaded:
-        data = _load_from_disk()
+        data = _load_from_storage()
         _users_cache = data.get("users", {})
         _cache_loaded = True
 
@@ -83,34 +84,34 @@ def get_user(user_id: int) -> Dict[str, Any]:
 
 def set_user_language(user_id: int, language: str) -> None:
     _ensure_loaded_sync()
-    
+
     user_key = str(user_id)
     if user_key not in _users_cache:
         _users_cache[user_key] = {}
-    
+
     _users_cache[user_key]["language"] = language.lower()
-    
+
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(_schedule_save())
     except RuntimeError:
-        _save_to_disk_sync({"users": _users_cache})
+        _save_to_storage_sync({"users": _users_cache})
 
 
 def update_user(user_id: int, **fields: Any) -> None:
     _ensure_loaded_sync()
-    
+
     user_key = str(user_id)
     if user_key not in _users_cache:
         _users_cache[user_key] = {}
-    
+
     _users_cache[user_key].update(fields)
-    
+
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(_schedule_save())
     except RuntimeError:
-        _save_to_disk_sync({"users": _users_cache})
+        _save_to_storage_sync({"users": _users_cache})
 
 
 def is_user_banned(user_id: int) -> bool:
@@ -123,17 +124,17 @@ def ban_user(user_id: int, reason: str = "") -> None:
 
 def unban_user(user_id: int) -> None:
     _ensure_loaded_sync()
-    
+
     user_key = str(user_id)
     if user_key in _users_cache:
         _users_cache[user_key]["banned"] = False
         _users_cache[user_key].pop("ban_reason", None)
-        
+
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(_schedule_save())
         except RuntimeError:
-            _save_to_disk_sync({"users": _users_cache})
+            _save_to_storage_sync({"users": _users_cache})
 
 
 def get_banned_users() -> List[Dict[str, Any]]:
@@ -157,4 +158,4 @@ async def init_user_store() -> None:
 async def flush_user_store() -> None:
     if _dirty or _users_cache:
         data = {"users": _users_cache.copy()}
-        await asyncio.to_thread(_save_to_disk_sync, data)
+        await asyncio.to_thread(_save_to_storage_sync, data)

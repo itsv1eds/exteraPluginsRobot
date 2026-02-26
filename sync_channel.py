@@ -67,27 +67,31 @@ async def cmd_status(args: argparse.Namespace) -> None:
 
 
 async def cmd_clear(args: argparse.Namespace) -> None:
-    from pathlib import Path
-    import json
-    from storage import DATA_DIR
-    
-    data_dir = DATA_DIR
-    
+    from storage import (
+        flush_all,
+        save_icons,
+        save_plugins,
+        save_requests,
+        save_users,
+    )
+
     if args.what in ("all", "plugins"):
-        (data_dir / "databaseplugins.json").write_text('{"plugins": []}', encoding="utf-8")
+        save_plugins({"plugins": []})
         print("Плагины очищены")
     
     if args.what in ("all", "icons"):
-        (data_dir / "databaseicons.json").write_text('{"iconpacks": []}', encoding="utf-8")
+        save_icons({"iconpacks": []})
         print("Иконки очищены")
     
     if args.what in ("all", "requests"):
-        (data_dir / "databaserequests.json").write_text('{"requests": []}', encoding="utf-8")
+        save_requests({"requests": []})
         print("Заявки очищены")
     
     if args.what in ("all", "users"):
-        (data_dir / "databaseusers.json").write_text('{"users": {}}', encoding="utf-8")
+        save_users({"users": {}})
         print("Пользователи очищены")
+
+    await flush_all()
 
 
 def main() -> None:

@@ -593,6 +593,28 @@ async def on_inline(query: InlineQuery) -> None:
     text = (query.query or "").strip()
     lang = get_lang(query.from_user.id if query.from_user else None)
 
+    lowered = text.lower()
+    if lowered in {"donate", "inform"}:
+        url = "https://t.me/exteraPluginsSup/302" if lowered == "donate" else "https://t.me/exteraPluginsSup/372"
+        message_text = t(
+            "catalog_inline_quick_donate" if lowered == "donate" else "catalog_inline_quick_inform",
+            lang,
+            url=url,
+        )
+        description = strip_html(message_text)
+        result = InlineQueryResultArticle(
+            id=f"quick:{lowered}",
+            title=lowered,
+            description=description[:100],
+            input_message_content=InputTextMessageContent(
+                message_text=message_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=False,
+            ),
+        )
+        await query.answer([result], cache_time=60, is_personal=True)
+        return
+
     plugins = search_plugins(text, limit=10)
     icons = search_icons(text, limit=10)
 

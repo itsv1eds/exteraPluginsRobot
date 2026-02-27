@@ -63,13 +63,14 @@ from bot.services.publish import (
     update_icon_catalog_entry,
     update_catalog_entry,
 )
-from bot.services.submission import PluginData, process_plugin_file
+from bot.routers.catalog_flow import build_inline_preview, build_plugin_preview
+from bot.services.submission import PluginData, process_icon_file, process_plugin_file
 from bot.states import AdminFlow
 from bot.texts import TEXTS, t
 from catalog import find_icon_by_slug, find_plugin_by_slug, list_published_icons, list_published_plugins
 from request_store import get_request_by_id, get_requests, update_request_payload, update_request_status
 from storage import save_config
-from user_store import ban_user, get_banned_users, list_users, unban_user
+from user_store import ban_user, get_banned_users, get_user_language, is_broadcast_enabled, list_users, unban_user
 from subscription_store import list_subscribers
 
 logger = logging.getLogger(__name__)
@@ -1448,6 +1449,8 @@ async def on_admin_broadcast_confirm(cb: CallbackQuery, state: FSMContext) -> No
     for user in users:
         user_id = user.get("user_id")
         if not user_id or user.get("banned"):
+            continue
+        if not is_broadcast_enabled(int(user_id)):
             continue
         try:
             await cb.bot.send_message(

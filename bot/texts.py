@@ -425,6 +425,17 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Прочитай этот пост:</b> {url}',
         "en": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Read this post:</b> {url}',
     },
+
+    "broadcast_title": {"ru": "<b>Рассылка</b>", "en": "<b>Broadcast</b>"},
+    "btn_broadcast": {"ru": "📣 Рассылка", "en": "📣 Broadcast"},
+    "btn_broadcast_on": {"ru": "📣 Рассылка: ✅", "en": "📣 Broadcast: ✅"},
+    "btn_broadcast_off": {"ru": "📣 Рассылка: ❌", "en": "📣 Broadcast: ❌"},
+    "btn_broadcast_paid": {"ru": "Я заплатил за это.", "en": "I paid for this."},
+    "btn_broadcast_paid_disable": {"ru": "⭐️ Выключить за 50 Stars", "en": "⭐️ Disable for 50 Stars"},
+    "broadcast_paid_note": {"ru": "Платное выключение активно.", "en": "Paid disable is active."},
+    "broadcast_invoice_title": {"ru": "Платное выключение рассылки", "en": "Paid broadcast disable"},
+    "broadcast_invoice_description": {"ru": "Ты можешь выключить рассылку и беслпатно, это просто ПРИОРИТЕТНОЕ выключение.", "en": "You can disable broadcast for free, this is simply a PRIORITY disable."},
+    "broadcast_payment_thanks": {"ru": "Готово. Теперь рассылка выключена.", "en": "Done. Broadcast is now disabled."},
     "catalog_title": {
         "ru": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Каталог плагинов</b>",
         "en": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Plugin Catalog</b>",

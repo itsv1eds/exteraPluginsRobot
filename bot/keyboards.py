@@ -68,6 +68,25 @@ def notify_all_kb(lang: str, enabled: bool, back: str = "profile") -> InlineKeyb
     )
 
 
+def broadcast_kb(
+    lang: str,
+    enabled: bool,
+    paid: bool,
+    back: str = "profile",
+) -> InlineKeyboardMarkup:
+    toggle_cb = "profile:broadcast:toggle"
+    if paid:
+        toggle_label = f"{t('btn_broadcast_paid', lang)} {'✅' if enabled else '❌'}"
+    else:
+        toggle_label = t("btn_broadcast_on", lang) if enabled else t("btn_broadcast_off", lang)
+
+    rows = [[InlineKeyboardButton(text=toggle_label, callback_data=toggle_cb, style="success")]]
+    if not paid:
+        rows.append([InlineKeyboardButton(text=t("btn_broadcast_paid_disable", lang), callback_data="profile:broadcast:pay")])
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=back, style="danger")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def icon_draft_edit_kb(
     prefix: str = "adm_icon",
     submit_label: Optional[str] = None,
@@ -369,6 +388,13 @@ def profile_kb(
         InlineKeyboardButton(
             text=t("btn_subscriptions", lang),
             callback_data="profile:subscriptions",
+        )
+    ])
+
+    rows.append([
+        InlineKeyboardButton(
+            text=t("btn_broadcast", lang),
+            callback_data="profile:broadcast",
         )
     ])
 

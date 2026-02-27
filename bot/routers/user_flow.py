@@ -9,7 +9,7 @@ from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, Message, PreCheckoutQuery
 
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
@@ -59,9 +59,35 @@ from request_store import (
     update_request_payload,
 )
 from user_store import get_user_language, is_user_banned, set_user_language
+from user_store import set_broadcast_enabled, set_paid_broadcast_disable
 
 router = Router(name="user-flow")
 logger = logging.getLogger(__name__)
+
+
+@router.pre_checkout_query()
+async def on_pre_checkout_query(pre_checkout_query: PreCheckoutQuery) -> None:
+    await pre_checkout_query.answer(ok=True)
+
+
+@router.message(F.successful_payment)
+async def on_successful_payment(message: Message) -> None:
+    payment = message.successful_payment
+    if not payment:
+        return
+
+    if (payment.invoice_payload or "") != "simple_payment:broadcast_disable":
+        return
+
+    if not message.from_user:
+        return
+
+    user_id = message.from_user.id
+    set_paid_broadcast_disable(user_id, True)
+    set_broadcast_enabled(user_id, False)
+
+    lang = get_lang(user_id)
+    await message.answer(t("broadcast_payment_thanks", lang), parse_mode=ParseMode.HTML)
 
 
 def _submission_type(payload: Dict[str, Any]) -> str:

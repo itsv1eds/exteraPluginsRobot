@@ -26,6 +26,7 @@ from bot.keyboards import (
     paginated_list_kb,
     plugin_detail_kb,
     profile_kb,
+    broadcast_kb,
     search_kb,
 )
 from bot.states import UserFlow
@@ -46,6 +47,10 @@ from subscription_store import (
     remove_subscription,
 )
 from subscription_store import ALL_SUBSCRIPTION_KEY
+from user_store import (
+    has_paid_broadcast_disable,
+    is_broadcast_enabled,
+)
 
 router = Router(name="catalog-flow")
 
@@ -142,6 +147,67 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
 async def on_catalog(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await answer(cb, t("catalog_title", lang), catalog_main_kb(get_categories(), lang), "catalog")
+    await cb.answer()
+
+
+async def _show_broadcast_settings(target: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(target, state)
+    user = target.from_user
+    if not user:
+        await target.answer()
+        return
+
+    paid = has_paid_broadcast_disable(user.id)
+    enabled = is_broadcast_enabled(user.id)
+
+    text = f"{t('broadcast_title', lang)}"
+    if paid:
+        text += f"\n{t('broadcast_paid_note', lang)}"
+
+    await answer(target, text, broadcast_kb(lang, enabled=enabled, paid=paid, back="profile"), "profile")
+
+
+@router.callback_query(F.data == "profile:broadcast")
+async def on_profile_broadcast(cb: CallbackQuery, state: FSMContext) -> None:
+    await _show_broadcast_settings(cb, state)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "profile:broadcast:toggle")
+async def on_profile_broadcast_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    user = cb.from_user
+    if not user:
+        await cb.answer()
+        return
+
+    from user_store import set_broadcast_enabled
+
+    enabled = is_broadcast_enabled(user.id)
+    set_broadcast_enabled(user.id, not enabled)
+    await _show_broadcast_settings(cb, state)
+    await cb.answer()
+
+
+@router.callback_query(F.data == "profile:broadcast:pay")
+async def on_profile_broadcast_pay(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    user = cb.from_user
+    if not user:
+        await cb.answer()
+        return
+
+    # Telegram Stars payments use currency XTR and provider_token can be empty.
+    from aiogram.types import LabeledPrice
+
+    await cb.bot.send_invoice(
+        chat_id=user.id,
+        title=t("broadcast_invoice_title", lang),
+        description=t("broadcast_invoice_description", lang),
+        payload="simple_payment:broadcast_disable",
+        provider_token="",
+        currency="XTR",
+        prices=[LabeledPrice(label="Disable broadcast", amount=50)],
+    )
     await cb.answer()
 
 

@@ -1,11 +1,12 @@
 import asyncio
+import inspect
 import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from telethon import TelegramClient
+from telethon import TelegramClient, __version__ as TELETHON_VERSION
 from telethon.tl.types import DocumentAttributeFilename, Message, MessageEntityBlockquote
 from telethon.extensions import html as telethon_html
 
@@ -21,6 +22,16 @@ SYNC_CHANNEL_USERNAME = CONFIG.get("channel", {}).get("username", "exteraPlugins
 SYNC_CHANNEL_ID = CONFIG.get("channel", {}).get("id", -1003869091631)
 ICONS_CHANNEL_USERNAME = CONFIG.get("icons_channel", {}).get("username", "exteraIcons")
 ICONS_CHANNEL_ID = CONFIG.get("icons_channel", {}).get("id", None)
+
+
+def _supports_collapsed_blockquote() -> bool:
+    try:
+        return "collapsed" in inspect.signature(MessageEntityBlockquote.__init__).parameters
+    except Exception:
+        return False
+
+
+BLOCKQUOTE_COLLAPSED_SUPPORTED = _supports_collapsed_blockquote()
 
 
 def _invalidate_all() -> None:
@@ -93,6 +104,11 @@ class UserbotClient:
 
         self._started = True
         logger.info("Userbot started")
+        logger.info(
+            "Telethon %s, collapsed blockquote support: %s",
+            TELETHON_VERSION,
+            BLOCKQUOTE_COLLAPSED_SUPPORTED,
+        )
         return True
     
     async def stop(self) -> None:
@@ -141,82 +157,80 @@ class UserbotClient:
         return self._icons_sync_entity
 
     def _parse_html(self, text: str) -> tuple[str, list]:
-        start_token = "\uFFF0BQ_START\uFFF0"
-        start_expandable_token = "\uFFF0BQ_EXP_START\uFFF0"
-        end_token = "\uFFF0BQ_END\uFFF0"
-        tokenized = text.replace("<blockquote expandable>", start_expandable_token)
-        tokenized = tokenized.replace("<blockquote>", start_token)
-        tokenized = tokenized.replace("</blockquote>", end_token)
+        if not text:
+            return text, []
 
-        parsed_text, entities = telethon_html.parse(tokenized)
+        normalized_html, collapse_flags = self._normalize_blockquote_tags(text)
+        parsed_text, entities = telethon_html.parse(normalized_html)
+        entities = list(entities or [])
 
-        kept = [True] * len(parsed_text)
-        blockquote_ranges = []
-        idx = 0
-        while True:
-            expand_idx = parsed_text.find(start_expandable_token, idx)
-            plain_idx = parsed_text.find(start_token, idx)
-            if expand_idx == -1 and plain_idx == -1:
-                break
-            if plain_idx == -1 or (expand_idx != -1 and expand_idx < plain_idx):
-                start_idx = expand_idx
-                token_len = len(start_expandable_token)
-                expandable = True
-            else:
-                start_idx = plain_idx
-                token_len = len(start_token)
-                expandable = False
-            end_idx = parsed_text.find(end_token, start_idx + token_len)
-            if end_idx == -1:
-                break
-
-            blockquote_ranges.append((start_idx + token_len, end_idx, expandable))
-            for i in range(start_idx, start_idx + token_len):
-                kept[i] = False
-            for i in range(end_idx, end_idx + len(end_token)):
-                kept[i] = False
-            idx = end_idx + len(end_token)
-
-        prefix = [0] * (len(parsed_text) + 1)
-        for i, flag in enumerate(kept):
-            prefix[i + 1] = prefix[i] + (1 if flag else 0)
-
-        cleaned_text = "".join(ch for i, ch in enumerate(parsed_text) if kept[i])
-
-        adjusted_entities = []
-        for entity in entities:
-            start = getattr(entity, "offset", 0)
-            length = getattr(entity, "length", 0)
-            new_offset = prefix[start]
-            new_length = prefix[start + length] - prefix[start]
-            if new_length <= 0:
+        blockquote_index = 0
+        for i, entity in enumerate(entities):
+            if not isinstance(entity, MessageEntityBlockquote):
                 continue
-            entity.offset = new_offset
-            entity.length = new_length
-            adjusted_entities.append(entity)
 
-        for start, end, expandable in blockquote_ranges:
-            length = prefix[end] - prefix[start]
-            if length > 0:
-                if expandable:
-                    try:
-                        entity = MessageEntityBlockquote(
-                            offset=prefix[start],
-                            length=length,
-                            collapsed=True,
-                        )
-                    except TypeError:
-                        entity = MessageEntityBlockquote(offset=prefix[start], length=length)
-                        if getattr(entity, "collapsed", None) is not None:
-                            try:
-                                entity.collapsed = True
-                            except Exception:
-                                pass
-                else:
-                    entity = MessageEntityBlockquote(offset=prefix[start], length=length)
-                adjusted_entities.append(entity)
+            collapsed = (
+                collapse_flags[blockquote_index]
+                if blockquote_index < len(collapse_flags)
+                else False
+            )
+            blockquote_index += 1
 
-        return cleaned_text, adjusted_entities
+            if collapsed:
+                entities[i] = self._as_collapsed_blockquote(entity)
+
+        return parsed_text, entities
+
+    @staticmethod
+    def _normalize_blockquote_tags(text: str) -> tuple[str, list[bool]]:
+        parts: list[str] = []
+        flags: list[bool] = []
+        cursor = 0
+        text_lower = text.lower()
+
+        while True:
+            start = text_lower.find("<blockquote", cursor)
+            if start == -1:
+                break
+            end = text.find(">", start)
+            if end == -1:
+                break
+
+            parts.append(text[cursor:start])
+
+            raw_tag = text[start : end + 1]
+            attrs = raw_tag[len("<blockquote") : -1]
+            flags.append("expandable" in attrs.lower())
+            parts.append("<blockquote>")
+
+            cursor = end + 1
+
+        parts.append(text[cursor:])
+        return "".join(parts), flags
+
+    @staticmethod
+    def _as_collapsed_blockquote(entity: MessageEntityBlockquote) -> MessageEntityBlockquote:
+        if not BLOCKQUOTE_COLLAPSED_SUPPORTED:
+            return entity
+
+        if hasattr(entity, "collapsed"):
+            try:
+                entity.collapsed = True
+                return entity
+            except Exception:
+                pass
+
+        try:
+            return MessageEntityBlockquote(
+                offset=entity.offset,
+                length=entity.length,
+                collapsed=True,
+            )
+        except TypeError:
+            return entity
+
+    def _format_text_for_telegram(self, text: str) -> tuple[str, list]:
+        return self._parse_html(text or "")
     
     async def publish_plugin(
         self,
@@ -224,19 +238,20 @@ class UserbotClient:
         file_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
 
         if file_path and Path(file_path).exists():
             message = await self.client.send_file(
                 entity,
                 file=file_path,
-                caption=text,
-                parse_mode="html",
+                caption=parsed_text,
+                formatting_entities=entities,
             )
         else:
             message = await self.client.send_message(
                 entity,
-                text,
-                parse_mode="html",
+                parsed_text,
+                formatting_entities=entities,
                 link_preview=False,
             )
         
@@ -251,10 +266,11 @@ class UserbotClient:
 
     async def publish_post(self, text: str) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
         message = await self.client.send_message(
             entity,
-            text,
-            parse_mode="html",
+            parsed_text,
+            formatting_entities=entities,
             link_preview=False,
         )
 
@@ -268,10 +284,11 @@ class UserbotClient:
 
     async def schedule_post(self, text: str, schedule_date: datetime) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
         message = await self.client.send_message(
             entity,
-            text,
-            parse_mode="html",
+            parsed_text,
+            formatting_entities=entities,
             link_preview=False,
             schedule=schedule_date,
         )
@@ -292,20 +309,21 @@ class UserbotClient:
         file_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
 
         if file_path and Path(file_path).exists():
             message = await self.client.send_file(
                 entity,
                 file=file_path,
-                caption=text,
-                parse_mode="html",
+                caption=parsed_text,
+                formatting_entities=entities,
                 schedule=schedule_date,
             )
         else:
             message = await self.client.send_message(
                 entity,
-                text,
-                parse_mode="html",
+                parsed_text,
+                formatting_entities=entities,
                 link_preview=False,
                 schedule=schedule_date,
             )
@@ -326,20 +344,21 @@ class UserbotClient:
         file_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_icons_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
 
         if file_path and Path(file_path).exists():
             message = await self.client.send_file(
                 entity,
                 file=file_path,
-                caption=text,
-                parse_mode="html",
+                caption=parsed_text,
+                formatting_entities=entities,
                 schedule=schedule_date,
             )
         else:
             message = await self.client.send_message(
                 entity,
-                text,
-                parse_mode="html",
+                parsed_text,
+                formatting_entities=entities,
                 link_preview=False,
                 schedule=schedule_date,
             )
@@ -359,19 +378,20 @@ class UserbotClient:
         file_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_icons_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
 
         if file_path and Path(file_path).exists():
             message = await self.client.send_file(
                 entity,
                 file=file_path,
-                caption=text,
-                parse_mode="html",
+                caption=parsed_text,
+                formatting_entities=entities,
             )
         else:
             message = await self.client.send_message(
                 entity,
-                text,
-                parse_mode="html",
+                parsed_text,
+                formatting_entities=entities,
                 link_preview=False,
             )
 
@@ -390,6 +410,7 @@ class UserbotClient:
         file_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
 
         try:
             if file_path and Path(file_path).exists():
@@ -398,17 +419,17 @@ class UserbotClient:
                 await self.client.edit_message(
                     entity,
                     message_id,
-                    text,
+                    parsed_text,
                     file=file_path,
                     attributes=attributes,
-                    parse_mode="html",
+                    formatting_entities=entities,
                 )
             else:
                 await self.client.edit_message(
                     entity,
                     message_id,
-                    text,
-                    parse_mode="html",
+                    parsed_text,
+                    formatting_entities=entities,
                 )
 
             channel_username = CONFIG.get("publish_channel", "xzcvzxa")
@@ -431,6 +452,7 @@ class UserbotClient:
         file_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_icons_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
 
         try:
             if file_path and Path(file_path).exists():
@@ -439,17 +461,17 @@ class UserbotClient:
                 await self.client.edit_message(
                     entity,
                     message_id,
-                    text,
+                    parsed_text,
                     file=file_path,
                     attributes=attributes,
-                    parse_mode="html",
+                    formatting_entities=entities,
                 )
             else:
                 await self.client.edit_message(
                     entity,
                     message_id,
-                    text,
-                    parse_mode="html",
+                    parsed_text,
+                    formatting_entities=entities,
                 )
 
             channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)

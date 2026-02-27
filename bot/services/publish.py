@@ -50,7 +50,7 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
     name = html.escape(plugin.get("name", "")) or "—"
 
     def _norm_text(value: str) -> str:
-        return (value or "").replace("\\n", "\n").strip()
+        return html.unescape(value or "").replace("\\n", "\n").strip()
 
     desc_fallback = _norm_text(plugin.get("description", ""))
     desc_ru = html.escape(_norm_text(payload.get("description_ru") or desc_fallback or "")) or "—"

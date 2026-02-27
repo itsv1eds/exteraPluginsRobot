@@ -436,6 +436,70 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "broadcast_invoice_title": {"ru": "Платное выключение рассылки", "en": "Paid broadcast disable"},
     "broadcast_invoice_description": {"ru": "Ты можешь выключить рассылку и беслпатно, это просто ПРИОРИТЕТНОЕ выключение.", "en": "You can disable broadcast for free, this is simply a PRIORITY disable."},
     "broadcast_payment_thanks": {"ru": "Готово. Теперь рассылка выключена.", "en": "Done. Broadcast is now disabled."},
+
+    "admin_broadcast_paid_disable": {
+        "ru": "⭐️ Купили выключение рассылки\n\nПользователь: {name} ({user})\nСумма: {amount}",
+        "en": "⭐️ Paid broadcast disable purchased\n\nUser: {name} ({user})\nAmount: {amount}",
+    },
+
+    "join_settings_title": {"ru": "Настройки входа:", "en": "Join settings:"},
+    "join_btn_welcome": {"ru": "Приветствие", "en": "Welcome"},
+    "join_btn_enabled": {"ru": "Кик при заходе", "en": "Kick on join"},
+    "join_btn_ban_on_join": {"ru": "Бан при заходе", "en": "Ban on join"},
+    "join_btn_service_cleanup": {"ru": "Очищать сервисные", "en": "Clean service"},
+    "join_btn_join_reaction": {"ru": "Реакция при входе", "en": "Join reaction"},
+    "join_btn_welcome_toggle": {"ru": "Приветствие", "en": "Welcome"},
+    "join_btn_edit": {"ru": "Редактировать", "en": "Edit"},
+    "join_prompt_welcome": {"ru": "Отправь новый текст приветствия.", "en": "Send the new welcome text."},
+    "join_prompt_reaction": {
+        "ru": "Отправь один эмодзи для реакции (или напиши off чтобы выключить).",
+        "en": "Send one emoji for reaction (or type off to disable).",
+    },
+    "join_saved": {"ru": "Сохранено.", "en": "Saved."},
+    "join_reaction_help": {
+        "ru": "<b>Реакция при входе</b>\n\n"
+        "Бот поставит реакцию на сервисное сообщение о входе пользователя.\n\n",
+        "en": "<b>Join reaction</b>\n\n"
+        "The bot will react to the service message about a user joining.\n\n"
+    },
+    "join_welcome_help": {
+        "ru": "<b>Редактор приветствия</b>\n\n"
+        "Поддерживается <b>MarkdownV2</b> и <b>кнопки</b>.\n\n"
+        "<b>Важно про MarkdownV2</b>\n"
+        "Если Telegram пишет <i>can't parse entities</i> — значит в тексте есть спецсимвол без экранирования.\n"
+        "Например скобки нужно писать так: <pre><code>\\(  \\)</code></pre>"
+        "<pre><code>_ * [ ] ( ) ~ ` > # + - = | { } . !</code></pre>\n"
+        "<b>Плейсхолдеры</b>\n"
+        "<pre><code>{first} {last} {fullname} {username}\n{mention} {id} {chatname}</code></pre>\n"
+        "<b>Флаги</b>\n"
+        "<pre><code>{preview} {nonotif} {protect}</code></pre>\n"
+        "<b>Кнопки</b>\n"
+        "<pre><code>[Текст](buttonurl://https://example.com)\n[A](buttonurl://https://a.com) [B](buttonurl://https://b.com:same)</code></pre>\n"
+        "<b>Пример шаблона</b>\n"
+        "<pre><code>*Дорогой {fullname} \\({username}\\)*, этот чат не для общения.\n"
+        "Для общения есть @exteraForum\n\n"
+        "[Перейти](buttonurl://https://t.me/exteraForum)</code></pre>",
+        "en": "<b>Welcome editor</b>\n\n"
+        "<b>MarkdownV2</b> and <b>buttons</b> are supported.\n\n"
+        "<b>MarkdownV2 note</b>\n"
+        "If Telegram says <i>can't parse entities</i>, you have a reserved character without escaping.\n"
+        "Example: parentheses must be escaped like <pre><code>\\(  \\)</code></pre>"
+        "<pre><code>_ * [ ] ( ) ~ ` > # + - = | { } . !</code></pre>\n"
+        "<b>Placeholders</b>\n"
+        "<pre><code>{first} {last} {fullname} {username}\n{mention} {id} {chatname}</code></pre>\n"
+        "<b>Flags</b>\n"
+        "<pre><code>{preview} {nonotif} {protect}</code></pre>\n"
+        "<b>Buttons</b>\n"
+        "<pre><code>[Text](buttonurl://https://example.com)\n[A](buttonurl://https://a.com) [B](buttonurl://https://b.com:same)</code></pre>\n"
+        "<b>Template example</b>\n"
+        "<pre><code>*Dear {fullname} \\({username}\\)*, this is not a chat for communication.\n"
+        "For chatting use @exteraForum\n\n"
+        "[Open](buttonurl://https://t.me/exteraForum)</code></pre>"
+    },
+    "join_welcome_default": {
+        "ru": "Дорогой {fullname} \\({username}\\), это не чат для общения.\nДля общения есть @exteraForum",
+        "en": "Dear {fullname} \\({username}\\), this is not a chat for communication.\nFor chatting use @exteraForum"
+    },
     "catalog_title": {
         "ru": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Каталог плагинов</b>",
         "en": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Plugin Catalog</b>",

@@ -3,13 +3,13 @@ import html
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message, PreCheckoutQuery
+from aiogram.types import CallbackQuery, FSInputFile, Message, PreCheckoutQuery, SuccessfulPayment
 
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
@@ -29,7 +29,7 @@ from bot.keyboards import (
     user_plugins_kb,
 )
 from bot.keyboards import admin_review_kb
-from bot.cache import get_admins_icons, get_admins_plugins, get_categories
+from bot.cache import get_admins, get_admins_icons, get_admins_plugins, get_categories
 from bot.services.submission import (
     PluginData,
     build_icon_submission_payload,
@@ -86,8 +86,53 @@ async def on_successful_payment(message: Message) -> None:
     set_paid_broadcast_disable(user_id, True)
     set_broadcast_enabled(user_id, False)
 
+    asyncio.create_task(notify_admins_broadcast_paid_disable(message.bot, message.from_user, payment))
+
     lang = get_lang(user_id)
     await message.answer(t("broadcast_payment_thanks", lang), parse_mode=ParseMode.HTML)
+
+
+async def notify_admins_broadcast_paid_disable(bot, user, payment: SuccessfulPayment) -> None:
+    try:
+        user_id = getattr(user, "id", 0) or 0
+        username = (getattr(user, "username", None) or "").strip()
+        full_name = (getattr(user, "full_name", None) or getattr(user, "first_name", None) or "").strip() or "—"
+
+        user_link = f"@{username}" if username else f"<code>{user_id}</code>"
+        amount = getattr(payment, "total_amount", None)
+        currency = getattr(payment, "currency", None) or ""
+        amount_str = f"{amount} {currency}" if amount is not None else currency
+
+        targets = set(get_admins())
+        delivered = 0
+        for admin_id in targets:
+            admin_lang = get_lang(admin_id)
+            text = t(
+                "admin_broadcast_paid_disable",
+                admin_lang,
+                user=user_link,
+                name=html.escape(full_name),
+                amount=html.escape(amount_str),
+            )
+            try:
+                await bot.send_message(
+                    admin_id,
+                    text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                delivered += 1
+            except Exception:
+                logger.warning("event=broadcast_paid_disable.notify_admins.failed admin_id=%s", admin_id, exc_info=True)
+                continue
+
+        logger.info(
+            "event=broadcast_paid_disable.notify_admins.done user_id=%s delivered=%s",
+            user_id,
+            delivered,
+        )
+    except Exception:
+        logger.warning("event=broadcast_paid_disable.notify_admins.crashed", exc_info=True)
 
 
 def _submission_type(payload: Dict[str, Any]) -> str:

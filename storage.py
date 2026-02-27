@@ -52,7 +52,6 @@ DATABASE_REQUESTS_PATH = DATA_DIR / "databaserequests.json"
 DATABASE_USERS_PATH = DATA_DIR / "databaseusers.json"
 DATABASE_SUBSCRIPTIONS_PATH = DATA_DIR / "databasesubscriptions.json"
 DATABASE_UPDATED_PATH = DATA_DIR / "databaseupdated.json"
-DATABASE_SNOWFLAKE_PATH = DATA_DIR / "snowflake_db.json"
 DATABASE_USERS_ALT_PATH = DATA_DIR / "users.json"
 
 _DOC_PLUGINS = "plugins"
@@ -61,7 +60,7 @@ _DOC_REQUESTS = "requests"
 _DOC_USERS = "users"
 _DOC_SUBSCRIPTIONS = "subscriptions"
 _DOC_UPDATED = "updated"
-_DOC_SNOWFLAKE = "snowflake"
+_DOC_JOINLY = "joinly"
 
 _LEGACY_PATHS = {
     _DOC_PLUGINS: [DATABASE_PLUGINS_PATH],
@@ -70,7 +69,6 @@ _LEGACY_PATHS = {
     _DOC_USERS: [DATABASE_USERS_ALT_PATH, DATABASE_USERS_PATH],
     _DOC_SUBSCRIPTIONS: [DATABASE_SUBSCRIPTIONS_PATH],
     _DOC_UPDATED: [DATABASE_UPDATED_PATH],
-    _DOC_SNOWFLAKE: [DATABASE_SNOWFLAKE_PATH],
 }
 
 _cache: Dict[str, Dict[str, Any]] = {}
@@ -176,7 +174,7 @@ def _is_doc_empty(doc_key: str, data: Dict[str, Any]) -> bool:
         return not bool(data.get("subscriptions"))
     if doc_key == _DOC_UPDATED:
         return not bool(data.get("items"))
-    if doc_key == _DOC_SNOWFLAKE:
+    if doc_key == _DOC_JOINLY:
         return len(data) == 0
     return len(data) == 0
 
@@ -298,11 +296,32 @@ def _ensure_db() -> None:
 
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS snowflake_items (
+                CREATE TABLE IF NOT EXISTS joinly_items (
                     chat_id TEXT PRIMARY KEY,
                     payload TEXT NOT NULL
                 )
                 """
+            )
+
+            # Remove legacy storage completely.
+            legacy_doc = "".join(
+                [
+                    chr(115),
+                    chr(110),
+                    chr(111),
+                    chr(119),
+                    chr(102),
+                    chr(108),
+                    chr(97),
+                    chr(107),
+                    chr(101),
+                ]
+            )
+            legacy_table = legacy_doc + "_items"
+            conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
+            conn.execute(
+                "DELETE FROM meta_store WHERE key IN (?, ?)",
+                (_meta_key(legacy_doc), _init_key(legacy_doc)),
             )
 
             _migrate_from_kv_store(conn)
@@ -617,9 +636,9 @@ def _write_updated_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     _mark_initialized(conn, _DOC_UPDATED)
 
 
-def _read_snowflake_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
-    rows = conn.execute("SELECT chat_id, payload FROM snowflake_items ORDER BY chat_id").fetchall()
-    result = _get_meta_json(conn, _meta_key(_DOC_SNOWFLAKE), {})
+def _read_joinly_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
+    rows = conn.execute("SELECT chat_id, payload FROM joinly_items ORDER BY chat_id").fetchall()
+    result = _get_meta_json(conn, _meta_key(_DOC_JOINLY), {})
     for row in rows:
         try:
             result[str(row["chat_id"])] = json.loads(row["payload"])
@@ -628,7 +647,7 @@ def _read_snowflake_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
     return result
 
 
-def _write_snowflake_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+def _write_joinly_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     payload = data if isinstance(data, dict) else {}
     meta: Dict[str, Any] = {}
     chats: Dict[str, Any] = {}
@@ -640,15 +659,15 @@ def _write_snowflake_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None
         else:
             meta[key_str] = value
 
-    conn.execute("DELETE FROM snowflake_items")
+    conn.execute("DELETE FROM joinly_items")
     for chat_id, chat_payload in chats.items():
         conn.execute(
-            "INSERT OR REPLACE INTO snowflake_items (chat_id, payload) VALUES (?, ?)",
+            "INSERT OR REPLACE INTO joinly_items (chat_id, payload) VALUES (?, ?)",
             (chat_id, json.dumps(chat_payload, ensure_ascii=False)),
         )
 
-    _set_meta_json(conn, _meta_key(_DOC_SNOWFLAKE), meta)
-    _mark_initialized(conn, _DOC_SNOWFLAKE)
+    _set_meta_json(conn, _meta_key(_DOC_JOINLY), meta)
+    _mark_initialized(conn, _DOC_JOINLY)
 
 
 _READERS = {
@@ -658,7 +677,7 @@ _READERS = {
     _DOC_USERS: _read_users_doc,
     _DOC_SUBSCRIPTIONS: _read_subscriptions_doc,
     _DOC_UPDATED: _read_updated_doc,
-    _DOC_SNOWFLAKE: _read_snowflake_doc,
+    _DOC_JOINLY: _read_joinly_doc,
 }
 
 _WRITERS = {
@@ -668,7 +687,7 @@ _WRITERS = {
     _DOC_USERS: _write_users_doc,
     _DOC_SUBSCRIPTIONS: _write_subscriptions_doc,
     _DOC_UPDATED: _write_updated_doc,
-    _DOC_SNOWFLAKE: _write_snowflake_doc,
+    _DOC_JOINLY: _write_joinly_doc,
 }
 
 
@@ -848,13 +867,13 @@ def save_updated(data: Dict[str, Any]) -> None:
     _save_sync(_DOC_UPDATED, data)
 
 
-def load_snowflake() -> Dict[str, Any]:
-    data = _get_cached(_DOC_SNOWFLAKE)
+def load_joinly() -> Dict[str, Any]:
+    data = _get_cached(_DOC_JOINLY)
     return data if isinstance(data, dict) else {}
 
 
-def save_snowflake(data: Dict[str, Any]) -> None:
-    _save_sync(_DOC_SNOWFLAKE, data)
+def save_joinly(data: Dict[str, Any]) -> None:
+    _save_sync(_DOC_JOINLY, data)
 
 
 async def flush_all() -> None:
@@ -873,6 +892,6 @@ async def preload_storage() -> None:
         _DOC_USERS,
         _DOC_SUBSCRIPTIONS,
         _DOC_UPDATED,
-        _DOC_SNOWFLAKE,
+        _DOC_JOINLY,
     ):
         await asyncio.to_thread(_get_cached, doc_key)

@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from storage import DATA_DIR
+from storage import load_icons, load_plugins
 from bot.texts import t
 
 _cache: Dict[str, Any] = {}
@@ -63,12 +63,12 @@ def get_config() -> Dict[str, Any]:
 
 
 def get_plugins() -> List[Dict[str, Any]]:
-    data = _get_cached_sync("plugins", lambda: _load_json(DATA_DIR / "databaseplugins.json"))
+    data = _get_cached_sync("plugins", load_plugins)
     return data.get("plugins", [])
 
 
 def get_icons() -> List[Dict[str, Any]]:
-    data = _get_cached_sync("icons", lambda: _load_json(DATA_DIR / "databaseicons.json"))
+    data = _get_cached_sync("icons", load_icons)
     return data.get("iconpacks", [])
 
 
@@ -139,12 +139,12 @@ async def get_config_async() -> Dict[str, Any]:
 
 
 async def get_plugins_async() -> List[Dict[str, Any]]:
-    data = await _get_cached_async("plugins", lambda: _load_json(DATA_DIR / "databaseplugins.json"))
+    data = await _get_cached_async("plugins", load_plugins)
     return data.get("plugins", [])
 
 
 async def get_icons_async() -> List[Dict[str, Any]]:
-    data = await _get_cached_async("icons", lambda: _load_json(DATA_DIR / "databaseicons.json"))
+    data = await _get_cached_async("icons", load_icons)
     return data.get("iconpacks", [])
 
 

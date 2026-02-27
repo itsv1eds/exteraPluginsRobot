@@ -36,6 +36,7 @@
   },
   "storage": {
     "data_dir": "data/data",
+    "sqlite_path": "data/data/storage.sqlite3",
     "base_dir": "",
     "uploads_dir": "uploads"
   },

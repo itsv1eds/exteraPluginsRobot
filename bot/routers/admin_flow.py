@@ -8,7 +8,7 @@ from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message
+from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.cache import (
     get_admin_role,
@@ -22,7 +22,7 @@ from bot.cache import (
 )
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
-from bot.callback_tokens import decode_slug
+from bot.callback_tokens import decode_slug, encode_slug
 from bot.helpers import answer
 from bot.keyboards import (
     admin_actions_kb,
@@ -337,6 +337,16 @@ async def _notify_subscribers(
         raw_name = plugin.get("name") or locale.get("name") or slug
         name = f'<a href="{plugin_link}"><b>{raw_name}</b></a>' if plugin_link else f"<b>{raw_name}</b>"
         version = plugin.get("version") or locale.get("version") or "—"
+        reply_markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(
+                        text=t("btn_open", lang),
+                        callback_data=f"plugin:{encode_slug(slug)}",
+                    )
+                ]
+            ]
+        )
         try:
             await bot.send_message(
                 user_id,
@@ -349,6 +359,7 @@ async def _notify_subscribers(
                 ),
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
+                reply_markup=reply_markup,
             )
         except Exception:
             continue

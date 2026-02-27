@@ -15,6 +15,22 @@ Fully working bot: [@exteraPluginsRobot](https://t.me/exteraPluginsRobot)
 2. Configure `config.json`
 3. Run bot by ```python3 main.py```
 
+# SQLite storage
+Storage backend is SQLite (`storage.sqlite3`).
+
+Configure path in `config.json`:
+
+```json
+"storage": {
+  "data_dir": "data/data",
+  "sqlite_path": "data/data/storage.sqlite3"
+}
+```
+
+You can also override at runtime with env vars:
+- `DATA_DIR`
+- `SQLITE_PATH`
+
 # Docker Compose
 1. Configure `config.json` in project root.
 2. Start bot:

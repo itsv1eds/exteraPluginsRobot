@@ -1,5 +1,3 @@
-import json
-from pathlib import Path
 from typing import Any
 
 from aiogram import F, Router
@@ -8,12 +6,10 @@ from aiogram.filters import ChatMemberUpdatedFilter
 from aiogram.filters.chat_member_updated import IS_MEMBER, IS_NOT_MEMBER
 from aiogram.types import ChatMemberUpdated, Message
 
-from storage import DATA_DIR
+from storage import load_snowflake, save_snowflake
 from bot.helpers import try_react_pray
 
 router = Router()
-
-_DB_PATH = DATA_DIR / "snowflake_db.json"
 
 _DEFAULTS: dict[str, Any] = {
     "DeleteServiceMessages": True,
@@ -24,8 +20,9 @@ _DEFAULTS: dict[str, Any] = {
 
 def _load_db() -> dict[str, Any]:
     try:
-        if _DB_PATH.exists():
-            return json.loads(_DB_PATH.read_text(encoding="utf-8"))
+        db = load_snowflake()
+        if isinstance(db, dict):
+            return db
     except Exception:
         return {}
     return {}
@@ -33,8 +30,7 @@ def _load_db() -> dict[str, Any]:
 
 def _save_db(db: dict[str, Any]) -> None:
     try:
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        _DB_PATH.write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
+        save_snowflake(db)
     except Exception:
         pass
 

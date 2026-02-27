@@ -414,7 +414,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": '<a href=\"tg://emoji?id=5208601792996217243">🧩</a> <b>{name}</b> by <code>{author}</code>',
         "en": '<a href=\"tg://emoji?id=5208601792996217243">🧩</a> <b>{name}</b> by <code>{author}</code>',
     },
-    "catalog_inline_download": {"ru": "Download", "en": "Download"},
+    "catalog_inline_download": {"ru": "📥 Скачать", "en": "📥 Download"},
+    "catalog_inline_open_in_bot": {"ru": "🤖 Открыть в боте", "en": "🤖 Open in bot"},
     "catalog_inline_no_description": {"ru": "—", "en": "—"},
     "catalog_inline_quick_donate": {
         "ru": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Поддержать канал:</b> {url}',

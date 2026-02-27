@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
 from bot.context import get_language, get_lang
-from bot.callback_tokens import decode_slug
+from bot.callback_tokens import decode_slug, encode_slug
 from bot.helpers import answer, extract_html_text, try_react_pray
 from bot.keyboards import (
     cancel_kb,
@@ -48,6 +48,9 @@ from bot.services.validation import (
 from bot.states import UserFlow
 from bot.texts import t
 from catalog import find_plugin_by_slug, find_user_plugins
+from bot.routers.catalog_flow import build_plugin_preview
+from bot.keyboards import plugin_detail_kb
+from subscription_store import is_subscribed, ALL_SUBSCRIPTION_KEY
 from request_store import (
     add_draft_request,
     add_request,
@@ -177,6 +180,12 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     user_id = message.from_user.id if message.from_user else None
 
+    payload = ""
+    if message.text:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            payload = (parts[1] or "").strip()
+
     if is_user_banned(user_id):
         lang = get_lang(user_id)
         await message.answer(
@@ -185,19 +194,45 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         )
         return
 
+    if payload:
+        if payload.startswith("plugin_"):
+            payload = payload[len("plugin_") :]
+        await state.update_data(start_payload=payload)
+
     if get_user_language(user_id):
         lang = get_lang(user_id)
         await state.update_data(lang=lang)
         await state.set_state(UserFlow.idle)
+
+        if payload:
+            plugin = find_plugin_by_slug(payload)
+            if plugin:
+                text = build_plugin_preview(plugin, lang)
+                link = plugin.get("channel_message", {}).get("link")
+                notify_all_enabled = is_subscribed(user_id, ALL_SUBSCRIPTION_KEY)
+                await answer(
+                    message,
+                    text,
+                    plugin_detail_kb(
+                        link,
+                        back="catalog",
+                        lang=lang,
+                        subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(payload)}:catalog"),
+                    ),
+                    "catalog",
+                )
+                return
+
         await answer(message, t("welcome", lang), main_menu_kb(lang), "welcome")
-    else:
-        lang = get_lang(user_id)
-        await state.set_state(UserFlow.choosing_language)
-        await message.answer(
-            t("language_prompt", lang),
-            reply_markup=language_kb(),
-            parse_mode=ParseMode.HTML,
-        )
+        return
+
+    lang = get_lang(user_id)
+    await state.set_state(UserFlow.choosing_language)
+    await message.answer(
+        t("language_prompt", lang),
+        reply_markup=language_kb(),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 @router.message(Command("lang"))
@@ -225,6 +260,28 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
         set_user_language(cb.from_user.id, lang)
     await state.update_data(lang=lang)
     await state.set_state(UserFlow.idle)
+    data = await state.get_data()
+    start_payload = (data.get("start_payload") or "").strip()
+    if start_payload:
+        plugin = find_plugin_by_slug(start_payload)
+        if plugin:
+            text = build_plugin_preview(plugin, lang)
+            link = plugin.get("channel_message", {}).get("link")
+            notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False
+            await answer(
+                cb,
+                text,
+                plugin_detail_kb(
+                    link,
+                    back="catalog",
+                    lang=lang,
+                    subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(start_payload)}:catalog"),
+                ),
+                "catalog",
+            )
+            await cb.answer(t("language_saved", lang))
+            return
+
     await answer(cb, t("welcome", lang), main_menu_kb(lang), "welcome")
     await cb.answer(t("language_saved", lang))
 
@@ -422,7 +479,26 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
                 await message.answer(t(error, lang))
             return
 
-    await state.update_data(plugin=plugin.to_dict())
+    new_plugin = plugin.to_dict()
+    old_ru = (old_plugin.get("ru") or {}) if isinstance(old_plugin, dict) else {}
+    old_en = (old_plugin.get("en") or {}) if isinstance(old_plugin, dict) else {}
+    old_name = old_ru.get("name") or old_en.get("name")
+    old_desc = old_ru.get("description") or old_en.get("description")
+    old_min_version = old_ru.get("min_version") or old_en.get("min_version") or old_plugin.get("min_version")
+    old_author = (old_plugin.get("authors") or {}).get("ru") or (old_plugin.get("authors") or {}).get("en")
+    old_settings = old_plugin.get("settings") or {}
+    old_has_settings = bool(old_settings.get("has_ui"))
+
+    merged_plugin = {
+        **new_plugin,
+        "name": old_name or new_plugin.get("name"),
+        "author": old_author or new_plugin.get("author"),
+        "description": old_desc or "",
+        "min_version": old_min_version or "",
+        "has_ui_settings": old_has_settings,
+    }
+
+    await state.update_data(plugin=merged_plugin)
     await state.set_state(UserFlow.entering_changelog)
     await answer(message, t("enter_changelog", lang), cancel_kb(lang), "plugins")
 
@@ -476,6 +552,8 @@ async def on_confirm_update(cb: CallbackQuery, state: FSMContext) -> None:
         "changelog": data.get("changelog", ""),
         "update_slug": data.get("update_slug", ""),
         "old_plugin": data.get("old_plugin", {}),
+        "description_ru": data.get("old_plugin", {}).get("ru", {}).get("description", ""),
+        "description_en": data.get("old_plugin", {}).get("en", {}).get("description", ""),
         "usage_ru": data.get("old_plugin", {}).get("ru", {}).get("usage", ""),
         "usage_en": data.get("old_plugin", {}).get("en", {}).get("usage", ""),
         "category_key": data.get("old_plugin", {}).get("category", ""),

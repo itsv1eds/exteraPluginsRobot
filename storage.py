@@ -161,6 +161,26 @@ def _mark_initialized(conn: sqlite3.Connection, doc_key: str) -> None:
     _set_meta_value(conn, _init_key(doc_key), "1")
 
 
+def _is_doc_empty(doc_key: str, data: Dict[str, Any]) -> bool:
+    if not isinstance(data, dict):
+        return True
+    if doc_key == _DOC_PLUGINS:
+        return not bool(data.get("plugins"))
+    if doc_key == _DOC_ICONS:
+        return not bool(data.get("iconpacks"))
+    if doc_key == _DOC_REQUESTS:
+        return not bool(data.get("requests"))
+    if doc_key == _DOC_USERS:
+        return not bool(data.get("users"))
+    if doc_key == _DOC_SUBSCRIPTIONS:
+        return not bool(data.get("subscriptions"))
+    if doc_key == _DOC_UPDATED:
+        return not bool(data.get("items"))
+    if doc_key == _DOC_SNOWFLAKE:
+        return len(data) == 0
+    return len(data) == 0
+
+
 def _ensure_db() -> None:
     global _db_ready
     if _db_ready:
@@ -657,6 +677,10 @@ def _read_sqlite_doc_sync(doc_key: str) -> Dict[str, Any]:
     with _connect() as conn:
         data = _READERS[doc_key](conn)
         if _is_initialized(conn, doc_key):
+            return data
+        if not _is_doc_empty(doc_key, data):
+            _mark_initialized(conn, doc_key)
+            conn.commit()
             return data
 
     legacy = _read_legacy_json(doc_key)

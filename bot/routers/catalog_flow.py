@@ -49,6 +49,8 @@ from subscription_store import ALL_SUBSCRIPTION_KEY
 
 router = Router(name="catalog-flow")
 
+BOT_USERNAME = "exteraPluginsRobot"
+
 
 def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
     locale = entry.get(lang) or entry.get("ru") or entry.get("en") or {}
@@ -57,7 +59,7 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
     raw_locale = raw_blocks.get(lang) or raw_blocks.get("ru") or {}
     author_channels = entry.get("author_channels", {}) or {}
 
-    name = locale.get("name") or entry.get("slug", "?")
+    name_value = locale.get("name") or entry.get("slug", "?")
     author = (
         (raw_locale.get("author") if isinstance(raw_locale, dict) else None)
         or authors.get(lang)
@@ -79,16 +81,22 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
         if isinstance(icons, (list, dict)):
             count = len(icons)
 
-    lines = [
-        f"<b>{t('catalog_field_title', lang)}:</b> {name}",
-        f"<b>{t('catalog_field_author', lang)}:</b> {author}",
-    ]
+    name = html.escape(str(name_value))
+    author_safe = html.escape(str(author))
+    lines = [f"<b>{name}</b> by {author_safe}"]
+
+    description = (locale.get("description") or "").strip()
+    if description:
+        lines.append(f"<blockquote expandable>{html.escape(description)}</blockquote>")
+
+    min_version = (entry.get("min_version") or "").strip()
+    if min_version:
+        lines.append(f"<b>{t('catalog_field_min_version', lang)}:</b> {html.escape(min_version)}")
+
     if author_channel:
-        lines.append(f"<b>{t('catalog_field_author_channel', lang)}:</b> {author_channel}")
+        lines.append(f"<b>{t('catalog_field_author_channel', lang)}:</b> {html.escape(str(author_channel))}")
     if count is not None:
         lines.append(f"<b>{t('catalog_field_icons', lang)}:</b> {count}")
-    if link:
-        lines.append(f"<b>{t('catalog_field_link', lang)}:</b> {link}")
 
     return "\n".join(lines)
 
@@ -237,16 +245,8 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
             link,
             back,
             lang,
-            subscribe_callback=(
-                "profile:subscriptions"
-                if notify_all_enabled
-                else f"sub:toggle:{encode_slug(slug)}:catalog"
-            ),
-            subscribe_label=(
-                t("btn_notify_all_on", lang)
-                if notify_all_enabled
-                else subscribe_label
-            ),
+            subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(slug)}:catalog"),
+            subscribe_label=(None if notify_all_enabled else subscribe_label),
         ),
         "plugins",
     )
@@ -279,16 +279,8 @@ async def on_my_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
             lang,
             update_callback=f"profile:update:{encode_slug(slug)}",
             delete_callback=f"profile:delete:{encode_slug(slug)}",
-            subscribe_callback=(
-                "profile:subscriptions"
-                if notify_all_enabled
-                else f"sub:toggle:{encode_slug(slug)}:my"
-            ),
-            subscribe_label=(
-                t("btn_notify_all_on", lang)
-                if notify_all_enabled
-                else subscribe_label
-            ),
+            subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(slug)}:my"),
+            subscribe_label=(None if notify_all_enabled else subscribe_label),
         ),
         "profile",
     )
@@ -325,6 +317,7 @@ async def on_toggle_subscription(cb: CallbackQuery, state: FSMContext) -> None:
     back = "catalog" if source == "catalog" else "my:plugins:0"
     text = build_plugin_preview(plugin, lang)
     link = plugin.get("channel_message", {}).get("link")
+    notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY)
     subscribed = is_subscribed(cb.from_user.id, slug)
     subscribe_label = t("btn_unsubscribe", lang) if subscribed else t("btn_subscribe", lang)
     await answer(
@@ -336,8 +329,8 @@ async def on_toggle_subscription(cb: CallbackQuery, state: FSMContext) -> None:
             lang,
             update_callback=f"profile:update:{encode_slug(slug)}" if source == "my" else None,
             delete_callback=f"profile:delete:{encode_slug(slug)}" if source == "my" else None,
-            subscribe_callback=f"sub:toggle:{encode_slug(slug)}:{source}",
-            subscribe_label=subscribe_label,
+            subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(slug)}:{source}"),
+            subscribe_label=(None if notify_all_enabled else subscribe_label),
         ),
         "profile" if source == "my" else "plugins",
     )
@@ -634,9 +627,17 @@ async def on_inline(query: InlineQuery) -> None:
         description = strip_html(locale.get("description") or t("catalog_inline_no_description", lang))
         link = plugin.get("channel_message", {}).get("link")
         reply_markup = None
+        deeplink = f"tg://resolve?domain={BOT_USERNAME}&start={slug}"
         if link:
             reply_markup = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text=t("catalog_inline_download", lang), url=link, style="success")]]
+                inline_keyboard=[[ 
+                    InlineKeyboardButton(text=t("catalog_inline_download", lang), url=link, style="success"),
+                    InlineKeyboardButton(text=t("catalog_inline_open_in_bot", lang), url=deeplink),
+                ]]
+            )
+        else:
+            reply_markup = InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=t("catalog_inline_open_in_bot", lang), url=deeplink)]]
             )
 
         results.append(

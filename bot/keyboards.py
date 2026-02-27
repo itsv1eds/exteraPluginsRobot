@@ -306,6 +306,8 @@ def plugin_detail_kb(
     delete_callback: Optional[str] = None,
     subscribe_callback: Optional[str] = None,
     subscribe_label: Optional[str] = None,
+    notify_all_callback: Optional[str] = None,
+    notify_all_label: Optional[str] = None,
 ) -> InlineKeyboardMarkup:
     rows = []
     if link:
@@ -326,9 +328,11 @@ def plugin_detail_kb(
             InlineKeyboardButton(
                 text=label,
                 callback_data=subscribe_callback,
-                style="success",
             )
         ])
+    if notify_all_callback:
+        label = notify_all_label or t("btn_subscriptions", lang)
+        rows.append([InlineKeyboardButton(text=label, callback_data=notify_all_callback)])
     rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=back, style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

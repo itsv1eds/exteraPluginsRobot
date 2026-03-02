@@ -1,8 +1,8 @@
-from . import user_flow, catalog_flow, admin_flow, snowflake_flow
+from . import user_flow, catalog_flow, admin_flow, joinly_flow
 
 __all__ = [
     "user_flow",
     "catalog_flow",
     "admin_flow",
-    "snowflake_flow",
+    "joinly_flow",
 ]

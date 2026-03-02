@@ -6,7 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from bot.cache import get_config, preload_cache
-from bot.routers import admin_flow, catalog_flow, user_flow, snowflake_flow
+from bot.routers import admin_flow, catalog_flow, user_flow, joinly_flow
 from bot.middlewares import (
     UserActionLoggingMiddleware,
     start_log_worker,
@@ -137,7 +137,7 @@ async def main() -> None:
     dp.include_router(admin_flow.router)
     dp.include_router(user_flow.router)
     dp.include_router(catalog_flow.router)
-    dp.include_router(snowflake_flow.router)
+    dp.include_router(joinly_flow.router)
     
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)

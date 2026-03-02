@@ -82,6 +82,25 @@ def get_user(user_id: int) -> Dict[str, Any]:
     return _users_cache.get(str(user_id), {}).copy()
 
 
+def is_broadcast_enabled(user_id: int) -> bool:
+    user = get_user(user_id)
+    # Default: enabled
+    return bool(user.get("broadcast_enabled", True))
+
+
+def has_paid_broadcast_disable(user_id: int) -> bool:
+    user = get_user(user_id)
+    return bool(user.get("broadcast_paid", False))
+
+
+def set_broadcast_enabled(user_id: int, enabled: bool) -> None:
+    update_user(user_id, broadcast_enabled=bool(enabled))
+
+
+def set_paid_broadcast_disable(user_id: int, paid: bool) -> None:
+    update_user(user_id, broadcast_paid=bool(paid))
+
+
 def set_user_language(user_id: int, language: str) -> None:
     _ensure_loaded_sync()
 

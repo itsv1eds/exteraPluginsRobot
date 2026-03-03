@@ -1,4 +1,5 @@
 import html
+import time
 import math
 from typing import Any, Dict, List
 
@@ -52,9 +53,95 @@ from user_store import (
     is_broadcast_enabled,
 )
 
+from storage import load_stenka, save_stenka
+
 router = Router(name="catalog-flow")
 
 BOT_USERNAME = "exteraPluginsRobot"
+
+
+def _stenka_db() -> dict[str, Any]:
+    db = load_stenka()
+    if not isinstance(db, dict):
+        db = {}
+    if "counter" not in db or not isinstance(db.get("counter"), int):
+        db["counter"] = 0
+    if "walls" not in db or not isinstance(db.get("walls"), dict):
+        db["walls"] = {}
+    return db
+
+
+def _stenka_next_id() -> str:
+    db = _stenka_db()
+    db["counter"] = int(db.get("counter") or 0) + 1
+    wall_id = f"stenka{db['counter']}"
+    walls = db.setdefault("walls", {})
+    if isinstance(walls, dict):
+        walls.setdefault(wall_id, {"tags": [], "users": {}, "created_at": int(time.time())})
+    save_stenka(db)
+    return wall_id
+
+
+def _stenka_render_text(wall_id: str) -> str:
+    db = _stenka_db()
+    walls = db.get("walls") if isinstance(db.get("walls"), dict) else {}
+    wall = walls.get(wall_id) if isinstance(walls, dict) else None
+    tags: list[str] = []
+    if isinstance(wall, dict):
+        raw_tags = wall.get("tags")
+        if isinstance(raw_tags, list):
+            tags = [str(t).strip() for t in raw_tags if str(t).strip()]
+    base = t("stenka_title", "ru")
+    if tags:
+        return f"{html.escape(base)}\n\n{html.escape(', '.join(tags))}"
+    return f"{html.escape(base)}"
+
+
+def _stenka_kb(wall_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=t("stenka_btn_leave_tag", lang), callback_data=f"stenka:tag:{wall_id}")]]
+    )
+
+
+def _stenka_kb_url(wall_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    url = f"https://t.me/{BOT_USERNAME}?start=stenka_{wall_id}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=t("stenka_btn_leave_tag", lang), url=url)]]
+    )
+
+
+@router.callback_query(F.data.startswith("stenka:tag:"))
+async def on_stenka_tag(cb: CallbackQuery) -> None:
+    if not cb.from_user:
+        await cb.answer()
+        return
+
+    lang = get_lang(cb.from_user.id)
+
+    wall_id = cb.data.split(":", 2)[2]
+
+    db = _stenka_db()
+    walls = db.get("walls") if isinstance(db.get("walls"), dict) else {}
+    wall = walls.get(wall_id) if isinstance(walls, dict) else None
+    if not isinstance(wall, dict):
+        await cb.answer(t("stenka_err_not_found", lang), show_alert=True)
+        return
+    if cb.message:
+        wall["chat_id"] = cb.message.chat.id
+        wall["message_id"] = cb.message.message_id
+    if cb.inline_message_id:
+        wall["inline_message_id"] = cb.inline_message_id
+    save_stenka(db)
+
+    try:
+        if cb.message:
+            await cb.message.edit_reply_markup(reply_markup=_stenka_kb_url(wall_id, lang=lang))
+        elif cb.inline_message_id:
+            await cb.bot.edit_message_reply_markup(inline_message_id=cb.inline_message_id, reply_markup=_stenka_kb_url(wall_id, lang=lang))
+    except Exception:
+        pass
+
+    await cb.answer(t("stenka_alert_open_bot", lang), show_alert=True)
 
 
 def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
@@ -653,6 +740,22 @@ async def on_inline(query: InlineQuery) -> None:
     lang = get_lang(query.from_user.id if query.from_user else None)
 
     lowered = text.lower()
+    if lowered.startswith("stenka"):
+        wall_id = _stenka_next_id()
+        msg_text = _stenka_render_text(wall_id)
+        result = InlineQueryResultArticle(
+            id=f"stenka:{wall_id}",
+            title=t("stenka_title", lang),
+            description=t("stenka_inline_description", lang),
+            input_message_content=InputTextMessageContent(
+                message_text=msg_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            ),
+            reply_markup=_stenka_kb(wall_id, lang=lang),
+        )
+        await query.answer([result], cache_time=0, is_personal=True)
+        return
     if lowered in {"donate", "inform"}:
         url = "https://t.me/exteraPluginsSup/302" if lowered == "donate" else "https://t.me/exteraPluginsSup/372"
         message_text = t(

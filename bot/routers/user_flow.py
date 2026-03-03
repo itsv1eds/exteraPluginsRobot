@@ -1,4 +1,5 @@
 import asyncio
+import re
 import html
 import logging
 from datetime import datetime
@@ -28,6 +29,7 @@ from bot.keyboards import (
     submit_type_kb,
     user_plugins_kb,
 )
+from storage import load_stenka, save_stenka
 from bot.keyboards import admin_review_kb
 from bot.cache import get_admins, get_admins_icons, get_admins_plugins, get_categories
 from bot.services.submission import (
@@ -191,6 +193,19 @@ def _render_draft_text(data: Dict[str, Any]) -> str:
     return build_channel_post({"payload": payload})
 
 
+def _render_update_text(data: Dict[str, Any]) -> str:
+    plugin = data.get("plugin", {})
+    payload = {
+        "plugin": plugin,
+        "description_ru": data.get("description_ru"),
+        "description_en": data.get("description_en"),
+        "usage_ru": data.get("usage_ru"),
+        "usage_en": data.get("usage_en"),
+        "category_key": data.get("category_key"),
+    }
+    return build_channel_post({"payload": payload})
+
+
 async def _render_home(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
     await state.clear()
     await state.update_data(lang=lang)
@@ -268,6 +283,16 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     if payload:
         if payload.startswith("plugin_"):
             payload = payload[len("plugin_") :]
+        if payload.startswith("stenka_"):
+            wall_id = payload[len("stenka_") :]
+            await state.update_data(lang=get_lang(user_id), stenka_wall_id=wall_id)
+            await state.set_state(UserFlow.entering_stenka_tag)
+            await message.answer(
+                t("stenka_prompt_enter_tag", get_lang(user_id)),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            return
         await state.update_data(start_payload=payload)
 
     if get_user_language(user_id):
@@ -304,6 +329,91 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         reply_markup=language_kb(),
         parse_mode=ParseMode.HTML,
     )
+
+
+@router.message(UserFlow.entering_stenka_tag)
+async def on_stenka_tag_dm(message: Message, state: FSMContext) -> None:
+    if not message.from_user:
+        return
+    lang = await get_language(message, state)
+    data = await state.get_data()
+    wall_id = str(data.get("stenka_wall_id") or "").strip()
+    if not wall_id:
+        await message.answer(t("stenka_err_not_found", lang), parse_mode=ParseMode.HTML)
+        await state.clear()
+        await state.set_state(UserFlow.idle)
+        return
+
+    raw = (message.text or "").strip()
+    raw = raw.replace(" ", "")
+    if raw.startswith("#"):
+        raw = raw[1:]
+    if not raw:
+        await message.answer(t("need_text", lang), parse_mode=ParseMode.HTML)
+        return
+    if len(raw) > 15:
+        await message.answer(t("stenka_err_tag_too_long", lang), parse_mode=ParseMode.HTML)
+        return
+    if not re.fullmatch(r"\w+", raw, flags=re.UNICODE):
+        await message.answer(t("stenka_err_tag_format", lang), parse_mode=ParseMode.HTML)
+        return
+    tag = raw
+
+    db = load_stenka()
+    if not isinstance(db, dict):
+        db = {}
+    walls = db.get("walls") if isinstance(db.get("walls"), dict) else {}
+    wall = walls.get(wall_id) if isinstance(walls, dict) else None
+    if not isinstance(wall, dict):
+        await message.answer(t("stenka_err_not_found", lang), parse_mode=ParseMode.HTML)
+        await state.clear()
+        await state.set_state(UserFlow.idle)
+        return
+
+    tags = wall.get("tags") if isinstance(wall.get("tags"), list) else []
+    if any(str(t).strip() == tag for t in tags):
+        await message.answer(t("stenka_err_tag_taken", lang), parse_mode=ParseMode.HTML)
+        return
+
+    users = wall.get("users") if isinstance(wall.get("users"), dict) else {}
+    uid_str = str(message.from_user.id)
+    if uid_str in users:
+        await message.answer(t("stenka_err_already_wrote", lang, tag=users.get(uid_str, "")), parse_mode=ParseMode.HTML)
+        return
+
+    tags.append(tag)
+    wall["tags"] = tags
+    users[uid_str] = tag
+    wall["users"] = users
+    save_stenka(db)
+
+    from bot.routers.catalog_flow import _stenka_render_text, _stenka_kb
+
+    text = _stenka_render_text(wall_id)
+    try:
+        if wall.get("inline_message_id"):
+            await message.bot.edit_message_text(
+                inline_message_id=str(wall.get("inline_message_id")),
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=_stenka_kb(wall_id, lang=lang),
+                disable_web_page_preview=True,
+            )
+        elif wall.get("chat_id") and wall.get("message_id"):
+            await message.bot.edit_message_text(
+                chat_id=int(wall.get("chat_id")),
+                message_id=int(wall.get("message_id")),
+                text=text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=_stenka_kb(wall_id, lang=lang),
+                disable_web_page_preview=True,
+            )
+    except Exception:
+        pass
+
+    await message.answer(t("stenka_ok_saved", lang), parse_mode=ParseMode.HTML)
+    await state.clear()
+    await state.set_state(UserFlow.idle)
 
 
 @router.message(Command("lang"))
@@ -590,54 +700,163 @@ async def on_changelog(message: Message, state: FSMContext) -> None:
         return
 
     await state.update_data(changelog=changelog)
-    await state.set_state(UserFlow.confirming_update)
 
     data = await state.get_data()
-    plugin = data.get("plugin", {})
-    old_version = data.get("old_version", "?")
+    old_plugin = data.get("old_plugin", {})
+    old_ru = (old_plugin.get("ru") or {}) if isinstance(old_plugin, dict) else {}
+    old_en = (old_plugin.get("en") or {}) if isinstance(old_plugin, dict) else {}
 
-    text = t(
-        "confirm_update",
-        lang,
-        name=plugin.get("name", "—"),
-        old_version=old_version,
-        version=plugin.get("version", "—"),
-        min_version=plugin.get("min_version", "—"),
-        changelog=changelog,
+    await state.update_data(
+        description_ru=old_ru.get("description", ""),
+        description_en=old_en.get("description", ""),
+        usage_ru=old_ru.get("usage", ""),
+        usage_en=old_en.get("usage", ""),
+        category_key=(old_plugin.get("category") if isinstance(old_plugin, dict) else ""),
+        category_label="",
+        draft_prefix="upd",
+        edit_field=None,
+        edit_lang=None,
     )
-    await answer(message, text, confirm_kb(lang), "plugins")
+
+    await state.set_state(UserFlow.confirming_update)
+    draft_text = _render_update_text(await state.get_data())
+    sent = await answer(
+        message,
+        draft_text,
+        draft_edit_kb(
+            "upd",
+            t("btn_send_to_admin", lang),
+            include_cancel=True,
+            include_checked_on=False,
+            lang=lang,
+        ),
+        "plugins",
+    )
+    if sent:
+        await state.update_data(draft_message_id=sent.message_id)
 
 
-@router.callback_query(UserFlow.confirming_update, F.data == "confirm")
-async def on_confirm_update(cb: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(UserFlow.confirming_update, F.data.startswith("upd:"))
+async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
     lang = await get_language(cb, state)
-    data = await state.get_data()
-    user = cb.from_user
 
-    payload = {
-        "user_id": user.id,
-        "username": user.username or "",
-        "plugin": data.get("plugin", {}),
-        "changelog": data.get("changelog", ""),
-        "update_slug": data.get("update_slug", ""),
-        "old_plugin": data.get("old_plugin", {}),
-        "description_ru": data.get("old_plugin", {}).get("ru", {}).get("description", ""),
-        "description_en": data.get("old_plugin", {}).get("en", {}).get("description", ""),
-        "usage_ru": data.get("old_plugin", {}).get("ru", {}).get("usage", ""),
-        "usage_en": data.get("old_plugin", {}).get("en", {}).get("usage", ""),
-        "category_key": data.get("old_plugin", {}).get("category", ""),
-        "submission_type": "update",
-    }
+    action = cb.data.split(":", 2)[1]
+    if action == "edit":
+        field = cb.data.split(":", 2)[2]
+        if field in {"description", "usage"}:
+            await state.update_data(edit_field=field)
+            await answer(cb, t("admin_choose_language", lang), draft_lang_kb("upd", field, lang=lang), None)
+            await cb.answer()
+            return
+        if field == "category":
+            await state.update_data(edit_field=field)
+            from bot.cache import get_categories
 
-    await state.update_data(
-        pending_payload=payload,
-        pending_request_type="update",
-        pending_reply_key="update_sent",
-    )
-    await state.set_state(UserFlow.entering_admin_comment)
-    await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "plugins")
+            await answer(cb, t("admin_choose_category", lang), draft_category_kb("upd", get_categories(), lang=lang), None)
+            await cb.answer()
+            return
+
+        prompt = {
+            "name": t("admin_prompt_new_name", lang),
+            "author": t("admin_prompt_author", lang),
+            "settings": t("admin_prompt_has_settings", lang),
+            "min_version": t("admin_prompt_min_version", lang),
+        }.get(field, t("admin_prompt_value", lang))
+
+        await state.update_data(edit_field=field)
+        await state.set_state(UserFlow.editing_draft_field)
+        await answer(cb, prompt, None, None)
+        await cb.answer()
+        return
+
+    if action == "lang":
+        _, _, field, lang_choice = cb.data.split(":")
+        await state.update_data(edit_field=field, edit_lang=lang_choice)
+        await state.set_state(UserFlow.editing_draft_field)
+
+        prompt = t("admin_prompt_enter_text_ru", lang) if lang_choice == "ru" else t("admin_prompt_enter_text_en", lang)
+        msg = await answer(cb, prompt, None, None)
+        if msg:
+            await state.update_data(draft_message_id=msg.message_id)
+        await cb.answer()
+        return
+
+    if action == "cat":
+        from bot.cache import get_categories
+
+        cat_key = cb.data.split(":")[2]
+        category = next((c for c in get_categories() if c.get("key") == cat_key), None)
+        if category:
+            await state.update_data(
+                category_key=cat_key,
+                category_label=f"{category.get('ru', '')} / {category.get('en', '')}",
+            )
+
+        await state.set_state(UserFlow.confirming_update)
+        draft_text = _render_update_text(await state.get_data())
+        await answer(
+            cb,
+            draft_text,
+            draft_edit_kb(
+                "upd",
+                t("btn_send_to_admin", lang),
+                include_cancel=True,
+                include_checked_on=False,
+                lang=lang,
+            ),
+            "plugins",
+        )
+        await cb.answer()
+        return
+
+    if action == "back":
+        await state.set_state(UserFlow.confirming_update)
+        draft_text = _render_update_text(await state.get_data())
+        await answer(
+            cb,
+            draft_text,
+            draft_edit_kb(
+                "upd",
+                t("btn_send_to_admin", lang),
+                include_cancel=True,
+                include_checked_on=False,
+                lang=lang,
+            ),
+            "plugins",
+        )
+        await cb.answer()
+        return
+
+    if action == "submit":
+        data = await state.get_data()
+        user = cb.from_user
+        payload = {
+            "user_id": user.id,
+            "username": user.username or "",
+            "plugin": data.get("plugin", {}),
+            "changelog": data.get("changelog", ""),
+            "update_slug": data.get("update_slug", ""),
+            "old_plugin": data.get("old_plugin", {}),
+            "description_ru": data.get("description_ru", ""),
+            "description_en": data.get("description_en", ""),
+            "usage_ru": data.get("usage_ru", ""),
+            "usage_en": data.get("usage_en", ""),
+            "category_key": data.get("category_key", ""),
+            "submission_type": "update",
+        }
+
+        await state.update_data(
+            pending_payload=payload,
+            pending_request_type="update",
+            pending_reply_key="update_sent",
+        )
+        await state.set_state(UserFlow.entering_admin_comment)
+        await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "plugins")
+        await cb.answer()
+        return
+
     await cb.answer()
 
 
@@ -983,6 +1202,7 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     field = data.get("edit_field")
     edit_lang = data.get("edit_lang")
+    prefix = (data.get("draft_prefix") or "draft").strip()
 
     if field in {"description", "usage"}:
         key = f"{field}_{edit_lang}"
@@ -1007,10 +1227,14 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
         await state.update_data(plugin=plugin)
 
     await state.update_data(edit_field=None, edit_lang=None)
-    await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
-    await state.set_state(UserFlow.confirming_submission)
+    if prefix == "draft":
+        await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
+        await state.set_state(UserFlow.confirming_submission)
+        draft_text = _render_draft_text(await state.get_data())
+    else:
+        await state.set_state(UserFlow.confirming_update)
+        draft_text = _render_update_text(await state.get_data())
 
-    draft_text = _render_draft_text(await state.get_data())
     data = await state.get_data()
     draft_message_id = data.get("draft_message_id")
     if draft_message_id:
@@ -1021,7 +1245,7 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
                 message_id=draft_message_id,
                 parse_mode=ParseMode.HTML,
                 reply_markup=draft_edit_kb(
-                    "draft",
+                    prefix,
                     t("btn_send_to_admin", lang),
                     include_cancel=True,
                     include_checked_on=False,
@@ -1034,7 +1258,7 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
                 message,
                 draft_text,
                 draft_edit_kb(
-                    "draft",
+                    prefix,
                     t("btn_send_to_admin", lang),
                     include_cancel=True,
                     include_checked_on=False,
@@ -1047,7 +1271,7 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
             message,
             draft_text,
             draft_edit_kb(
-                "draft",
+                prefix,
                 t("btn_send_to_admin", lang),
                 include_cancel=True,
                 include_checked_on=False,

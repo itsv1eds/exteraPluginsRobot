@@ -8,7 +8,12 @@ _slug_tokens: Dict[str, str] = {}
 def encode_slug(slug: str) -> str:
     if not slug:
         return slug
-    if len(slug) <= _MAX_CALLBACK_SLUG:
+    try:
+        slug_bytes_len = len(slug.encode("utf-8"))
+    except Exception:
+        slug_bytes_len = _MAX_CALLBACK_SLUG + 1
+
+    if slug_bytes_len <= _MAX_CALLBACK_SLUG:
         return slug
     token = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:10]
     key = f"t{token}"

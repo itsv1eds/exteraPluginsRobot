@@ -22,6 +22,8 @@ class UserFlow(StatesGroup):
     entering_changelog = State()
     confirming_update = State()
 
+    entering_stenka_tag = State()
+
 
 class AdminFlow(StatesGroup):
     menu = State()

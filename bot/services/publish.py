@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from storage import load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
+from storage import flush_all, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
 from request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
 from catalog import invalidate_catalog_cache
@@ -177,6 +177,8 @@ async def publish_plugin(entry: Dict[str, Any]) -> Dict[str, Any]:
         submitter_id,
         submitter_username,
     )
+
+    await flush_all()
     
     if file_path:
         Path(file_path).unlink(missing_ok=True)
@@ -217,6 +219,8 @@ async def publish_icon(entry: Dict[str, Any]) -> Dict[str, Any]:
         submitter_id,
         submitter_username,
     )
+
+    await flush_all()
 
     if file_path:
         Path(file_path).unlink(missing_ok=True)

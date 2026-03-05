@@ -7,6 +7,7 @@ class UserFlow(StatesGroup):
     choosing_submission_type = State()
     uploading_file = State()
     uploading_icon_file = State()
+    uploading_pending_file = State()
     choosing_description_language = State()
     editing_description_translation = State()
     editing_usage_ru = State()
@@ -19,6 +20,7 @@ class UserFlow(StatesGroup):
     
     choosing_plugin_to_update = State()
     uploading_update_file = State()
+    uploading_pending_update_file = State()
     entering_changelog = State()
     confirming_update = State()
 

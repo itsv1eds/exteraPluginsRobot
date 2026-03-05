@@ -52,8 +52,8 @@ from user_store import (
     has_paid_broadcast_disable,
     is_broadcast_enabled,
 )
-
 from storage import load_stenka, save_stenka
+from request_store import get_user_requests
 
 router = Router(name="catalog-flow")
 
@@ -587,8 +587,20 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
     user_plugins = find_user_plugins(user.id, user.username or "")
     user_icons = find_user_icons(user.id, user.username or "")
 
+    pending = []
+    for req in get_user_requests(user.id):
+        if req.get("status") != "pending":
+            continue
+        if req.get("type") not in {"new", "update"}:
+            continue
+        payload = req.get("payload", {})
+        if (payload.get("submission_type") or payload.get("type")) != "plugin":
+            continue
+        pending.append(req)
+
     await state.update_data(
         my_plugins=[plugin.get("slug") for plugin in user_plugins],
+        my_pending_plugins=[req.get("id") for req in pending if req.get("id")],
         my_icons=[icon.get("slug") for icon in user_icons],
     )
 
@@ -703,18 +715,14 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
 
     data = await state.get_data()
     slugs: List[str] = data.get(f"my_{kind}", [])
+    pending_ids: List[str] = data.get("my_pending_plugins", []) if kind == "plugins" else []
 
-    if not slugs:
+    if not slugs and not pending_ids:
         await cb.answer(t("catalog_empty", lang), show_alert=True)
         return
 
-    total = len(slugs)
-    total_pages = math.ceil(total / PAGE_SIZE)
-    start = page * PAGE_SIZE
-    page_slugs = slugs[start : start + PAGE_SIZE]
-
-    items = []
-    for slug in page_slugs:
+    all_items = []
+    for slug in slugs:
         if kind == "plugins":
             entity = find_plugin_by_slug(slug)
         else:
@@ -724,9 +732,25 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
             locale = entity.get(lang) or entity.get("ru") or {}
             name = locale.get("name") or slug
             if kind == "plugins":
-                items.append((name, f"myplugin:{encode_slug(slug)}"))
+                all_items.append((name, f"myplugin:{encode_slug(slug)}"))
             else:
-                items.append((name, f"icon:{encode_slug(slug)}"))
+                all_items.append((name, f"icon:{encode_slug(slug)}"))
+
+    if kind == "plugins" and cb.from_user:
+        reqs = get_user_requests(cb.from_user.id)
+        for req_id in pending_ids:
+            req = next((r for r in reqs if r.get("id") == req_id), None)
+            payload = req.get("payload", {}) if isinstance(req, dict) else {}
+            plugin = payload.get("plugin", {}) if isinstance(payload, dict) else {}
+            name = str(plugin.get("name") or req_id).strip() or req_id
+            req_type = req.get("type") if isinstance(req, dict) else "new"
+            cb_data = f"pendupd:{req_id}" if req_type == "update" else f"pendreq:{req_id}"
+            all_items.append((f"{name} ✍", cb_data))
+
+    total = len(all_items)
+    total_pages = math.ceil(total / PAGE_SIZE)
+    start = page * PAGE_SIZE
+    items = all_items[start : start + PAGE_SIZE]
 
     title = t("icons_title" if kind == "icons" else "catalog_title", lang)
     caption = f"{title}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"

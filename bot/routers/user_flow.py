@@ -10,7 +10,15 @@ from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, Message, PreCheckoutQuery, SuccessfulPayment
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    PreCheckoutQuery,
+    SuccessfulPayment,
+)
 
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
@@ -48,7 +56,7 @@ from bot.services.validation import (
     validate_update_submission,
 )
 from bot.states import UserFlow
-from bot.texts import t
+from bot.texts import TEXTS, t
 from catalog import find_plugin_by_slug, find_user_plugins
 from bot.routers.catalog_flow import build_plugin_preview
 from bot.keyboards import plugin_detail_kb
@@ -57,6 +65,7 @@ from request_store import (
     add_draft_request,
     add_request,
     delete_request_and_file,
+    get_request_by_id,
     promote_draft_request,
     update_request_payload,
 )
@@ -261,6 +270,66 @@ async def _sync_submission_draft(
         await state.update_data(draft_request_id=entry.get("id"))
 
 
+async def _sync_pending_plugin_request(state: FSMContext, request_id: str) -> None:
+    data = await state.get_data()
+    plugin = data.get("plugin", {})
+    if not plugin:
+        return
+    payload = {
+        "plugin": plugin,
+        "description_ru": data.get("description_ru"),
+        "description_en": data.get("description_en"),
+        "usage_ru": data.get("usage_ru"),
+        "usage_en": data.get("usage_en"),
+        "category_key": data.get("category_key"),
+        "category_label": data.get("category_label"),
+        "submission_type": "plugin",
+    }
+    update_request_payload(request_id, payload)
+
+
+async def _sync_pending_update_request(state: FSMContext, request_id: str) -> None:
+    data = await state.get_data()
+    plugin = data.get("plugin", {})
+    if not plugin:
+        return
+    payload = {
+        "plugin": plugin,
+        "changelog": data.get("changelog"),
+        "update_slug": data.get("update_slug"),
+        "old_plugin": data.get("old_plugin"),
+        "description_ru": data.get("description_ru"),
+        "description_en": data.get("description_en"),
+        "usage_ru": data.get("usage_ru"),
+        "usage_en": data.get("usage_en"),
+        "category_key": data.get("category_key"),
+        "category_label": data.get("category_label"),
+        "submission_type": "update",
+    }
+    update_request_payload(request_id, payload)
+
+
+async def _notify_admins_request_updated(bot, entry: Dict[str, Any]) -> None:
+    payload = entry.get("payload", {})
+    plugin = payload.get("plugin", {})
+    user_id = payload.get("user_id", 0)
+    username = payload.get("username", "")
+    request_id = entry.get("id", "?")
+    user_link = f"@{username}" if username else f"<code>{user_id}</code>"
+    name = plugin.get("name") or plugin.get("id") or "—"
+    for admin_id in get_admins_plugins():
+        admin_lang = get_lang(admin_id)
+        try:
+            await bot.send_message(
+                admin_id,
+                t("admin_request_updated", admin_lang, id=request_id, name=name, user=user_link),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            continue
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -436,7 +505,6 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer()
         return
 
-
     if cb.from_user:
         set_user_language(cb.from_user.id, lang)
     await state.update_data(lang=lang)
@@ -465,6 +533,68 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
 
     await answer(cb, t("welcome", lang), main_menu_kb(lang), "welcome")
     await cb.answer(t("language_saved", lang))
+
+
+@router.callback_query(F.data.startswith("pendupd:"))
+async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -> None:
+    if not cb.from_user:
+        await cb.answer()
+        return
+    lang = await get_language(cb, state)
+    request_id = cb.data.split(":", 1)[1]
+    req = get_request_by_id(request_id)
+    if not isinstance(req, dict):
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    if req.get("status") != "pending" or req.get("type") != "update":
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    payload = req.get("payload", {})
+    if not isinstance(payload, dict) or payload.get("user_id") != cb.from_user.id:
+        await cb.answer(t("admin_denied", lang), show_alert=True)
+        return
+    if (payload.get("submission_type") or payload.get("type")) != "update":
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+
+    plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
+    await state.clear()
+    await state.update_data(
+        lang=lang,
+        plugin=plugin,
+        changelog=payload.get("changelog", ""),
+        update_slug=payload.get("update_slug", ""),
+        old_plugin=payload.get("old_plugin", {}),
+        description_ru=payload.get("description_ru", ""),
+        description_en=payload.get("description_en", ""),
+        usage_ru=payload.get("usage_ru", ""),
+        usage_en=payload.get("usage_en", ""),
+        category_key=payload.get("category_key", ""),
+        category_label=payload.get("category_label", ""),
+        draft_prefix="pendupd",
+        pending_request_id=request_id,
+        edit_field=None,
+        edit_lang=None,
+        draft_message_id=cb.message.message_id if cb.message else None,
+    )
+    await state.set_state(UserFlow.confirming_update)
+    draft_text = _render_update_text(await state.get_data())
+    await answer(
+        cb,
+        draft_text,
+        draft_edit_kb(
+            "pendupd",
+            t("btn_save_changes", lang),
+            include_cancel=True,
+            include_checked_on=False,
+            include_delete=True,
+            include_file=True,
+            include_back=True,
+            lang=lang,
+        ),
+        "profile",
+    )
+    await cb.answer()
 
 
 @router.callback_query(F.data == "home")
@@ -568,6 +698,65 @@ async def on_choose_plugin_update(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version)
     await state.set_state(UserFlow.uploading_update_file)
     await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "plugins")
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("pendreq:"))
+async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
+    if not cb.from_user:
+        await cb.answer()
+        return
+    lang = await get_language(cb, state)
+    request_id = cb.data.split(":", 1)[1]
+    req = get_request_by_id(request_id)
+    if not isinstance(req, dict):
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    if req.get("status") != "pending" or req.get("type") != "new":
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    payload = req.get("payload", {})
+    if not isinstance(payload, dict) or payload.get("user_id") != cb.from_user.id:
+        await cb.answer(t("admin_denied", lang), show_alert=True)
+        return
+    if (payload.get("submission_type") or payload.get("type")) != "plugin":
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+
+    plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
+    await state.clear()
+    await state.update_data(
+        lang=lang,
+        plugin=plugin,
+        description_ru=payload.get("description_ru", ""),
+        description_en=payload.get("description_en", ""),
+        usage_ru=payload.get("usage_ru", ""),
+        usage_en=payload.get("usage_en", ""),
+        category_key=payload.get("category_key", ""),
+        category_label=payload.get("category_label", ""),
+        draft_prefix="pend",
+        pending_request_id=request_id,
+        edit_field=None,
+        edit_lang=None,
+        draft_message_id=cb.message.message_id if cb.message else None,
+    )
+    await state.set_state(UserFlow.confirming_submission)
+    draft_text = _render_draft_text(await state.get_data())
+    await answer(
+        cb,
+        draft_text,
+        draft_edit_kb(
+            "pend",
+            t("btn_save_changes", lang),
+            include_cancel=True,
+            include_checked_on=False,
+            include_delete=True,
+            include_file=True,
+            include_back=True,
+            lang=lang,
+        ),
+        "profile",
+    )
     await cb.answer()
 
 
@@ -736,25 +925,31 @@ async def on_changelog(message: Message, state: FSMContext) -> None:
         await state.update_data(draft_message_id=sent.message_id)
 
 
-@router.callback_query(UserFlow.confirming_update, F.data.startswith("upd:"))
+@router.callback_query(UserFlow.confirming_update, F.data.regexp(r"^(upd|pendupd):"))
 async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
     lang = await get_language(cb, state)
 
+    prefix = cb.data.split(":", 2)[0]
     action = cb.data.split(":", 2)[1]
     if action == "edit":
         field = cb.data.split(":", 2)[2]
+        if field == "file" and prefix == "pendupd":
+            await state.set_state(UserFlow.uploading_pending_update_file)
+            await answer(cb, t("pending_upload_update_plugin", lang), cancel_kb(lang), None)
+            await cb.answer()
+            return
         if field in {"description", "usage"}:
             await state.update_data(edit_field=field)
-            await answer(cb, t("admin_choose_language", lang), draft_lang_kb("upd", field, lang=lang), None)
+            await answer(cb, t("admin_choose_language", lang), draft_lang_kb(prefix, field, lang=lang), None)
             await cb.answer()
             return
         if field == "category":
             await state.update_data(edit_field=field)
             from bot.cache import get_categories
 
-            await answer(cb, t("admin_choose_category", lang), draft_category_kb("upd", get_categories(), lang=lang), None)
+            await answer(cb, t("admin_choose_category", lang), draft_category_kb(prefix, get_categories(), lang=lang), None)
             await cb.answer()
             return
 
@@ -794,16 +989,24 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
                 category_label=f"{category.get('ru', '')} / {category.get('en', '')}",
             )
 
+            if prefix == "pendupd":
+                data = await state.get_data()
+                req_id = str(data.get("pending_request_id") or "")
+                if req_id:
+                    await _sync_pending_update_request(state, req_id)
+
         await state.set_state(UserFlow.confirming_update)
         draft_text = _render_update_text(await state.get_data())
         await answer(
             cb,
             draft_text,
             draft_edit_kb(
-                "upd",
-                t("btn_send_to_admin", lang),
+                prefix,
+                (t("btn_send_to_admin", lang) if prefix == "upd" else t("btn_save_changes", lang)),
                 include_cancel=True,
                 include_checked_on=False,
+                include_delete=(prefix == "pendupd"),
+                include_file=(prefix == "pendupd"),
                 lang=lang,
             ),
             "plugins",
@@ -818,10 +1021,12 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             cb,
             draft_text,
             draft_edit_kb(
-                "upd",
-                t("btn_send_to_admin", lang),
+                prefix,
+                (t("btn_send_to_admin", lang) if prefix == "upd" else t("btn_save_changes", lang)),
                 include_cancel=True,
                 include_checked_on=False,
+                include_delete=(prefix == "pendupd"),
+                include_file=(prefix == "pendupd"),
                 lang=lang,
             ),
             "plugins",
@@ -830,6 +1035,17 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "submit":
+        if prefix == "pendupd":
+            data = await state.get_data()
+            req_id = str(data.get("pending_request_id") or "")
+            if req_id:
+                await _sync_pending_update_request(state, req_id)
+                entry = get_request_by_id(req_id)
+                if isinstance(entry, dict):
+                    asyncio.create_task(_notify_admins_request_updated(cb.bot, entry))
+            await cb.answer(t("pending_saved", lang), show_alert=True)
+            return
+
         data = await state.get_data()
         user = cb.from_user
         payload = {
@@ -858,6 +1074,156 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     await cb.answer()
+
+
+@router.callback_query(UserFlow.confirming_submission, F.data == "pend:delete")
+async def on_pending_delete(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=t("btn_confirm", lang), callback_data="pend:delete_confirm"),
+                InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="pend:back"),
+            ]
+        ]
+    )
+    await answer(cb, t("pending_delete_confirm", lang), kb, None)
+    await cb.answer()
+
+
+@router.callback_query(UserFlow.confirming_submission, F.data == "pend:delete_confirm")
+async def on_pending_delete_confirm(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    data = await state.get_data()
+    req_id = str(data.get("pending_request_id") or "").strip()
+    if not req_id:
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    delete_request_and_file(req_id)
+    await state.clear()
+    await state.set_state(UserFlow.idle)
+    await answer(cb, t("pending_deleted", lang), main_menu_kb(lang), "welcome")
+    await cb.answer()
+
+
+@router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete")
+async def on_pending_update_delete(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=t("btn_confirm", lang), callback_data="pendupd:delete_confirm"),
+                InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="pendupd:back"),
+            ]
+        ]
+    )
+    await answer(cb, t("pending_delete_confirm", lang), kb, None)
+    await cb.answer()
+
+
+@router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete_confirm")
+async def on_pending_update_delete_confirm(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    data = await state.get_data()
+    req_id = str(data.get("pending_request_id") or "").strip()
+    if not req_id:
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return
+    delete_request_and_file(req_id)
+    await state.clear()
+    await state.set_state(UserFlow.idle)
+    await answer(cb, t("pending_deleted", lang), main_menu_kb(lang), "welcome")
+    await cb.answer()
+
+
+@router.message(UserFlow.uploading_pending_update_file, F.document)
+async def on_pending_update_file(message: Message, state: FSMContext) -> None:
+    if not await _ensure_not_banned(message, state):
+        return
+    lang = await get_language(message, state)
+    data = await state.get_data()
+    req_id = str(data.get("pending_request_id") or "").strip()
+    if not req_id:
+        await state.set_state(UserFlow.idle)
+        await message.answer(t("not_found", lang))
+        return
+
+    existing = data.get("plugin", {})
+    expected_id = (existing.get("id") or "").strip()
+    old_plugin = data.get("old_plugin", {})
+    old_version = data.get("old_version", "")
+
+    if message.document and message.document.file_size:
+        if message.document.file_size > 8 * 1024 * 1024:
+            await message.answer(t("file_too_large", lang))
+            return
+
+    try:
+        plugin = await process_plugin_file(message.bot, message.document)
+    except ValueError as e:
+        key, _, details = str(e).partition(":")
+        if key == "parse_error" and details:
+            await message.answer(t("parse_error", lang, error=details))
+        else:
+            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
+        return
+
+    new_plugin = plugin.to_dict()
+    if expected_id and (new_plugin.get("id") or "").strip() != expected_id:
+        await message.answer(t("pending_file_id_mismatch", lang))
+        return
+
+    is_valid, error = validate_update_submission(new_plugin, old_plugin)
+    if not is_valid:
+        if error == "version_not_higher":
+            await message.answer(t("version_not_higher", lang, current=old_version or "—"))
+        else:
+            await message.answer(t(error, lang))
+        return
+
+    old_path = (existing.get("file_path") or "").strip()
+    if old_path and old_path != new_plugin.get("file_path"):
+        Path(old_path).unlink(missing_ok=True)
+
+    merged = {
+        **new_plugin,
+        "id": expected_id or new_plugin.get("id"),
+        "name": existing.get("name") or new_plugin.get("name"),
+        "author": existing.get("author") or new_plugin.get("author"),
+        "description": existing.get("description") or new_plugin.get("description"),
+        "min_version": existing.get("min_version") or new_plugin.get("min_version"),
+        "has_ui_settings": existing.get("has_ui_settings", new_plugin.get("has_ui_settings")),
+    }
+
+    await state.update_data(plugin=merged)
+    await _sync_pending_update_request(state, req_id)
+    entry = get_request_by_id(req_id)
+    if isinstance(entry, dict):
+        asyncio.create_task(_notify_admins_request_updated(message.bot, entry))
+
+    await state.set_state(UserFlow.confirming_update)
+    draft_text = _render_update_text(await state.get_data())
+    await answer(
+        message,
+        draft_text,
+        draft_edit_kb(
+            "pendupd",
+            t("btn_save_changes", lang),
+            include_cancel=True,
+            include_checked_on=False,
+            include_delete=True,
+            include_file=True,
+            include_back=True,
+            lang=lang,
+        ),
+        "profile",
+    )
+
+
+@router.message(UserFlow.uploading_pending_update_file)
+async def on_pending_update_file_invalid(message: Message, state: FSMContext) -> None:
+    lang = await get_language(message, state)
+    await message.answer(t("invalid_file", lang))
 
 
 @router.callback_query(UserFlow.choosing_submission_type, F.data == "submit:icons")
@@ -1092,20 +1458,27 @@ async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.callback_query(UserFlow.confirming_submission, F.data.startswith("draft:edit:"))
+@router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):edit:"))
 async def on_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
+    prefix = cb.data.split(":", 2)[0]
     field = cb.data.split(":")[2]
     lang = await get_language(cb, state)
 
+    if field == "file" and prefix == "pend":
+        await state.set_state(UserFlow.uploading_pending_file)
+        await answer(cb, t("pending_upload_plugin", lang), cancel_kb(lang), None)
+        await cb.answer()
+        return
+
     if field in {"description", "usage"}:
         await state.update_data(edit_field=field)
-        await answer(cb, t("admin_choose_language", lang), draft_lang_kb("draft", field, lang=lang), None)
+        await answer(cb, t("admin_choose_language", lang), draft_lang_kb(prefix, field, lang=lang), None)
         await cb.answer()
         return
 
     if field == "category":
         await state.update_data(edit_field=field)
-        await answer(cb, t("admin_choose_category", lang), draft_category_kb("draft", get_categories(), lang=lang), None)
+        await answer(cb, t("admin_choose_category", lang), draft_category_kb(prefix, get_categories(), lang=lang), None)
         await cb.answer()
         return
 
@@ -1122,7 +1495,7 @@ async def on_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.callback_query(UserFlow.confirming_submission, F.data.startswith("draft:lang:"))
+@router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):lang:"))
 async def on_draft_language(cb: CallbackQuery, state: FSMContext) -> None:
     _, _, field, lang_choice = cb.data.split(":")
     await state.update_data(edit_field=field, edit_lang=lang_choice)
@@ -1137,9 +1510,10 @@ async def on_draft_language(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.callback_query(UserFlow.confirming_submission, F.data.startswith("draft:cat:"))
+@router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):cat:"))
 async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
+    prefix = cb.data.split(":", 2)[0]
     cat_key = cb.data.split(":")[2]
     category = next((c for c in get_categories() if c.get("key") == cat_key), None)
     if category:
@@ -1147,7 +1521,13 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
             category_key=cat_key,
             category_label=f"{category.get('ru', '')} / {category.get('en', '')}",
         )
-        await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
+        if prefix == "draft":
+            await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
+        else:
+            data = await state.get_data()
+            req_id = str(data.get("pending_request_id") or "")
+            if req_id:
+                await _sync_pending_plugin_request(state, req_id)
 
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
@@ -1156,10 +1536,12 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
         cb,
         draft_text,
         draft_edit_kb(
-            "draft",
-            t("btn_send_to_admin", lang),
+            prefix,
+            (t("btn_send_to_admin", lang) if prefix == "draft" else t("btn_save_changes", lang)),
             include_cancel=True,
             include_checked_on=False,
+            include_delete=(prefix == "pend"),
+            include_file=(prefix == "pend"),
             lang=lang,
         ),
         "plugins",
@@ -1167,17 +1549,18 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer()
 
 
-@router.callback_query(UserFlow.confirming_submission, F.data == "draft:back")
+@router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):back$"))
 async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
+    prefix = cb.data.split(":", 1)[0]
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
     await answer(
         cb,
         draft_text,
         draft_edit_kb(
-            "draft",
-            t("btn_send_to_admin", lang),
+            prefix,
+            (t("btn_send_to_admin", lang) if prefix == "draft" else t("btn_save_changes", lang)),
             include_cancel=True,
             include_checked_on=False,
             lang=lang,
@@ -1231,6 +1614,13 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
         await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
         await state.set_state(UserFlow.confirming_submission)
         draft_text = _render_draft_text(await state.get_data())
+    elif prefix == "pend":
+        data = await state.get_data()
+        req_id = str(data.get("pending_request_id") or "")
+        if req_id:
+            await _sync_pending_plugin_request(state, req_id)
+        await state.set_state(UserFlow.confirming_submission)
+        draft_text = _render_draft_text(await state.get_data())
     else:
         await state.set_state(UserFlow.confirming_update)
         draft_text = _render_update_text(await state.get_data())
@@ -1246,9 +1636,11 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
                 parse_mode=ParseMode.HTML,
                 reply_markup=draft_edit_kb(
                     prefix,
-                    t("btn_send_to_admin", lang),
+                    (t("btn_send_to_admin", lang) if prefix != "pend" else t("btn_save_changes", lang)),
                     include_cancel=True,
                     include_checked_on=False,
+                    include_delete=(prefix in {"pend", "pendupd"}),
+                    include_file=(prefix in {"pend", "pendupd"}),
                     lang=lang,
                 ),
                 disable_web_page_preview=True,
@@ -1259,9 +1651,11 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
                 draft_text,
                 draft_edit_kb(
                     prefix,
-                    t("btn_send_to_admin", lang),
+                    (t("btn_send_to_admin", lang) if prefix != "pend" else t("btn_save_changes", lang)),
                     include_cancel=True,
                     include_checked_on=False,
+                    include_delete=(prefix in {"pend", "pendupd"}),
+                    include_file=(prefix in {"pend", "pendupd"}),
                     lang=lang,
                 ),
                 "plugins",
@@ -1272,20 +1666,115 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
             draft_text,
             draft_edit_kb(
                 prefix,
-                t("btn_send_to_admin", lang),
+                (t("btn_send_to_admin", lang) if prefix != "pend" else t("btn_save_changes", lang)),
                 include_cancel=True,
                 include_checked_on=False,
+                include_delete=(prefix in {"pend", "pendupd"}),
+                include_file=(prefix in {"pend", "pendupd"}),
                 lang=lang,
             ),
             "plugins",
         )
 
 
-@router.callback_query(UserFlow.confirming_submission, F.data == "draft:submit")
+@router.message(UserFlow.uploading_pending_file, F.document)
+async def on_pending_file(message: Message, state: FSMContext) -> None:
+    if not await _ensure_not_banned(message, state):
+        return
+    lang = await get_language(message, state)
+    data = await state.get_data()
+    req_id = str(data.get("pending_request_id") or "").strip()
+    if not req_id:
+        await state.set_state(UserFlow.idle)
+        await message.answer(t("not_found", lang))
+        return
+
+    existing = data.get("plugin", {})
+    expected_id = (existing.get("id") or "").strip()
+
+    if message.document and message.document.file_size:
+        if message.document.file_size > 8 * 1024 * 1024:
+            await message.answer(t("file_too_large", lang))
+            return
+
+    try:
+        plugin = await process_plugin_file(message.bot, message.document)
+    except ValueError as e:
+        key, _, details = str(e).partition(":")
+        if key == "parse_error" and details:
+            await message.answer(t("parse_error", lang, error=details))
+        else:
+            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
+        return
+
+    new_plugin = plugin.to_dict()
+    if expected_id and (new_plugin.get("id") or "").strip() != expected_id:
+        await message.answer(t("pending_file_id_mismatch", lang))
+        return
+
+    old_path = (existing.get("file_path") or "").strip()
+    if old_path and old_path != new_plugin.get("file_path"):
+        Path(old_path).unlink(missing_ok=True)
+
+    merged = {
+        **new_plugin,
+        "id": expected_id or new_plugin.get("id"),
+        "name": existing.get("name") or new_plugin.get("name"),
+        "author": existing.get("author") or new_plugin.get("author"),
+        "description": existing.get("description") or new_plugin.get("description"),
+        "min_version": existing.get("min_version") or new_plugin.get("min_version"),
+        "has_ui_settings": existing.get("has_ui_settings", new_plugin.get("has_ui_settings")),
+    }
+
+    await state.update_data(plugin=merged)
+    await _sync_pending_plugin_request(state, req_id)
+    entry = get_request_by_id(req_id)
+    if isinstance(entry, dict):
+        asyncio.create_task(_notify_admins_request_updated(message.bot, entry))
+
+    await state.set_state(UserFlow.confirming_submission)
+    draft_text = _render_draft_text(await state.get_data())
+    await answer(
+        message,
+        draft_text,
+        draft_edit_kb(
+            "pend",
+            t("btn_save_changes", lang),
+            include_cancel=True,
+            include_checked_on=False,
+            include_delete=True,
+            include_file=True,
+            include_back=True,
+            lang=lang,
+        ),
+        "profile",
+    )
+
+
+@router.message(UserFlow.uploading_pending_file)
+async def on_pending_file_invalid(message: Message, state: FSMContext) -> None:
+    lang = await get_language(message, state)
+    await message.answer(t("invalid_file", lang))
+
+
+@router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):submit$"))
 async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
     lang = await get_language(cb, state)
+    prefix = cb.data.split(":", 1)[0]
+
+    if prefix == "pend":
+        data = await state.get_data()
+        req_id = str(data.get("pending_request_id") or "")
+        if req_id:
+            await _sync_pending_plugin_request(state, req_id)
+            entry = get_request_by_id(req_id)
+            if isinstance(entry, dict):
+                asyncio.create_task(_notify_admins_request_updated(cb.bot, entry))
+        await cb.answer(t("pending_saved", lang), show_alert=True)
+        return
+
     data = await state.get_data()
     user = cb.from_user
 

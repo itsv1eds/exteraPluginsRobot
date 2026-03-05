@@ -524,6 +524,35 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
     "stenka_ok_saved": {"ru": "Готово", "en": "Done"},
 
+    "btn_save_changes": {"ru": "Сохранить", "en": "Save"},
+    "pending_saved": {"ru": "Сохранено.", "en": "Saved."},
+
+    "pending_upload_plugin": {
+        "ru": "Пришли новый файл <code>.plugin</code> для этой заявки.",
+        "en": "Send a new <code>.plugin</code> file for this request.",
+    },
+    "pending_upload_update_plugin": {
+        "ru": "Пришли новый файл <code>.plugin</code> для обновления.",
+        "en": "Send a new <code>.plugin</code> file for the update.",
+    },
+    "pending_file_id_mismatch": {
+        "ru": "ID плагина в файле не совпадает с заявкой.",
+        "en": "Plugin ID in the file does not match the request.",
+    },
+    "pending_delete_confirm": {
+        "ru": "Удалить заявку?",
+        "en": "Delete this request?",
+    },
+    "pending_deleted": {
+        "ru": "Заявка удалена.",
+        "en": "Request deleted.",
+    },
+
+    "admin_request_updated": {
+        "ru": "✍ Обновили заявку\n\nID: <code>{id}</code>\nПлагин: <b>{name}</b>\nПользователь: {user}",
+        "en": "✍ Request updated\n\nID: <code>{id}</code>\nPlugin: <b>{name}</b>\nUser: {user}",
+    },
+
     "choose_category": {
         "ru": "Выберите категорию:",
         "en": "Choose category:",

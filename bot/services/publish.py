@@ -50,13 +50,16 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
     name = html.escape(plugin.get("name", "")) or "—"
 
     def _norm_text(value: str) -> str:
-        return html.unescape(value or "").replace("\\n", "\n").strip()
+        return (value or "").replace("\\n", "\n").strip()
 
-    desc_fallback = _norm_text(plugin.get("description", ""))
-    desc_ru = html.escape(_norm_text(payload.get("description_ru") or desc_fallback or "")) or "—"
-    desc_en = html.escape(_norm_text(payload.get("description_en") or desc_fallback or "")) or "—"
-    usage_ru = html.escape(_norm_text(payload.get("usage_ru") or "—"))
-    usage_en = html.escape(_norm_text(payload.get("usage_en") or "—"))
+    def _norm_html(value: str) -> str:
+        return _norm_text(value)
+
+    desc_fallback = _norm_html(plugin.get("description", ""))
+    desc_ru = (_norm_html(payload.get("description_ru") or desc_fallback or "") or "—")
+    desc_en = (_norm_html(payload.get("description_en") or desc_fallback or "") or "—")
+    usage_ru = _norm_html(payload.get("usage_ru") or "—")
+    usage_en = _norm_html(payload.get("usage_en") or "—")
     min_ver = html.escape(plugin.get("min_version", ""))
 
     checked_line = f"<b>Проверено на:</b> {checked}" if checked else ""

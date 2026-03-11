@@ -65,6 +65,7 @@ from request_store import (
     add_draft_request,
     add_request,
     delete_request_and_file,
+    get_user_requests,
     get_request_by_id,
     promote_draft_request,
     update_request_payload,
@@ -895,13 +896,21 @@ async def on_changelog(message: Message, state: FSMContext) -> None:
     old_ru = (old_plugin.get("ru") or {}) if isinstance(old_plugin, dict) else {}
     old_en = (old_plugin.get("en") or {}) if isinstance(old_plugin, dict) else {}
 
+    category_key = (old_plugin.get("category") if isinstance(old_plugin, dict) else "") or ""
+    category_key = str(category_key).strip()
+    category_label = ""
+    if category_key:
+        category = next((c for c in get_categories() if c.get("key") == category_key), None)
+        if category:
+            category_label = f"{category.get('ru', '')} / {category.get('en', '')}"
+
     await state.update_data(
         description_ru=old_ru.get("description", ""),
         description_en=old_en.get("description", ""),
         usage_ru=old_ru.get("usage", ""),
         usage_en=old_en.get("usage", ""),
-        category_key=(old_plugin.get("category") if isinstance(old_plugin, dict) else ""),
-        category_label="",
+        category_key=category_key,
+        category_label=category_label,
         draft_prefix="upd",
         edit_field=None,
         edit_lang=None,
@@ -1851,6 +1860,89 @@ async def _finalize_submission(
     if comment:
         payload["admin_comment"] = comment
 
+    if request_type == "update":
+        user_id = payload.get("user_id")
+        update_slug_raw = payload.get("update_slug")
+        update_slug = str(update_slug_raw or "").strip()
+        if not update_slug:
+            plugin_payload = payload.get("plugin", {})
+            if isinstance(plugin_payload, dict):
+                update_slug = str(plugin_payload.get("id") or "").strip()
+        if user_id and update_slug:
+            existing_updates = [
+                r
+                for r in get_user_requests(int(user_id))
+                if r.get("status") == "pending"
+                and r.get("type") == "update"
+                and str((r.get("payload", {}) or {}).get("update_slug") or "").strip() == update_slug
+            ]
+
+            def _merge_text(old: str | None, new: str | None) -> str:
+                old_s = (old or "").strip()
+                new_s = (new or "").strip()
+                if not old_s:
+                    return new_s
+                if not new_s:
+                    return old_s
+                if new_s in old_s:
+                    return old_s
+                if old_s in new_s:
+                    return new_s
+                return f"{old_s}\n\n{new_s}"
+
+            def _prefer(old: str | None, new: str | None) -> str:
+                new_s = (new or "").strip()
+                return new_s if new_s else (old or "")
+
+            if existing_updates:
+                keep = existing_updates[0]
+                keep_id = keep.get("id")
+                keep_payload = keep.get("payload", {}) if isinstance(keep.get("payload"), dict) else {}
+
+                old_plugin = keep_payload.get("plugin", {}) if isinstance(keep_payload.get("plugin"), dict) else {}
+                new_plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
+
+                old_path = str(old_plugin.get("file_path") or "").strip()
+                new_path = str(new_plugin.get("file_path") or "").strip()
+
+                merged_plugin = {**old_plugin, **new_plugin}
+                merged_payload = {
+                    **keep_payload,
+                    **payload,
+                    "plugin": merged_plugin,
+                    "changelog": _merge_text(keep_payload.get("changelog"), payload.get("changelog")),
+                    "description_ru": _prefer(keep_payload.get("description_ru"), payload.get("description_ru")),
+                    "description_en": _prefer(keep_payload.get("description_en"), payload.get("description_en")),
+                    "usage_ru": _prefer(keep_payload.get("usage_ru"), payload.get("usage_ru")),
+                    "usage_en": _prefer(keep_payload.get("usage_en"), payload.get("usage_en")),
+                    "category_key": _prefer(keep_payload.get("category_key"), payload.get("category_key")),
+                    "category_label": _prefer(keep_payload.get("category_label"), payload.get("category_label")),
+                }
+
+                if keep_id:
+                    update_request_payload(str(keep_id), merged_payload)
+
+                    if new_path and old_path and old_path != new_path:
+                        try:
+                            Path(old_path).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+
+                    for extra in existing_updates[1:]:
+                        extra_id = str(extra.get("id") or "").strip()
+                        if extra_id:
+                            delete_request_and_file(extra_id)
+
+                    entry = get_request_by_id(str(keep_id)) or keep
+                    asyncio.create_task(notify_admins_request(target.bot, entry))
+
+                    await state.set_state(UserFlow.idle)
+                    await state.update_data(draft_request_id=None)
+                    await answer(target, t(reply_key, lang), main_menu_kb(lang), "welcome")
+                    if isinstance(target, CallbackQuery):
+                        await target.answer()
+                    return
+
     draft_id = data.get("draft_request_id")
     if draft_id:
         entry = promote_draft_request(draft_id, payload)
@@ -1985,7 +2077,7 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
             if admin_comment:
                 await bot.send_message(
                     admin_id,
-                    t("admin_request_comment", admin_lang, comment=html.escape(admin_comment)),
+                    t("admin_request_comment", admin_lang, comment=admin_comment),
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )

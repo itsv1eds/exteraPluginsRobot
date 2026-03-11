@@ -179,7 +179,7 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
 
     description = (locale.get("description") or "").strip()
     if description:
-        lines.append(f"<blockquote expandable>{html.escape(description)}</blockquote>")
+        lines.append(f"<blockquote expandable>{description}</blockquote>")
 
     min_version = (entry.get("min_version") or "").strip()
     if min_version:
@@ -222,7 +222,7 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
     if kind == "plugin":
         description = (locale.get("description") or "").strip()
         if description:
-            lines.append(f"<blockquote expandable>{html.escape(description)}</blockquote>")
+            lines.append(f"<blockquote expandable>{description}</blockquote>")
 
         min_version = (entry.get("min_version") or "").strip()
         if min_version:
@@ -506,24 +506,62 @@ async def on_search_query(message: Message, state: FSMContext) -> None:
         await message.answer(t("need_text", lang))
         return
 
-    results = search_plugins(query, limit=10)
+    results = search_plugins(query, limit=25)
     await state.set_state(UserFlow.idle)
 
     if not results:
         await answer(message, t("search_empty", lang), search_kb(lang, True), "catalog")
         return
 
-    items = []
+    slugs: list[str] = []
     for plugin in results:
         slug = plugin.get("slug")
         if slug:
-            locale = plugin.get(lang) or plugin.get("ru") or {}
-            name = locale.get("name") or slug
-            items.append((name, f"plugin:{encode_slug(slug)}"))
+            slugs.append(slug)
 
-    text = t("search_results", lang, count=len(results))
-    await state.update_data(catalog_back="search:0")
-    await answer(message, text, paginated_list_kb(items, 0, 1, "search", "catalog", lang=lang), "catalog")
+    await state.update_data(last_search_query=query, last_search_results=slugs)
+    await _render_search_results(message, state, page=0)
+
+
+async def _render_search_results(target: Message | CallbackQuery, state: FSMContext, page: int) -> None:
+    lang = await get_language(target, state)
+    data = await state.get_data()
+    slugs: list[str] = data.get("last_search_results", [])
+    if not slugs:
+        await answer(target, t("search_empty", lang), search_kb(lang, True), "catalog")
+        return
+
+    total = len(slugs)
+    total_pages = math.ceil(total / PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * PAGE_SIZE
+    page_slugs = slugs[start : start + PAGE_SIZE]
+
+    items = []
+    for slug in page_slugs:
+        plugin = find_plugin_by_slug(slug)
+        locale = (plugin.get(lang) if plugin else None) or (plugin.get("ru") if plugin else None) or {}
+        name = (locale.get("name") if isinstance(locale, dict) else None) or slug
+        items.append((name, f"plugin:{encode_slug(slug)}"))
+
+    text = t("search_results", lang, count=total)
+    await state.update_data(catalog_back=f"search:{page}")
+    await answer(
+        target,
+        text,
+        paginated_list_kb(items, page, total_pages, "search", "catalog", lang=lang),
+        "catalog",
+    )
+
+
+@router.callback_query(F.data.startswith("search:"))
+async def on_search_page(cb: CallbackQuery, state: FSMContext) -> None:
+    parts = cb.data.split(":", 1)
+    page = 0
+    if len(parts) > 1 and parts[1].isdigit():
+        page = int(parts[1])
+    await _render_search_results(cb, state, page=page)
+    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("icons:"))

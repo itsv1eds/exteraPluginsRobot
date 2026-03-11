@@ -304,6 +304,16 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await _render_menu(cb, state)
 
 
+def _can_schedule_request(entry: dict | None) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    req_type = entry.get("type", "new")
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    if payload.get("submission_type") == "icon" or payload.get("icon"):
+        return False
+    return req_type not in {"update", "delete"}
+
+
 def _render_request_draft(entry: dict) -> str:
     payload = entry.get("payload", {})
     if payload.get("submission_type") == "icon" or payload.get("icon"):
@@ -2216,13 +2226,20 @@ async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
 
     draft_text = _render_request_draft(entry)
     payload = entry.get("payload", {})
+    include_schedule = _can_schedule_request(entry)
     if payload.get("submission_type") == "icon" or payload.get("icon"):
-        await answer(cb, draft_text, icon_draft_edit_kb(include_schedule=True, lang=lang), "iconpacks")
+        await answer(cb, draft_text, icon_draft_edit_kb(include_schedule=False, lang=lang), "iconpacks")
     else:
         await answer(
             cb,
             draft_text,
-            draft_edit_kb("adm", _tr(cb, "admin_submit_publish"), include_back=True, include_schedule=True, lang=lang),
+            draft_edit_kb(
+                "adm",
+                _tr(cb, "admin_submit_publish"),
+                include_back=True,
+                include_schedule=include_schedule,
+                lang=lang,
+            ),
             "plugins",
         )
     try:
@@ -2668,10 +2685,17 @@ async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
 
     entry = get_request_by_id((await state.get_data()).get("current_request"))
     if entry:
+        include_schedule = _can_schedule_request(entry)
         await answer(
             cb,
             _render_request_draft(entry),
-            draft_edit_kb("adm", _tr(cb, "admin_submit_publish"), include_back=True, lang=lang),
+            draft_edit_kb(
+                "adm",
+                _tr(cb, "admin_submit_publish"),
+                include_back=True,
+                include_schedule=include_schedule,
+                lang=lang,
+            ),
         )
     try:
         await cb.answer()
@@ -2685,14 +2709,21 @@ async def on_admin_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     entry = get_request_by_id(data.get("current_request", ""))
     if entry:
+        include_schedule = _can_schedule_request(entry)
         await answer(
             cb,
             _render_request_draft(entry),
-            draft_edit_kb("adm", _tr(cb, "admin_submit_publish"), include_back=True, lang=lang),
+            draft_edit_kb(
+                "adm",
+                _tr(cb, "admin_submit_publish"),
+                include_back=True,
+                include_schedule=include_schedule,
+                lang=lang,
+            ),
             "plugins",
         )
     try:
-            await cb.answer()
+        await cb.answer()
     except Exception:
         pass
 
@@ -2751,6 +2782,7 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
         data = await state.get_data()
         draft_message_id = data.get("draft_message_id")
         draft_text = _render_request_draft(entry)
+        include_schedule = _can_schedule_request(entry)
         if draft_message_id:
             try:
                 await message.bot.edit_message_text(
@@ -2758,14 +2790,26 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
                     chat_id=message.chat.id,
                     message_id=draft_message_id,
                     parse_mode=ParseMode.HTML,
-                    reply_markup=draft_edit_kb("adm", _tr(message, "admin_submit_publish"), include_back=True, lang=lang),
+                    reply_markup=draft_edit_kb(
+                        "adm",
+                        _tr(message, "admin_submit_publish"),
+                        include_back=True,
+                        include_schedule=include_schedule,
+                        lang=lang,
+                    ),
                     disable_web_page_preview=True,
                 )
             except Exception:
                 sent = await answer(
                     message,
                     draft_text,
-                    draft_edit_kb("adm", _tr(message, "admin_submit_publish"), include_back=True, lang=lang),
+                    draft_edit_kb(
+                        "adm",
+                        _tr(message, "admin_submit_publish"),
+                        include_back=True,
+                        include_schedule=include_schedule,
+                        lang=lang,
+                    ),
                     "plugins",
                 )
                 if sent:
@@ -2774,7 +2818,13 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
             sent = await answer(
                 message,
                 draft_text,
-                draft_edit_kb("adm", _tr(message, "admin_submit_publish"), include_back=True, lang=lang),
+                draft_edit_kb(
+                    "adm",
+                    _tr(message, "admin_submit_publish"),
+                    include_back=True,
+                    include_schedule=include_schedule,
+                    lang=lang,
+                ),
                 "plugins",
             )
             if sent:

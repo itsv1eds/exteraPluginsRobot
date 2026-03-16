@@ -851,8 +851,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "version_not_higher": {
-        "ru": "Новая версия должна быть выше текущей ({current})",
-        "en": "New version must be higher than current ({current})",
+        "ru": "Новая версия должна быть не такой же , как у нас ({current})",
+        "en": "The version should not be the same than current ({current})",
     },
 
     "welcome": {

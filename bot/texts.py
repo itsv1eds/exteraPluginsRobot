@@ -60,6 +60,9 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_btn_banned": {"ru": "Заблокированные", "en": "Banned"},
     "admin_btn_broadcast": {"ru": "Рассылка", "en": "Broadcast"},
     "admin_btn_config": {"ru": "Настройки", "en": "Settings"},
+    "admin_btn_check_updates": {"ru": "Проверить обновления", "en": "Check updates"},
+    "admin_btn_scheduled": {"ru": "Отложенные", "en": "Scheduled"},
+    "admin_btn_scheduled_posts": {"ru": "Отложенные посты", "en": "Scheduled posts"},
     "admin_btn_edit": {"ru": "Редактировать", "en": "Edit"},
     "admin_btn_link_author": {"ru": "Привязать автора", "en": "Link author"},
     "admin_btn_plugins": {"ru": "Плагины", "en": "Plugins"},
@@ -79,6 +82,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_cfg_admins_plugins": {"ru": "Админы плагинов", "en": "Plugin admins"},
     "admin_cfg_admins": {"ru": "Админы", "en": "Admins"},
     "admin_cfg_channel": {"ru": "Канал", "en": "Channel"},
+    "admin_cfg_checked_on_version": {"ru": "Версия проверки", "en": "Checked version"},
     "admin_cfg_superadmins": {"ru": "Суперадмины", "en": "Superadmins"},
     "admin_choose_action": {"ru": "Выберите действие:", "en": "Choose action:"},
     "admin_added": {"ru": "Добавлен: <code>{admin_id}</code>", "en": "Added: <code>{admin_id}</code>"},
@@ -88,6 +92,18 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_denied": {
         "ru": "пошел нахуй.",
         "en": "Access denied",
+    },
+    "admin_updates_check_started": {
+        "ru": "Проверка обновлений запущена",
+        "en": "Updates check started",
+    },
+    "admin_updates_check_already_running": {
+        "ru": "Проверка обновлений уже запущена",
+        "en": "Updates check is already running",
+    },
+    "admin_updates_check_done": {
+        "ru": "Проверка обновлений завершена",
+        "en": "Updates check completed",
     },
     "admin_broadcast_confirm": {
         "ru": "Отправить всем пользователям?",
@@ -128,6 +144,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_prompt_channel_example": {
         "ru": "Пример: <code>-1001234567890 mychannel ExteraPlugins exteraplugintest</code>",
         "en": "Example: <code>-1001234567890 mychannel ExteraPlugins exteraplugintest</code>",
+    },
+    "admin_prompt_checked_on_version": {
+        "ru": "Введите версию для поля «Проверено» (например <code>12.5.1</code>). Дата подставится автоматически.",
+        "en": "Enter version for the 'Checked on' field (e.g. <code>12.5.1</code>). Date will be filled automatically.",
     },
     "admin_unknown_setting": {
         "ru": "Неизвестная настройка",
@@ -768,6 +788,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Версия не изменилась",
         "en": "Version is unchanged",
     },
+    "version_lower": {
+        "ru": "Указанная версия ниже текущей ({current}). Возможно, вы имели в виду <b>{suggested}</b>",
+        "en": "Provided version is lower than current ({current}). Maybe you meant <b>{suggested}</b>",
+    },
     "subscriptions_empty": {
         "ru": "Нет уведомлений",
         "en": "No notifications",
@@ -799,6 +823,41 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "⏰ Введите дату и время публикации в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5):",
         "en": "⏰ Enter the scheduled date and time in format <code>DD.MM.YYYY HH:MM</code> (UTC+5):",
     },
+    "admin_schedule_presets_title": {
+        "ru": "Выберите пресет времени или введите вручную:",
+        "en": "Choose a time preset or enter manually:",
+    },
+    "admin_scheduled_title": {
+        "ru": "<b>Отложенные</b>",
+        "en": "<b>Scheduled</b>",
+    },
+    "admin_scheduled_empty": {
+        "ru": "Нет отложенных публикаций",
+        "en": "No scheduled publications",
+    },
+    "admin_scheduled_posts_title": {
+        "ru": "<b>Отложенные посты</b>",
+        "en": "<b>Scheduled posts</b>",
+    },
+    "admin_scheduled_posts_empty": {
+        "ru": "Нет отложенных постов",
+        "en": "No scheduled posts",
+    },
+    "btn_edit_text": {"ru": "Изменить текст", "en": "Edit text"},
+    "btn_delete_post": {"ru": "Удалить пост", "en": "Delete post"},
+    "admin_post_edit_prompt": {
+        "ru": "Введите новый текст поста:",
+        "en": "Enter new post text:",
+    },
+    "btn_unschedule": {"ru": "Убрать отложку", "en": "Unschedule"},
+    "btn_change_time": {"ru": "Изменить время", "en": "Change time"},
+    "btn_move_up": {"ru": "Вверх", "en": "Up"},
+    "btn_move_down": {"ru": "Вниз", "en": "Down"},
+    "admin_schedule_preset_add_prompt": {
+        "ru": "Введите дату и время для нового пресета в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5):",
+        "en": "Enter date/time for a new preset in format <code>DD.MM.YYYY HH:MM</code> (UTC+5):",
+    },
+    "btn_add_preset": {"ru": "+", "en": "+"},
     "admin_post_scheduled": {
         "ru": "Пост запланирован на {datetime} UTC+5\n\n{link}",
         "en": "Post scheduled for {datetime} UTC+5\n\n{link}",

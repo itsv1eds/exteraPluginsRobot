@@ -846,6 +846,11 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
         if not is_valid:
             if error == "version_not_higher":
                 await message.answer(t("version_not_higher", lang, current=old_version))
+            elif error == "version_lower":
+                suggested = old_version
+                if old_version and old_version.count(".") == 1:
+                    suggested = f"{old_version}0"
+                await message.answer(t("version_lower", lang, current=old_version, suggested=suggested))
             else:
                 await message.answer(t(error, lang))
             return
@@ -1186,6 +1191,11 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
     if not is_valid:
         if error == "version_not_higher":
             await message.answer(t("version_not_higher", lang, current=old_version or "—"))
+        elif error == "version_lower":
+            suggested = old_version or "—"
+            if old_version and old_version.count(".") == 1:
+                suggested = f"{old_version}0"
+            await message.answer(t("version_lower", lang, current=old_version or "—", suggested=suggested))
         else:
             await message.answer(t(error, lang))
         return

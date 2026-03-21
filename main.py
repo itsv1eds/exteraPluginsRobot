@@ -84,6 +84,9 @@ async def on_startup(bot: Bot) -> None:
     start_draft_reminder_worker(bot)
     start_scheduled_publish_worker(bot)
     cleanup_orphan_plugin_files()
+
+    from bot.services.catalog_auto_updates import start_catalog_auto_updates_worker
+    start_catalog_auto_updates_worker(bot)
     
     await start_log_worker()
     
@@ -105,6 +108,9 @@ async def on_shutdown(bot: Bot) -> None:
     stop_draft_cleanup_worker()
     stop_draft_reminder_worker()
     stop_scheduled_publish_worker()
+
+    from bot.services.catalog_auto_updates import stop_catalog_auto_updates_worker
+    stop_catalog_auto_updates_worker()
     
     from storage import flush_all
     await flush_all()

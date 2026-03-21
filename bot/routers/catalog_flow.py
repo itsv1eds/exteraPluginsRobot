@@ -847,7 +847,7 @@ async def on_inline(query: InlineQuery) -> None:
         return
 
     results = []
-    for plugin in plugins:
+    for idx, plugin in enumerate(plugins):
         slug = plugin.get("slug")
         if not slug:
             continue
@@ -873,7 +873,7 @@ async def on_inline(query: InlineQuery) -> None:
 
         results.append(
             InlineQueryResultArticle(
-                id=f"plugin:{encode_slug(slug)}",
+                id=f"plugin:{encode_slug(slug)}:{idx}",
                 title=name,
                 description=description[:100],
                 input_message_content=InputTextMessageContent(
@@ -885,7 +885,7 @@ async def on_inline(query: InlineQuery) -> None:
             )
         )
 
-    for icon in icons:
+    for idx, icon in enumerate(icons):
         slug = icon.get("slug")
         if not slug:
             continue
@@ -903,7 +903,7 @@ async def on_inline(query: InlineQuery) -> None:
 
         results.append(
             InlineQueryResultArticle(
-                id=f"icon:{encode_slug(slug)}",
+                id=f"icon:{encode_slug(slug)}:{idx}",
                 title=name,
                 description=description[:100],
                 input_message_content=InputTextMessageContent(

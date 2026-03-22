@@ -273,7 +273,7 @@ async def run_catalog_auto_updates_once(bot: Bot, store_urls: Optional[list[str]
             _download_file(item.url, temp_path)
 
             try:
-                meta = parse_plugin_file(temp_path)
+                meta = parse_plugin_file(temp_path, fallback_version=store_version)
             except (FileNotFoundError, PluginParseError) as exc:
                 temp_path.unlink(missing_ok=True)
                 logger.warning("event=catalog_auto_updates.parse_failed plugin_id=%s error=%s", temp_id, exc)

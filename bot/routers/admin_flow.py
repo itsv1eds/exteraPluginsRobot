@@ -33,11 +33,14 @@ from bot.keyboards import (
     admin_config_kb,
     admin_confirm_ban_kb,
     admin_icons_section_kb,
+    admin_post_section_kb,
+    admin_updates_list_kb,
     admin_manage_admins_kb,
     admin_menu_kb,
-    admin_plugins_section_kb,
     admin_plugins_list_kb,
+    admin_plugins_section_kb,
     admin_queue_kb,
+    admin_review_kb,
     admin_reject_kb,
     admin_review_kb,
     admin_confirm_delete_plugin_kb,
@@ -292,7 +295,7 @@ async def _render_scheduled_posts_list(target: CallbackQuery | Message, state: F
     lang = _lang_for(target)
     items = _cleanup_scheduled_posts()
     if not items:
-        await answer(target, _tr(target, "admin_scheduled_posts_empty"), admin_plugins_section_kb(lang=lang), "profile")
+        await answer(target, _tr(target, "admin_scheduled_posts_empty"), admin_post_section_kb(lang=lang), "profile")
         return
 
     sortable = [(it, _parse_dt_utc(it.get("scheduled_at"))) for it in items]
@@ -319,7 +322,7 @@ async def _render_scheduled_post_view(target: CallbackQuery | Message, state: FS
     lang = _lang_for(target)
     it = _find_scheduled_post(post_id)
     if not it:
-        await answer(target, _tr(target, "admin_scheduled_posts_empty"), admin_plugins_section_kb(lang=lang), "profile")
+        await answer(target, _tr(target, "admin_scheduled_posts_empty"), admin_post_section_kb(lang=lang), "profile")
         return
 
     dt = _parse_dt_utc(it.get("scheduled_at"))
@@ -501,17 +504,21 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
     elif token == "adm:section:plugins":
         await state.set_state(AdminFlow.menu)
         await answer(cb, _tr(cb, "admin_section_plugins"), admin_plugins_section_kb(lang=lang), "profile")
+    elif token == "adm:section:updates":
+        await _render_updates_list(cb, state, 0)
     elif token == "adm:section:icons":
         await state.set_state(AdminFlow.menu)
         await answer(cb, _tr(cb, "admin_section_icons"), admin_icons_section_kb(lang=lang), "profile")
+    elif token == "adm:section:post":
+        await state.set_state(AdminFlow.menu)
+        await answer(cb, _tr(cb, "admin_btn_post"), admin_post_section_kb(lang=lang), "profile")
     elif token == "adm:config":
         await _render_config(cb, state)
     elif token == "adm:broadcast":
         await _render_broadcast_enter(cb, state)
     elif token == "adm:post":
-        await state.set_state(AdminFlow.entering_post)
-        await state.update_data(post_message_id=cb.message.message_id if cb.message else None)
-        await answer(cb, _tr(cb, "admin_post_prompt"), admin_cancel_kb(lang), "profile")
+        await state.set_state(AdminFlow.menu)
+        await answer(cb, _tr(cb, "admin_btn_post"), admin_post_section_kb(lang=lang), "profile")
     elif token.startswith("adm:queue:"):
         await _render_queue(cb, state, token)
     elif token.startswith("adm:review:"):
@@ -624,6 +631,102 @@ def _ensure_request_role(cb: CallbackQuery | Message, entry: dict) -> bool:
     return _ensure_admin_role(cb, "plugins")
 
 
+def _admin_actor_label(target: CallbackQuery | Message) -> str:
+    user = target.from_user if isinstance(target, CallbackQuery) else target.from_user
+    if not user:
+        return "<code>?</code>"
+    if user.username:
+        return f"@{user.username}"
+    return f"<code>{user.id}</code>"
+
+
+async def _finalize_admin_notify_messages(
+    bot,
+    entry: dict,
+    decision_text: str,
+    actor_label: str,
+) -> None:
+    if not isinstance(entry, dict):
+        return
+    request_id = str(entry.get("id") or "")
+    if not request_id:
+        return
+    payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+    mapping = payload.get("admin_notify_messages")
+    if not isinstance(mapping, dict) or not mapping:
+        return
+
+    final_text = f"{decision_text} {actor_label}"
+
+    for admin_id_str, info in mapping.items():
+        try:
+            admin_id = int(admin_id_str)
+        except Exception:
+            continue
+        if not isinstance(info, dict):
+            continue
+        kind = info.get("kind")
+        msg_id = info.get("message_id")
+        if not msg_id:
+            continue
+        try:
+            if kind == "document":
+                await bot.edit_message_caption(
+                    chat_id=admin_id,
+                    message_id=int(msg_id),
+                    caption=final_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            else:
+                await bot.edit_message_text(
+                    final_text,
+                    chat_id=admin_id,
+                    message_id=int(msg_id),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                    disable_web_page_preview=True,
+                )
+        except Exception:
+            pass
+
+    try:
+        update_request_payload(request_id, {"admin_notify_messages": {}})
+    except Exception:
+        pass
+
+
+async def _render_updates_list(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
+    lang = _lang_for(target)
+    requests = list(get_requests(status="pending", request_type="update"))
+    if not requests:
+        caption = f"<b>{_tr(target, 'admin_queue_title_updates')}</b>\n{_tr(target, 'admin_queue_empty')}" if 'admin_queue_empty' in TEXTS else f"<b>{_tr(target, 'admin_queue_title_updates')}</b>\n—"
+        await state.update_data(updates_list_page=0)
+        await state.set_state(AdminFlow.menu)
+        await answer(target, caption, admin_updates_list_kb([], 0, 1, back_callback="adm:section:plugins", lang=lang), "profile")
+        return
+
+    total = len(requests)
+    total_pages = math.ceil(total / PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * PAGE_SIZE
+    page_items = requests[start : start + PAGE_SIZE]
+
+    items: list[tuple[str, str]] = []
+    for entry in page_items:
+        payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+        plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
+        name = plugin.get("name") or entry.get("id")
+        version = plugin.get("version") or ""
+        label = f"{name} v{version}" if version else f"{name}"
+        items.append((label, str(entry.get("id"))))
+
+    caption = f"<b>{_tr(target, 'admin_queue_title_updates')}</b>\n{_tr(target, 'admin_page', current=page + 1, total=total_pages)}"
+    await state.update_data(updates_list_page=page)
+    await state.set_state(AdminFlow.menu)
+    await answer(target, caption, admin_updates_list_kb(items, page, total_pages, back_callback="adm:section:plugins", lang=lang), "profile")
+
+
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
@@ -715,6 +818,57 @@ async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
         await _render_nav_token(cb, state, prev)
     else:
         await _render_menu(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:section:updates")
+async def on_admin_section_updates(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    if not _ensure_admin_role(cb, "plugins"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+
+    await _nav_push(state, "adm:menu")
+    await _nav_push(state, "adm:section:updates")
+    await _render_updates_list(cb, state, 0)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm:updates:"))
+async def on_admin_updates_list(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "plugins"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    parts = cb.data.split(":")
+    page = 0
+    if len(parts) > 2 and parts[2].isdigit():
+        page = int(parts[2])
+    await _nav_push(state, "adm:menu")
+    await _nav_push(state, f"adm:updates:{page}")
+    await _render_updates_list(cb, state, page)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:section:post")
+async def on_admin_section_post(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    if not _ensure_admin_role(cb, "plugins"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+
+    await _nav_push(state, "adm:menu")
+    await _nav_push(state, "adm:section:post")
+    await state.set_state(AdminFlow.menu)
+    await answer(cb, _tr(cb, "admin_btn_post"), admin_post_section_kb(lang=lang), "profile")
     try:
         await cb.answer()
     except Exception:
@@ -1008,16 +1162,20 @@ async def on_admin_auto_updates(cb: CallbackQuery, state: FSMContext) -> None:
     async def _done() -> None:
         if chat_id and message_id:
             try:
-                await cb.bot.edit_message_text(
-                    _tr(cb, "admin_updates_check_done"),
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=admin_menu_kb(_admin_menu_role(cb), lang=lang),
-                    disable_web_page_preview=True,
-                )
+                tmp = CallbackQuery(id="0", from_user=cb.from_user, chat_instance="0", message=cb.message, data="")  # type: ignore
+                await _render_updates_list(tmp, state, 0)
             except Exception:
-                pass
+                try:
+                    await cb.bot.edit_message_text(
+                        _tr(cb, "admin_updates_check_done"),
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    pass
 
     started = start_manual_catalog_auto_updates(cb.bot, on_done=_done)
     if not started:
@@ -1030,7 +1188,7 @@ async def on_admin_auto_updates(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.message.edit_text(
                 _tr(cb, "admin_updates_check_started"),
                 parse_mode=ParseMode.HTML,
-                reply_markup=admin_menu_kb(_admin_menu_role(cb), lang=lang),
+                reply_markup=None,
                 disable_web_page_preview=True,
             )
         except Exception:
@@ -1344,7 +1502,7 @@ async def on_admin_section_icons(cb: CallbackQuery, state: FSMContext) -> None:
         pass
 
 
-@router.callback_query(F.data == "adm:post")
+@router.callback_query(F.data.in_({"adm:post", "adm:post:new"}))
 async def on_admin_post(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     if not _ensure_admin_role(cb, "super"):
@@ -1352,7 +1510,7 @@ async def on_admin_post(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     await _nav_push(state, "adm:menu")
-    await _nav_push(state, "adm:post")
+    await _nav_push(state, "adm:section:post")
     await state.set_state(AdminFlow.entering_post)
     await state.update_data(post_message_id=cb.message.message_id if cb.message else None)
     msg = await answer(cb, _tr(cb, "admin_post_prompt"), admin_cancel_kb(lang), "profile")
@@ -1405,7 +1563,7 @@ async def on_admin_post_text(message: Message, state: FSMContext) -> None:
         await state.update_data(post_message_id=sent.message_id)
 
 
-async def _send_admin_post(cb: CallbackQuery, state: FSMContext, include_updates: bool) -> None:
+async def _send_admin_post(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     data = await state.get_data()
     text = (data.get("post_text") or "").strip()
@@ -1414,23 +1572,22 @@ async def _send_admin_post(cb: CallbackQuery, state: FSMContext, include_updates
         return
 
     final_text = text
-    if include_updates:
-        from storage import load_updated
+    from storage import load_updated
 
-        updated = load_updated()
-        items = updated.get("items") or []
-        if items:
-            lines = [_tr(cb, "admin_updated_block_title")]
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                name = (it.get("name") or "").strip()
-                link = (it.get("link") or "").strip()
-                if not name or not link:
-                    continue
-                lines.append(f"• <a href=\"{link}\">{name}</a>")
-            if len(lines) > 1:
-                final_text = f"{final_text}\n\n" + "\n".join(lines)
+    updated = load_updated()
+    items = updated.get("items") or []
+    if items:
+        lines = [_tr(cb, "admin_updated_block_title")]
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            name = (it.get("name") or "").strip()
+            link = (it.get("link") or "").strip()
+            if not name or not link:
+                continue
+            lines.append(f"• <a href=\"{link}\">{name}</a>")
+        if len(lines) > 1:
+            final_text = f"{final_text}\n\n" + "\n".join(lines)
 
     from userbot.client import get_userbot
 
@@ -1441,8 +1598,7 @@ async def _send_admin_post(cb: CallbackQuery, state: FSMContext, include_updates
 
     result = await userbot.publish_post(final_text)
 
-    if include_updates:
-        clear_updated_plugins()
+    clear_updated_plugins()
 
     await state.clear()
     await state.set_state(AdminFlow.menu)
@@ -1459,7 +1615,7 @@ async def on_admin_post_send(cb: CallbackQuery, state: FSMContext) -> None:
     if not _ensure_admin_role(cb, "super"):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-    await _send_admin_post(cb, state, include_updates=False)
+    await _send_admin_post(cb, state)
     try:
         await cb.answer()
     except Exception:
@@ -1471,7 +1627,7 @@ async def on_admin_post_send_updates(cb: CallbackQuery, state: FSMContext) -> No
     if not _ensure_admin_role(cb, "super"):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-    await _send_admin_post(cb, state, include_updates=True)
+    await _send_admin_post(cb, state)
     try:
         await cb.answer()
     except Exception:
@@ -3703,23 +3859,11 @@ async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "adm:back")
 async def on_admin_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
-    data = await state.get_data()
-    entry = get_request_by_id(data.get("current_request", ""))
-    if entry:
-        include_schedule = _can_schedule_request(entry)
-        await answer(
-            cb,
-            _render_request_draft(entry),
-            draft_edit_kb(
-                "adm",
-                _tr(cb, "admin_submit_publish"),
-                include_back=True,
-                include_schedule=include_schedule,
-                lang=lang,
-            ),
-            "plugins",
-        )
+    prev = await _nav_prev(state)
+    if prev:
+        await _render_nav_token(cb, state, prev)
+    else:
+        await _render_menu(cb, state)
     try:
         await cb.answer()
     except Exception:
@@ -3895,6 +4039,16 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             result = await publish_plugin(entry)
             notify_key = "notify_published"
 
+        try:
+            await _finalize_admin_notify_messages(
+                cb.bot,
+                entry,
+                "Заявка была принята",
+                _admin_actor_label(cb),
+            )
+        except Exception:
+            pass
+
         user_id = entry.get("payload", {}).get("user_id")
         payload = entry.get("payload", {})
         name = payload.get("plugin", {}).get("name") or payload.get("icon", {}).get("name", "")
@@ -4027,6 +4181,15 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
     entry = get_request_by_id(request_id)
     if entry:
         update_request_status(request_id, "rejected", comment=comment)
+        try:
+            await _finalize_admin_notify_messages(
+                message.bot,
+                entry,
+                "Заявка была отклонена",
+                _admin_actor_label(message),
+            )
+        except Exception:
+            pass
         user_id = entry.get("payload", {}).get("user_id")
         if user_id:
             lang = get_lang(user_id)
@@ -4067,6 +4230,16 @@ async def on_admin_reject_silent(cb: CallbackQuery, state: FSMContext) -> None:
 
     await _nav_push(state, f"adm:reject_silent:{request_id}")
     update_request_status(request_id, "rejected")
+    if entry:
+        try:
+            await _finalize_admin_notify_messages(
+                cb.bot,
+                entry,
+                "Заявка была отклонена",
+                _admin_actor_label(cb),
+            )
+        except Exception:
+            pass
     await answer(cb, _tr(cb, "admin_rejected_done"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "profile")
     try:
         await cb.answer()
@@ -4123,6 +4296,16 @@ async def on_admin_ban_confirm(cb: CallbackQuery, state: FSMContext) -> None:
 
     ban_user(user_id, reason="Заблокирован администратором")
     update_request_status(request_id, "rejected", comment="Пользователь заблокирован")
+
+    try:
+        await _finalize_admin_notify_messages(
+            cb.bot,
+            entry,
+            "Заявка была отклонена",
+            _admin_actor_label(cb),
+        )
+    except Exception:
+        pass
 
     try:
         await cb.bot.send_message(

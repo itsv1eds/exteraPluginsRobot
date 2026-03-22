@@ -60,8 +60,12 @@ from bot.states import UserFlow
 from bot.texts import TEXTS, t
 from catalog import find_plugin_by_slug, find_user_plugins
 from bot.routers.catalog_flow import build_plugin_preview
+from bot.routers.catalog_flow import BOT_USERNAME
 from bot.keyboards import plugin_detail_kb
 from subscription_store import is_subscribed, ALL_SUBSCRIPTION_KEY
+from bot.keyboards import catalog_main_kb, profile_kb, admin_menu_kb
+from bot.states import AdminFlow
+from catalog import find_user_icons
 from request_store import (
     add_draft_request,
     add_request,
@@ -221,12 +225,99 @@ async def _render_home(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
     await state.clear()
     await state.update_data(lang=lang)
     await state.set_state(UserFlow.idle)
-    await answer(cb, t("welcome", lang), main_menu_kb(lang), "welcome")
+    await answer(cb, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
+
+
+async def _render_profile_message(message: Message, state: FSMContext, lang: str) -> None:
+    user = message.from_user
+    if not user:
+        return
+
+    user_plugins = find_user_plugins(user.id, user.username or "")
+    user_icons = find_user_icons(user.id, user.username or "")
+
+    pending = []
+    for req in get_user_requests(user.id):
+        if req.get("status") != "pending":
+            continue
+        if req.get("type") not in {"new", "update"}:
+            continue
+        payload = req.get("payload", {})
+        if (payload.get("submission_type") or payload.get("type")) != "plugin":
+            continue
+        pending.append(req)
+
+    await state.update_data(
+        my_plugins=[plugin.get("slug") for plugin in user_plugins],
+        my_pending_plugins=[req.get("id") for req in pending if req.get("id")],
+        my_icons=[icon.get("slug") for icon in user_icons],
+    )
+
+    text = f"{t('profile_title', lang)}\n\n"
+    if user.username:
+        text += f"@{user.username}\n"
+    text += t("profile_stats", lang, plugins=len(user_plugins), icons=len(user_icons))
+    if not user_plugins and not user_icons:
+        text += f"\n\n{t('profile_empty', lang)}"
+
+    notify_all_enabled = is_subscribed(user.id, ALL_SUBSCRIPTION_KEY)
+    await answer(
+        message,
+        text,
+        profile_kb(lang, has_plugins=bool(user_plugins), has_icons=bool(user_icons), notify_all_enabled=notify_all_enabled),
+        "profile",
+    )
+
+
+async def _route_start_payload_message(message: Message, state: FSMContext, lang: str, payload: str) -> bool:
+    value = (payload or "").strip().lower()
+    if not value:
+        return False
+
+    if value == "catalog":
+        await state.set_state(UserFlow.idle)
+        await answer(message, t("catalog_title", lang), catalog_main_kb(get_categories(), lang), "catalog")
+        return True
+
+    if value == "submit":
+        user = message.from_user
+        include_update = False
+        if user:
+            try:
+                include_update = bool(find_user_plugins(user.id, user.username or ""))
+            except Exception:
+                include_update = False
+        await state.set_state(UserFlow.choosing_submission_type)
+        await answer(message, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
+        return True
+
+    if value == "profile":
+        await state.set_state(UserFlow.idle)
+        await _render_profile_message(message, state, lang)
+        return True
+
+    if value == "admin":
+        user_id = message.from_user.id if message.from_user else None
+        if user_id and user_id in get_admins():
+            await state.set_state(AdminFlow.menu)
+            await answer(message, _tr(message, "admin_title"), admin_menu_kb(_admin_menu_role(message), lang=lang), "profile")
+        else:
+            await answer(message, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
+        return True
+
+    return False
 
 
 async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
+    user = cb.from_user
+    include_update = False
+    if user:
+        try:
+            include_update = bool(find_user_plugins(user.id, user.username or ""))
+        except Exception:
+            include_update = False
     await state.set_state(UserFlow.choosing_submission_type)
-    await answer(cb, t("choose_type", lang), submit_type_kb(lang), "suggestion")
+    await answer(cb, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
 
 
 async def _sync_submission_draft(
@@ -372,6 +463,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         await state.set_state(UserFlow.idle)
 
         if payload:
+            if await _route_start_payload_message(message, state, lang, payload):
+                return
             plugin = find_plugin_by_slug(payload)
             if plugin:
                 text = build_plugin_preview(plugin, lang)
@@ -390,7 +483,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                 )
                 return
 
-        await answer(message, t("welcome", lang), main_menu_kb(lang), "welcome")
+        await answer(message, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
         return
 
     lang = get_lang(user_id)
@@ -514,6 +607,9 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     start_payload = (data.get("start_payload") or "").strip()
     if start_payload:
+        if cb.message and await _route_start_payload_message(cb.message, state, lang, start_payload):
+            await cb.answer(t("language_saved", lang))
+            return
         plugin = find_plugin_by_slug(start_payload)
         if plugin:
             text = build_plugin_preview(plugin, lang)
@@ -533,7 +629,7 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.answer(t("language_saved", lang))
             return
 
-    await answer(cb, t("welcome", lang), main_menu_kb(lang), "welcome")
+    await answer(cb, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
     await cb.answer(t("language_saved", lang))
 
 
@@ -603,7 +699,7 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
 async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await state.set_state(UserFlow.idle)
-    await answer(cb, t("welcome", lang), main_menu_kb(lang), "welcome")
+    await answer(cb, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
     await cb.answer()
 
 
@@ -653,8 +749,15 @@ async def on_submit(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(t("user_banned_short", lang), show_alert=True)
         return
     lang = await get_language(cb, state)
+    user = cb.from_user
+    include_update = False
+    if user:
+        try:
+            include_update = bool(find_user_plugins(user.id, user.username or ""))
+        except Exception:
+            include_update = False
     await state.set_state(UserFlow.choosing_submission_type)
-    await answer(cb, t("choose_type", lang), submit_type_kb(lang), "suggestion")
+    await answer(cb, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
     await cb.answer()
 
 
@@ -2068,7 +2171,7 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
             )
             kb = admin_review_kb(entry["id"], user_id, lang=admin_lang)
 
-        async def _send_long_html(chat_id: int, html: str, reply_markup: Any | None) -> None:
+        async def _send_long_html(chat_id: int, html: str, reply_markup: Any | None) -> int | None:
             parts: list[str] = []
             s = html or ""
             while s:
@@ -2076,34 +2179,59 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
                 s = s[4096:]
             if not parts:
                 parts = [""]
+            first_message_id: int | None = None
             for i, part in enumerate(parts):
-                await bot.send_message(
+                msg = await bot.send_message(
                     chat_id,
                     part,
                     parse_mode=ParseMode.HTML,
                     reply_markup=(reply_markup if i == 0 else None),
                     disable_web_page_preview=True,
                 )
+                if first_message_id is None:
+                    first_message_id = msg.message_id
+            return first_message_id
 
         try:
+            notify_kind: str | None = None
+            notify_message_id: int | None = None
             if file_path and Path(file_path).exists():
                 if len(text) <= 1024:
-                    await bot.send_document(
+                    msg = await bot.send_document(
                         admin_id,
                         FSInputFile(file_path),
                         caption=text,
                         parse_mode=ParseMode.HTML,
                         reply_markup=kb,
                     )
+                    notify_kind = "document"
+                    notify_message_id = msg.message_id
                 else:
-                    await bot.send_document(
+                    msg = await bot.send_document(
                         admin_id,
                         FSInputFile(file_path),
                         reply_markup=kb,
                     )
+                    notify_kind = "document"
+                    notify_message_id = msg.message_id
                     await _send_long_html(admin_id, text, None)
             else:
-                await _send_long_html(admin_id, text, kb)
+                notify_kind = "text"
+                notify_message_id = await _send_long_html(admin_id, text, kb)
+
+            if notify_kind and notify_message_id and request_id:
+                try:
+                    from request_store import get_request_by_id, update_request_payload
+
+                    current = get_request_by_id(str(request_id))
+                    current_payload = (current.get("payload") or {}) if isinstance(current, dict) else {}
+                    mapping = current_payload.get("admin_notify_messages") or {}
+                    if not isinstance(mapping, dict):
+                        mapping = {}
+                    mapping[str(admin_id)] = {"kind": notify_kind, "message_id": int(notify_message_id)}
+                    update_request_payload(str(request_id), {"admin_notify_messages": mapping})
+                except Exception:
+                    pass
             if admin_comment:
                 await bot.send_message(
                     admin_id,

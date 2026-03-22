@@ -15,9 +15,11 @@ def language_kb() -> InlineKeyboardMarkup:
 
 def main_menu_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("btn_catalog", lang), callback_data="catalog")],
+        [
+            InlineKeyboardButton(text=t("btn_catalog", lang), callback_data="catalog"),
+            InlineKeyboardButton(text=t("btn_profile", lang), callback_data="profile"),
+        ],
         [InlineKeyboardButton(text=t("btn_submit", lang), callback_data="submit", style="success")],
-        [InlineKeyboardButton(text=t("btn_profile", lang), callback_data="profile")],
     ])
 
 
@@ -25,7 +27,7 @@ def admin_scheduled_posts_list_kb(
     items: List[Tuple[str, str]],
     page: int,
     total_pages: int,
-    back_callback: str = "adm:section:plugins",
+    back_callback: str = "adm:section:post",
     lang: str = "ru",
 ) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text=label, callback_data=f"adm:scheduled_posts:view:{pid}")] for label, pid in items]
@@ -59,11 +61,15 @@ def admin_scheduled_post_kb(post_id: str, lang: str = "ru") -> InlineKeyboardMar
     ])
 
 
-def submit_type_kb(lang: str) -> InlineKeyboardMarkup:
+def submit_type_kb(lang: str, include_update: bool = False) -> InlineKeyboardMarkup:
     idea = t("btn_idea", lang)
     
+    first_row = [InlineKeyboardButton(text=t("btn_new_plugin", lang), callback_data="submit:plugin")]
+    if include_update:
+        first_row.append(InlineKeyboardButton(text=t("btn_update", lang), callback_data="submit:update"))
+
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("btn_new_plugin", lang), callback_data="submit:plugin")],
+        first_row,
         [InlineKeyboardButton(text=t("btn_icon_pack", lang), callback_data="submit:icons")],
         [InlineKeyboardButton(text=idea, url="https://t.me/exteraForum")],
         [InlineKeyboardButton(text=t("btn_back", lang), callback_data="home", style="danger")],
@@ -318,7 +324,10 @@ def catalog_main_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
         )
     ])
 
-    rows.append([InlineKeyboardButton(text=t("btn_all_plugins", lang), callback_data="cat:_all:0")])
+    rows.append([
+        InlineKeyboardButton(text=t("btn_all_plugins", lang), callback_data="cat:_all:0"),
+        InlineKeyboardButton(text=t("btn_icons", lang), callback_data="icons:0"),
+    ])
     
     cat_buttons = []
     for cat in categories:
@@ -328,8 +337,6 @@ def catalog_main_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
             callback_data=f"cat:{cat.get('key')}:0",
         ))
     rows.extend([cat_buttons[i:i+2] for i in range(0, len(cat_buttons), 2)])
-    
-    rows.append([InlineKeyboardButton(text=t("btn_icons", lang), callback_data="icons:0")])
     
     rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data="home", style="danger")])
     
@@ -468,25 +475,18 @@ def profile_kb(
     notify_all_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     rows = []
-    
+
+    owned: list[InlineKeyboardButton] = []
     if has_plugins:
-        rows.append([InlineKeyboardButton(text=t("btn_my_plugins", lang), callback_data="my:plugins:0")])
-    
+        owned.append(InlineKeyboardButton(text=t("btn_my_plugins", lang), callback_data="my:plugins:0"))
     if has_icons:
-        rows.append([InlineKeyboardButton(text=t("btn_my_packs", lang), callback_data="my:icons:0")])
+        owned.append(InlineKeyboardButton(text=t("btn_my_packs", lang), callback_data="my:icons:0"))
+    if owned:
+        rows.append(owned)
 
     rows.append([
-        InlineKeyboardButton(
-            text=t("btn_subscriptions", lang),
-            callback_data="profile:subscriptions",
-        )
-    ])
-
-    rows.append([
-        InlineKeyboardButton(
-            text=t("btn_broadcast", lang),
-            callback_data="profile:broadcast",
-        )
+        InlineKeyboardButton(text=t("btn_subscriptions", lang), callback_data="profile:subscriptions"),
+        InlineKeyboardButton(text=t("btn_broadcast", lang), callback_data="profile:broadcast"),
     ])
 
     rows.append([InlineKeyboardButton(text=t("btn_support", lang), url="https://t.me/itsv2eds")])
@@ -502,21 +502,20 @@ def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMa
         rows.append([
             InlineKeyboardButton(text=t("admin_btn_plugins", lang), callback_data="adm:section:plugins"),
             InlineKeyboardButton(text=t("admin_btn_icons", lang), callback_data="adm:section:icons"),
+            InlineKeyboardButton(text=t("admin_btn_post", lang), callback_data="adm:section:post"),
         ])
         rows.append([
-            InlineKeyboardButton(text=t("admin_btn_post", lang), callback_data="adm:post"),
             InlineKeyboardButton(text=t("admin_btn_broadcast", lang), callback_data="adm:broadcast"),
-        ])
-        rows.append([
-            InlineKeyboardButton(text=t("admin_btn_banned", lang), callback_data="adm:banned:0"),
             InlineKeyboardButton(text=t("admin_btn_stats", lang), callback_data="adm:stats"),
         ])
         rows.append([
+            InlineKeyboardButton(text=t("admin_btn_banned", lang), callback_data="adm:banned:0"),
             InlineKeyboardButton(text=t("admin_btn_config", lang), callback_data="adm:config"),
         ])
     elif role == "plugins":
         rows.append([
             InlineKeyboardButton(text=t("admin_btn_plugins", lang), callback_data="adm:section:plugins"),
+            InlineKeyboardButton(text=t("admin_btn_post", lang), callback_data="adm:section:post"),
         ])
         rows.append([
             InlineKeyboardButton(text=t("admin_btn_stats", lang), callback_data="adm:stats"),
@@ -524,8 +523,6 @@ def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMa
     else:
         rows.append([
             InlineKeyboardButton(text=t("admin_btn_icons", lang), callback_data="adm:section:icons"),
-        ])
-        rows.append([
             InlineKeyboardButton(text=t("admin_btn_stats", lang), callback_data="adm:stats"),
         ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -535,21 +532,54 @@ def admin_plugins_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text=t("admin_btn_requests", lang), callback_data="adm:queue:plugins:0"),
-            InlineKeyboardButton(text=t("admin_btn_updates", lang), callback_data="adm:queue:update:0"),
+            InlineKeyboardButton(text=t("admin_btn_updates", lang), callback_data="adm:section:updates"),
         ],
         [
             InlineKeyboardButton(text=t("admin_btn_scheduled", lang), callback_data="adm:scheduled:0"),
         ],
         [
-            InlineKeyboardButton(text=t("admin_btn_scheduled_posts", lang), callback_data="adm:scheduled_posts:0"),
-        ],
-        [
-            InlineKeyboardButton(text=t("admin_btn_check_updates", lang), callback_data="adm:auto_updates"),
-        ],
-        [
             InlineKeyboardButton(text=t("admin_btn_edit_plugins", lang), callback_data="adm:edit_plugins"),
             InlineKeyboardButton(text=t("admin_btn_link_author_search", lang), callback_data="adm:link_author"),
         ],
+        [InlineKeyboardButton(text=t("btn_back", lang), callback_data="adm:menu", style="danger")],
+    ])
+
+
+def admin_updates_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("admin_btn_updates", lang), callback_data="adm:queue:update:0")],
+        [InlineKeyboardButton(text=t("admin_btn_check_updates", lang), callback_data="adm:auto_updates", style="success")],
+        [InlineKeyboardButton(text=t("btn_back", lang), callback_data="adm:menu", style="danger")],
+    ])
+
+
+def admin_updates_list_kb(
+    items: List[Tuple[str, str]],
+    page: int,
+    total_pages: int,
+    back_callback: str = "adm:section:plugins",
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    rows.append([InlineKeyboardButton(text=t("admin_btn_check_updates", lang), callback_data="adm:auto_updates", style="success")])
+    rows.extend([[InlineKeyboardButton(text=label, callback_data=f"adm:review:{rid}")] for label, rid in items])
+
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="<", callback_data=f"adm:updates:{page-1}"))
+    if page < total_pages - 1:
+        nav.append(InlineKeyboardButton(text=">", callback_data=f"adm:updates:{page+1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=back_callback, style="danger")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_post_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("admin_btn_post", lang), callback_data="adm:post:new")],
+        [InlineKeyboardButton(text=t("admin_btn_scheduled_posts", lang), callback_data="adm:scheduled_posts:0")],
         [InlineKeyboardButton(text=t("btn_back", lang), callback_data="adm:menu", style="danger")],
     ])
 
@@ -597,10 +627,8 @@ def admin_broadcast_confirm_kb(lang: str = "ru") -> InlineKeyboardMarkup:
 
 def admin_post_confirm_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("btn_send", lang), callback_data="adm:post:send")],
-        [InlineKeyboardButton(text=t("btn_send", lang) + " + " + t("admin_queue_title_updates", lang), callback_data="adm:post:send_updates")],
+        [InlineKeyboardButton(text=t("btn_send", lang), callback_data="adm:post:send", style="success")],
         [InlineKeyboardButton(text=t("btn_schedule", lang), callback_data="adm:post:schedule")],
-        [InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="adm:cancel")],
     ])
 
 

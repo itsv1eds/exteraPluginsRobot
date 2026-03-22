@@ -15,6 +15,7 @@ from aiogram.types import (
     InputTextMessageContent,
     Message,
 )
+from aiogram.exceptions import TelegramBadRequest
 
 from bot.cache import get_categories, get_icons
 from bot.constants import PAGE_SIZE
@@ -234,7 +235,10 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
 async def on_catalog(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await answer(cb, t("catalog_title", lang), catalog_main_kb(get_categories(), lang), "catalog")
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 async def _show_broadcast_settings(target: CallbackQuery, state: FSMContext) -> None:
@@ -257,7 +261,10 @@ async def _show_broadcast_settings(target: CallbackQuery, state: FSMContext) -> 
 @router.callback_query(F.data == "profile:broadcast")
 async def on_profile_broadcast(cb: CallbackQuery, state: FSMContext) -> None:
     await _show_broadcast_settings(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data == "profile:broadcast:toggle")
@@ -272,7 +279,10 @@ async def on_profile_broadcast_toggle(cb: CallbackQuery, state: FSMContext) -> N
     enabled = is_broadcast_enabled(user.id)
     set_broadcast_enabled(user.id, not enabled)
     await _show_broadcast_settings(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data == "profile:broadcast:pay")
@@ -295,12 +305,18 @@ async def on_profile_broadcast_pay(cb: CallbackQuery, state: FSMContext) -> None
         currency="XTR",
         prices=[LabeledPrice(label="Disable broadcast", amount=50)],
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data == "page:noop")
 async def on_page_noop(cb: CallbackQuery) -> None:
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("page:picker|"))
@@ -308,7 +324,10 @@ async def on_page_picker(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     payload = cb.data.split("|")
     if len(payload) != 4:
-        await cb.answer()
+        try:
+            await cb.answer()
+        except TelegramBadRequest:
+            pass
         return
 
     nav_prefix = payload[1]
@@ -316,11 +335,17 @@ async def on_page_picker(cb: CallbackQuery, state: FSMContext) -> None:
         page = int(payload[2])
         total_pages = int(payload[3])
     except ValueError:
-        await cb.answer()
+        try:
+            await cb.answer()
+        except TelegramBadRequest:
+            pass
         return
 
     if not cb.message:
-        await cb.answer()
+        try:
+            await cb.answer()
+        except TelegramBadRequest:
+            pass
         return
 
     await cb.message.edit_reply_markup(
@@ -331,7 +356,10 @@ async def on_page_picker(cb: CallbackQuery, state: FSMContext) -> None:
             lang=lang,
         )
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("cat:"))
@@ -345,7 +373,10 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
     total = len(plugins)
 
     if total == 0:
-        await cb.answer(t("catalog_empty", lang), show_alert=True)
+        try:
+            await cb.answer(t("catalog_empty", lang), show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     total_pages = math.ceil(total / PAGE_SIZE)
@@ -371,7 +402,10 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
 
     image_key = "cat_all" if cat_key == "_all" else f"cat_{cat_key}"
     await answer(cb, caption, paginated_list_kb(items, page, total_pages, f"cat:{cat_key}", "catalog", lang=lang), image_key)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("plugin:"))
@@ -381,7 +415,10 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
 
     plugin = find_plugin_by_slug(slug)
     if not plugin:
-        await cb.answer(t("not_found", lang), show_alert=True)
+        try:
+            await cb.answer(t("not_found", lang), show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     text = build_plugin_preview(plugin, lang)
@@ -403,7 +440,10 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
         ),
         "plugins",
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("myplugin:"))
@@ -413,7 +453,10 @@ async def on_my_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
 
     plugin = find_plugin_by_slug(slug)
     if not plugin:
-        await cb.answer(t("not_found", lang), show_alert=True)
+        try:
+            await cb.answer(t("not_found", lang), show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     text = build_plugin_preview(plugin, lang)
@@ -437,7 +480,10 @@ async def on_my_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
         ),
         "profile",
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("sub:toggle:"))
@@ -448,20 +494,32 @@ async def on_toggle_subscription(cb: CallbackQuery, state: FSMContext) -> None:
     source = parts[3] if len(parts) > 3 else "catalog"
 
     if not cb.from_user:
-        await cb.answer()
+        try:
+            await cb.answer()
+        except TelegramBadRequest:
+            pass
         return
 
     if is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY):
-        await cb.answer(t("btn_notify_all_on", lang), show_alert=True)
+        try:
+            await cb.answer(t("btn_notify_all_on", lang), show_alert=True)
+        except TelegramBadRequest:
+            pass
         await _show_subscriptions(cb, state, page=0)
         return
 
     if is_subscribed(cb.from_user.id, slug):
         remove_subscription(cb.from_user.id, slug)
-        await cb.answer(t("unsubscribed", lang))
+        try:
+            await cb.answer(t("unsubscribed", lang))
+        except TelegramBadRequest:
+            pass
     else:
         add_subscription(cb.from_user.id, slug)
-        await cb.answer(t("subscribed", lang))
+        try:
+            await cb.answer(t("subscribed", lang))
+        except TelegramBadRequest:
+            pass
 
     plugin = find_plugin_by_slug(slug)
     if not plugin:
@@ -494,7 +552,10 @@ async def on_search(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await state.set_state(UserFlow.searching)
     await answer(cb, t("search_prompt", lang), search_kb(lang), "catalog")
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.message(UserFlow.searching)
@@ -561,7 +622,10 @@ async def on_search_page(cb: CallbackQuery, state: FSMContext) -> None:
     if len(parts) > 1 and parts[1].isdigit():
         page = int(parts[1])
     await _render_search_results(cb, state, page=page)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("icons:"))
@@ -592,7 +656,10 @@ async def on_icons_list(cb: CallbackQuery, state: FSMContext) -> None:
     caption = f"{t('icons_title', lang)}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
     await state.update_data(catalog_back=f"icons:{page}")
     await answer(cb, caption, paginated_list_kb(items, page, total_pages, "icons", "catalog", lang=lang), "iconpacks")
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("icon:"))

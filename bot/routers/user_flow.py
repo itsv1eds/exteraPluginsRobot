@@ -19,6 +19,7 @@ from aiogram.types import (
     PreCheckoutQuery,
     SuccessfulPayment,
 )
+from aiogram.exceptions import TelegramBadRequest
 
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
@@ -2067,23 +2068,42 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
             )
             kb = admin_review_kb(entry["id"], user_id, lang=admin_lang)
 
-        try:
-            if file_path and Path(file_path).exists():
-                await bot.send_document(
-                    admin_id,
-                    FSInputFile(file_path),
-                    caption=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                )
-            else:
+        async def _send_long_html(chat_id: int, html: str, reply_markup: Any | None) -> None:
+            parts: list[str] = []
+            s = html or ""
+            while s:
+                parts.append(s[:4096])
+                s = s[4096:]
+            if not parts:
+                parts = [""]
+            for i, part in enumerate(parts):
                 await bot.send_message(
-                    admin_id,
-                    text,
+                    chat_id,
+                    part,
                     parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
+                    reply_markup=(reply_markup if i == 0 else None),
                     disable_web_page_preview=True,
                 )
+
+        try:
+            if file_path and Path(file_path).exists():
+                if len(text) <= 1024:
+                    await bot.send_document(
+                        admin_id,
+                        FSInputFile(file_path),
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=kb,
+                    )
+                else:
+                    await bot.send_document(
+                        admin_id,
+                        FSInputFile(file_path),
+                        reply_markup=kb,
+                    )
+                    await _send_long_html(admin_id, text, None)
+            else:
+                await _send_long_html(admin_id, text, kb)
             if admin_comment:
                 await bot.send_message(
                     admin_id,
@@ -2092,6 +2112,15 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
                     disable_web_page_preview=True,
                 )
             delivered += 1
+        except TelegramBadRequest:
+            failed += 1
+            logger.warning(
+                "event=submission.notify_admins.failed request_id=%s admin_id=%s submission_type=%s",
+                request_id,
+                admin_id,
+                submission_type,
+                exc_info=True,
+            )
         except Exception:
             failed += 1
             logger.warning(

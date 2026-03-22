@@ -101,7 +101,7 @@ def admin_scheduled_list_kb(
     back_callback: str = "adm:section:plugins",
     lang: str = "ru",
 ) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=label, callback_data=f"adm:scheduled:view:{rid}")] for label, rid in items]
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"adm:review:{rid}")] for label, rid in items]
 
     nav = []
     if page > 0:

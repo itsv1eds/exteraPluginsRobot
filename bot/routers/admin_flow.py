@@ -47,6 +47,8 @@ from bot.keyboards import (
     draft_edit_kb,
     draft_lang_kb,
     icon_draft_edit_kb,
+    admin_scheduled_list_kb,
+    admin_scheduled_item_kb,
     admin_scheduled_post_kb,
     admin_scheduled_posts_list_kb,
 )
@@ -166,6 +168,70 @@ def _parse_dt_utc(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
     except Exception:
         return None
+
+
+def _scheduled_dt_utc(entry: dict | None) -> datetime | None:
+    if not isinstance(entry, dict):
+        return None
+    payload = entry.get("payload", {})
+    if not isinstance(payload, dict):
+        return None
+    return _parse_dt_utc(payload.get("scheduled_at"))
+
+
+async def _render_scheduled_list(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
+    lang = _lang_for(target)
+    requests = list(get_requests(status="scheduled"))
+
+    # show only plugin requests
+    filtered: list[dict] = []
+    for r in requests:
+        payload = (r.get("payload") or {}) if isinstance(r, dict) else {}
+        if payload.get("submission_type") == "icon" or payload.get("icon"):
+            continue
+        filtered.append(r)
+
+    if not filtered:
+        await answer(target, _tr(target, "admin_scheduled_empty"), admin_plugins_section_kb(lang=lang), "profile")
+        return
+
+    sortable = [(r, _scheduled_dt_utc(r)) for r in filtered]
+    sortable.sort(key=lambda x: x[1] or datetime.max.replace(tzinfo=timezone.utc))
+    sorted_requests = [r for r, _ in sortable]
+
+    total = len(sorted_requests)
+    total_pages = math.ceil(total / PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * PAGE_SIZE
+    page_items = sorted_requests[start : start + PAGE_SIZE]
+
+    items: List[tuple[str, str]] = []
+    for r in page_items:
+        payload = r.get("payload", {})
+        plugin = payload.get("plugin", {}) if isinstance(payload, dict) else {}
+        name = (plugin.get("name") if isinstance(plugin, dict) else None) or r.get("id")
+        dt = _scheduled_dt_utc(r)
+        dt_str = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M") if dt else "—"
+        items.append((f"{dt_str} — {name}", str(r.get("id"))))
+
+    caption = f"{_tr(target, 'admin_scheduled_title')}\n{_tr(target, 'admin_page', current=page + 1, total=total_pages)}"
+    await state.update_data(scheduled_list_page=page)
+    await state.set_state(AdminFlow.menu)
+    await answer(target, caption, admin_scheduled_list_kb(items, page, total_pages, back_callback="adm:section:plugins", lang=lang), "profile")
+
+
+async def _render_scheduled_view(target: CallbackQuery | Message, state: FSMContext, request_id: str) -> None:
+    lang = _lang_for(target)
+    entry = get_request_by_id(request_id)
+    if not entry:
+        await answer(target, _tr(target, "not_found"), admin_plugins_section_kb(lang=lang), "profile")
+        return
+    dt = _scheduled_dt_utc(entry)
+    dt_str = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M") if dt else "—"
+    text = f"{_render_request_draft(entry)}\n\n<b>Отложено на:</b> <code>{dt_str}</code>"
+    await state.update_data(scheduled_current_request=str(request_id))
+    await state.set_state(AdminFlow.menu)
+    await answer(target, text, admin_scheduled_item_kb(str(request_id), lang=lang), "profile")
 
 
 def _cleanup_scheduled_posts() -> list[dict]:
@@ -1750,6 +1816,13 @@ async def on_admin_scheduled_posts_change_preset(cb: CallbackQuery, state: FSMCo
         await cb.answer(_tr(cb, "admin_userbot_unavailable"), show_alert=True)
         return
 
+    old_message_id = it.get("message_id")
+    if old_message_id:
+        try:
+            await userbot.delete_message(int(old_message_id))
+        except Exception:
+            pass
+
     new_dt_utc = schedule_dt_local.astimezone(timezone.utc)
     res = await userbot.schedule_post(str(it.get("text") or ""), new_dt_utc)
     updated_item = {
@@ -1796,6 +1869,13 @@ async def on_admin_scheduled_posts_change_time_value(message: Message, state: FS
     if not userbot:
         await message.answer(_tr(message, "admin_userbot_unavailable"), parse_mode=ParseMode.HTML)
         return
+
+    old_message_id = it.get("message_id")
+    if old_message_id:
+        try:
+            await userbot.delete_message(int(old_message_id))
+        except Exception:
+            pass
 
     new_dt_utc = schedule_dt_local.astimezone(timezone.utc)
     res = await userbot.schedule_post(str(it.get("text") or ""), new_dt_utc)

@@ -225,7 +225,20 @@ async def _render_home(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
     await state.clear()
     await state.update_data(lang=lang)
     await state.set_state(UserFlow.idle)
-    await answer(cb, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
+    if cb.from_user and (cb.from_user.username or "").strip():
+        user_name = f"@{cb.from_user.username.strip()}"
+    else:
+        user_name = (cb.from_user.full_name if cb.from_user else "").strip() or (cb.from_user.first_name if cb.from_user else "").strip() or "—"
+    msg = await answer(
+        cb,
+        t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=user_name),
+        main_menu_kb(lang),
+        "welcome",
+    )
+    if cb.message:
+        await try_react_pray(cb.message)
+    elif msg:
+        await try_react_pray(msg)
 
 
 async def _render_profile_message(message: Message, state: FSMContext, lang: str) -> None:
@@ -294,6 +307,36 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
     if value == "profile":
         await state.set_state(UserFlow.idle)
         await _render_profile_message(message, state, lang)
+        return True
+
+    if value == "notifications":
+        await state.set_state(UserFlow.idle)
+        try:
+            from bot.routers.catalog_flow import _show_subscriptions
+
+            await _show_subscriptions(message, state, page=0)
+        except Exception:
+            await answer(message, t("subscriptions_title", lang) + "\n\n" + t("subscriptions_hint", lang), None, "profile")
+        return True
+
+    if value in {"broadcast", "рассылка"}:
+        await state.set_state(UserFlow.idle)
+        try:
+            from bot.routers.catalog_flow import _show_broadcast_settings
+
+            await _show_broadcast_settings(message, state)
+        except Exception:
+            await answer(message, t("broadcast_title", lang), None, "profile")
+        return True
+
+    if value == "joinly":
+        await state.set_state(UserFlow.idle)
+        try:
+            from bot.routers.catalog_flow import _render_profile_joinly
+
+            await _render_profile_joinly(message, state)
+        except Exception:
+            await answer(message, t("joinly_deeplink_intro", lang), main_menu_kb(lang), "profile")
         return True
 
     if value == "admin":
@@ -483,7 +526,18 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                 )
                 return
 
-        await answer(message, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
+        if message.from_user and (message.from_user.username or "").strip():
+            user_name = f"@{message.from_user.username.strip()}"
+        else:
+            user_name = (message.from_user.full_name if message.from_user else "").strip() or (message.from_user.first_name if message.from_user else "").strip() or "—"
+        sent = await answer(
+            message,
+            t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=user_name),
+            main_menu_kb(lang),
+            "welcome",
+        )
+        if sent:
+            await try_react_pray(sent)
         return
 
     lang = get_lang(user_id)
@@ -629,7 +683,17 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.answer(t("language_saved", lang))
             return
 
-    await answer(cb, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
+    user_name = (cb.from_user.full_name if cb.from_user else "").strip() or (cb.from_user.first_name if cb.from_user else "").strip() or "—"
+    msg = await answer(
+        cb,
+        t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=user_name),
+        main_menu_kb(lang),
+        "welcome",
+    )
+    if cb.message:
+        await try_react_pray(cb.message)
+    elif msg:
+        await try_react_pray(msg)
     await cb.answer(t("language_saved", lang))
 
 
@@ -699,7 +763,20 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
 async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await state.set_state(UserFlow.idle)
-    await answer(cb, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
+    if cb.from_user and (cb.from_user.username or "").strip():
+        user_name = f"@{cb.from_user.username.strip()}"
+    else:
+        user_name = (cb.from_user.full_name if cb.from_user else "").strip() or (cb.from_user.first_name if cb.from_user else "").strip() or "—"
+    msg = await answer(
+        cb,
+        t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=user_name),
+        main_menu_kb(lang),
+        "welcome",
+    )
+    if cb.message:
+        await try_react_pray(cb.message)
+    elif msg:
+        await try_react_pray(msg)
     await cb.answer()
 
 

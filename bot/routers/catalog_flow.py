@@ -54,6 +54,8 @@ from user_store import (
     is_broadcast_enabled,
 )
 from storage import load_stenka, save_stenka
+from storage import load_joinly
+from storage import save_joinly
 from request_store import get_user_requests
 
 router = Router(name="catalog-flow")
@@ -241,11 +243,12 @@ async def on_catalog(cb: CallbackQuery, state: FSMContext) -> None:
         pass
 
 
-async def _show_broadcast_settings(target: CallbackQuery, state: FSMContext) -> None:
+async def _show_broadcast_settings(target: CallbackQuery | Message, state: FSMContext) -> None:
     lang = await get_language(target, state)
     user = target.from_user
     if not user:
-        await target.answer()
+        if isinstance(target, CallbackQuery):
+            await target.answer()
         return
 
     paid = has_paid_broadcast_disable(user.id)
@@ -256,15 +259,16 @@ async def _show_broadcast_settings(target: CallbackQuery, state: FSMContext) -> 
         text += f"\n{t('broadcast_paid_note', lang)}"
 
     await answer(target, text, broadcast_kb(lang, enabled=enabled, paid=paid, back="profile"), "profile")
+    if isinstance(target, CallbackQuery):
+        try:
+            await target.answer()
+        except TelegramBadRequest:
+            pass
 
 
 @router.callback_query(F.data == "profile:broadcast")
 async def on_profile_broadcast(cb: CallbackQuery, state: FSMContext) -> None:
     await _show_broadcast_settings(cb, state)
-    try:
-        await cb.answer()
-    except TelegramBadRequest:
-        pass
 
 
 @router.callback_query(F.data == "profile:broadcast:toggle")
@@ -759,11 +763,12 @@ async def on_subscriptions_page(cb: CallbackQuery, state: FSMContext) -> None:
     await _show_subscriptions(cb, state, page=page)
 
 
-async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: int) -> None:
+async def _show_subscriptions(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
     lang = await get_language(target, state)
     user = target.from_user
     if not user:
-        await target.answer()
+        if isinstance(target, CallbackQuery):
+            await target.answer()
         return
 
     slugs = list_subscriptions(user.id)
@@ -772,7 +777,8 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
         slugs = [ALL_SUBSCRIPTION_KEY]
     if not slugs:
         await answer(target, t("subscriptions_empty", lang), search_kb(lang), "profile")
-        await target.answer()
+        if isinstance(target, CallbackQuery):
+            await target.answer()
         return
 
     total = len(slugs)
@@ -790,7 +796,11 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
         name = (locale.get("name") if locale else None) or slug
         items.append((name, f"plugin:{encode_slug(slug)}"))
 
-    caption = f"{t('subscriptions_title', lang)}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
+    caption = (
+        f"{t('subscriptions_title', lang)}\n"
+        f"{t('subscriptions_hint', lang)}\n"
+        f"{t('catalog_page', lang, current=page + 1, total=total_pages)}"
+    )
     await state.update_data(catalog_back="profile:subscriptions")
 
     kb = paginated_list_kb(items, page, total_pages, "subs:page", "profile", lang=lang)
@@ -805,8 +815,216 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
             )
         ],
     )
-    await answer(target, caption, kb, "profile")
-    await target.answer()
+    await answer(target, caption, kb, "notifications")
+    if isinstance(target, CallbackQuery):
+        await target.answer()
+
+
+def _user_joinly_chat_ids(db: dict[str, Any], user_id: int) -> list[int]:
+    panel_key = f"PanelMessageId:{user_id}"
+    chat_ids: list[int] = []
+    for k, v in db.items():
+        if not str(k).lstrip("-").isdigit():
+            continue
+        if not isinstance(v, dict):
+            continue
+        if int(v.get(panel_key) or 0) <= 0:
+            continue
+        try:
+            chat_ids.append(int(k))
+        except Exception:
+            continue
+    chat_ids.sort()
+    return chat_ids
+
+
+def _fmt_bool_mark(val: Any) -> str:
+    return "✅" if bool(val) else "❌"
+
+
+async def _render_profile_joinly(target: CallbackQuery | Message, state: FSMContext) -> None:
+    lang = await get_language(target, state)
+    user = target.from_user
+    if not user:
+        if isinstance(target, CallbackQuery):
+            await target.answer()
+        return
+
+    db = load_joinly()
+    if not isinstance(db, dict):
+        db = {}
+
+    text = f"{t('joinly_profile_title', lang)}\n\n"
+    chat_ids = _user_joinly_chat_ids(db, user.id)
+    if not chat_ids:
+        text += t("joinly_profile_no_chats", lang)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile", style="danger")]]
+        )
+        await answer(target, text, kb, "joinly")
+        if isinstance(target, CallbackQuery):
+            await target.answer()
+        return
+
+    bot = target.bot if isinstance(target, Message) else (target.message.bot if target.message else None)
+    rows: list[list[InlineKeyboardButton]] = []
+    for chat_id in chat_ids:
+        title = str(chat_id)
+        if bot:
+            try:
+                chat = await bot.get_chat(chat_id)
+                title = (getattr(chat, "title", None) or getattr(chat, "full_name", None) or str(chat_id)).strip() or str(chat_id)
+            except Exception:
+                title = str(chat_id)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{title} · {chat_id}",
+                    callback_data=f"profile:joinly_chat:{chat_id}",
+                )
+            ]
+        )
+
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile", style="danger")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    await answer(target, text, kb, "joinly")
+    if isinstance(target, CallbackQuery):
+        await target.answer()
+
+
+@router.callback_query(F.data.startswith("profile:joinly_chat:"))
+async def on_profile_joinly_chat(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    user = cb.from_user
+    if not user:
+        await cb.answer()
+        return
+
+    parts = cb.data.split(":", 2)
+    raw_chat_id = parts[2] if len(parts) > 2 else ""
+    try:
+        chat_id = int(raw_chat_id)
+    except Exception:
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    await _render_joinly_chat_detail(cb, state, chat_id)
+    await cb.answer()
+
+
+async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_id: int) -> None:
+    lang = await get_language(cb, state)
+
+    db = load_joinly()
+    chat_cfg = db.get(str(chat_id)) if isinstance(db, dict) else None
+    if not isinstance(chat_cfg, dict):
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    try:
+        chat = await cb.bot.get_chat(chat_id)
+        title = (getattr(chat, "title", None) or getattr(chat, "full_name", None) or str(chat_id)).strip() or str(chat_id)
+    except Exception:
+        title = str(chat_id)
+
+    await state.update_data(joinly_current_chat_id=chat_id)
+
+    text = f"{t('joinly_profile_title', lang)}\n\n"
+    text += f"<b>{title}</b>\n"
+    text += t("joinly_profile_chat", lang, chat_id=chat_id)
+
+    welcome_enabled = bool(chat_cfg.get("WelcomeEnabled"))
+    cleanup_enabled = bool(chat_cfg.get("DeleteServiceMessages"))
+    enabled = bool(chat_cfg.get("Enabled"))
+    ban_enabled = bool(chat_cfg.get("BanMembers"))
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{t('join_btn_welcome_toggle', lang)}: {'✅' if welcome_enabled else '❌'}",
+                    callback_data=f"profile:joinly_toggle:{chat_id}:WelcomeEnabled",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{t('join_btn_service_cleanup', lang)}: {'✅' if cleanup_enabled else '❌'}",
+                    callback_data=f"profile:joinly_toggle:{chat_id}:DeleteServiceMessages",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{t('join_btn_enabled', lang)}: {'✅' if enabled else '❌'}",
+                    callback_data=f"profile:joinly_toggle:{chat_id}:Enabled",
+                ),
+                InlineKeyboardButton(
+                    text=f"{t('join_btn_ban_on_join', lang)}: {'✅' if ban_enabled else '❌'}",
+                    callback_data=f"profile:joinly_toggle:{chat_id}:BanMembers",
+                ),
+            ],
+            [InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile:joinly", style="danger")],
+        ]
+    )
+    await answer(cb, text, kb, "joinly")
+
+
+@router.callback_query(F.data.startswith("profile:joinly_toggle:"))
+async def on_profile_joinly_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    user = cb.from_user
+    if not user:
+        await cb.answer()
+        return
+
+    parts = cb.data.split(":", 3)
+    if len(parts) < 4:
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    raw_chat_id = parts[2]
+    field = parts[3]
+    if field not in {"WelcomeEnabled", "DeleteServiceMessages", "Enabled", "BanMembers"}:
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    try:
+        chat_id = int(raw_chat_id)
+    except Exception:
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    # Verify user is admin/creator in that chat before allowing edits.
+    try:
+        member = await cb.bot.get_chat_member(chat_id, user.id)
+        status = getattr(member, "status", None)
+        if status not in {"administrator", "creator"}:
+            await cb.answer("Недостаточно прав" if lang == "ru" else "Not enough rights", show_alert=True)
+            return
+    except Exception:
+        await cb.answer("Недостаточно прав" if lang == "ru" else "Not enough rights", show_alert=True)
+        return
+
+    db = load_joinly()
+    if not isinstance(db, dict):
+        db = {}
+    chat_cfg = db.get(str(chat_id))
+    if not isinstance(chat_cfg, dict):
+        chat_cfg = {}
+        db[str(chat_id)] = chat_cfg
+
+    current = bool(chat_cfg.get(field))
+    chat_cfg[field] = (not current)
+    try:
+        save_joinly(db)
+    except Exception:
+        pass
+
+    await _render_joinly_chat_detail(cb, state, chat_id)
+
+
+@router.callback_query(F.data == "profile:joinly")
+async def on_profile_joinly(cb: CallbackQuery, state: FSMContext) -> None:
+    await _render_profile_joinly(cb, state)
 
 
 @router.callback_query(F.data.startswith("my:"))

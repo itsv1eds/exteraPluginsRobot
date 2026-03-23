@@ -63,17 +63,22 @@ def admin_scheduled_post_kb(post_id: str, lang: str = "ru") -> InlineKeyboardMar
 
 def submit_type_kb(lang: str, include_update: bool = False) -> InlineKeyboardMarkup:
     idea = t("btn_idea", lang)
-    
-    first_row = [InlineKeyboardButton(text=t("btn_new_plugin", lang), callback_data="submit:plugin")]
-    if include_update:
-        first_row.append(InlineKeyboardButton(text=t("btn_update", lang), callback_data="submit:update"))
 
-    return InlineKeyboardMarkup(inline_keyboard=[
-        first_row,
-        [InlineKeyboardButton(text=t("btn_icon_pack", lang), callback_data="submit:icons")],
-        [InlineKeyboardButton(text=idea, url="https://t.me/exteraForum")],
-        [InlineKeyboardButton(text=t("btn_back", lang), callback_data="home", style="danger")],
-    ])
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(text=t("btn_new_plugin", lang), callback_data="submit:plugin"),
+            InlineKeyboardButton(text=t("btn_icon_pack", lang), callback_data="submit:icons"),
+        ]
+    ]
+
+    second_row: list[InlineKeyboardButton] = []
+    if include_update:
+        second_row.append(InlineKeyboardButton(text=t("btn_update", lang), callback_data="submit:update"))
+    second_row.append(InlineKeyboardButton(text=idea, url="https://t.me/exteraForum"))
+    rows.append(second_row)
+
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data="home", style="danger")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def cancel_kb(lang: str) -> InlineKeyboardMarkup:
@@ -488,6 +493,8 @@ def profile_kb(
         InlineKeyboardButton(text=t("btn_subscriptions", lang), callback_data="profile:subscriptions"),
         InlineKeyboardButton(text=t("btn_broadcast", lang), callback_data="profile:broadcast"),
     ])
+
+    rows.append([InlineKeyboardButton(text=t("btn_joinly", lang), callback_data="profile:joinly")])
 
     rows.append([InlineKeyboardButton(text=t("btn_support", lang), url="https://t.me/itsv2eds")])
     

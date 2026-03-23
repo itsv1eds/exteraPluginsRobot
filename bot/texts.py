@@ -373,6 +373,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "btn_icon_pack": {"ru": "Пак иконок", "en": "Icon pack"},
     "btn_icons": {"ru": "Иконки", "en": "Icons"},
     "btn_idea": {"ru": "Предложить идею", "en": "Suggest an idea"},
+    "btn_joinly": {"ru": "Joinly", "en": "Joinly"},
     "btn_more": {"ru": "Ещё...", "en": "More..."},
     "btn_my_packs": {"ru": "Мои паки", "en": "My packs"},
     "btn_my_plugins": {"ru": "Мои плагины", "en": "My plugins"},
@@ -800,6 +801,35 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> Мои уведомления",
         "en": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> My notifications",
     },
+    "subscriptions_hint": {
+        "ru": "Вы можете включить уведомления на конкретные плагины, выбрав их в каталоге, или включить уведомления на все плагины.",
+        "en": "You can enable notifications for specific plugins by selecting them in the catalog, or enable notifications for all plugins.",
+    },
+
+    "joinly_profile_title": {
+        "ru": "<b>Joinly</b> — настройки входов в чат",
+        "en": "<b>Joinly</b> — chat join settings",
+    },
+    "joinly_profile_no_chats": {
+        "ru": "Пока не найдено ни одного чата, где вы настраивали Joinly. Добавьте бота в чат и выполните команду /settings.",
+        "en": "No chats found where you configured Joinly yet. Add the bot to a chat and run /settings.",
+    },
+    "joinly_profile_chat": {
+        "ru": "Чат: <code>{chat_id}</code>",
+        "en": "Chat: <code>{chat_id}</code>",
+    },
+    "joinly_profile_settings": {
+        "ru": "Настройки: приветствие {welcome} · очистка сервисных {cleanup} · кик при заходе {enabled} · бан {ban}",
+        "en": "Settings: welcome {welcome} · cleanup {cleanup} · kick on join {enabled} · ban {ban}",
+    },
+    "joinly_deeplink_intro": {
+        "ru": "Чтобы настроить Joinly, добавьте бота в чат и выполните команду <code>/settings</code> (нужны права администратора).",
+        "en": "To configure Joinly, add the bot to your chat and run <code>/settings</code> (admin rights required).",
+    },
+    "joinly_bot_added": {
+        "ru": "Бот добавлен в чат. Для настройки Joinly выполните команду <code>/settings</code> (нужны права администратора).",
+        "en": "The bot was added to the chat. To configure Joinly, run <code>/settings</code> (admin rights required).",
+    },
 
     "notify_all_title": {
         "ru": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> Уведомления на все плагины",
@@ -915,8 +945,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "welcome": {
-        "ru": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Добро пожаловать</b>\n\nЗдесь вы можете:\n• Найти плагины в каталоге\n• Предложить свой плагин\n• Управлять своими работами",
-        "en": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Welcome</b>\n\nHere you can:\n• Browse the plugin catalog\n• Submit your plugin\n• Manage your submissions",
+        "ru": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Добро пожаловать в {bot_name}, {user_name}!</b>\n\n{bot_name} — это твой помощник для:\n• <a href=\"https://t.me/{bot}?start=catalog\">Поиска и просмотра</a> плагинов (есть и inline поиск), а также <a href=\"https://t.me/{bot}?start=submit\">предложить</a> свой плагин\n• <a href=\"https://t.me/{bot}?start=notifications\">Уведомлений</a>, когда плагин был обновлён\n• <a href=\"https://t.me/{bot}?start=joinly\">Управление</a> входами в вашем чате с помощью Joinly\n\nВыбери действие:",
+        "en": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Welcome to {bot_name}, {user_name}!</b>\n\n{bot_name} is your assistant for:\n• <a href=\"https://t.me/{bot}?start=catalog\">Browsing</a> plugins (inline search included) and <a href=\"https://t.me/{bot}?start=submit\">submitting</a> your own\n• <a href=\"https://t.me/{bot}?start=notifications\">Notifications</a> when a plugin is updated\n• <a href=\"https://t.me/{bot}?start=joinly\">Managing</a> chat joins with Joinly\n\nChoose an action:",
     },
 }
 

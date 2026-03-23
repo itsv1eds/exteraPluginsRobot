@@ -13,6 +13,7 @@ from aiogram.types import (
 )
 
 from bot.cache import get_admins, get_categories, get_config
+from bot.context import get_lang
 from storage import DATA_DIR
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -97,6 +98,18 @@ async def answer(
     kb: Optional[InlineKeyboardMarkup] = None,
     image: Optional[str] = None,
 ) -> Optional[Message]:
+    if image:
+        try:
+            user = (target.from_user if isinstance(target, Message) else (target.from_user or (target.message.from_user if target.message else None)))
+            lang = get_lang(getattr(user, "id", None))
+            if lang == "ru":
+                ru_key = f"{image}_ru"
+                ru_path = IMAGES_DIR / f"{ru_key}.png"
+                if ru_path.exists():
+                    image = ru_key
+        except Exception:
+            pass
+
     if isinstance(target, CallbackQuery):
         msg = target.message
         if not msg:
@@ -107,13 +120,12 @@ async def answer(
         
         try:
             if image and not msg.photo:
-                sent = await answer(msg, text, kb, image)
-                if sent:
-                    try:
-                        await msg.delete()
-                    except Exception:
-                        pass
-                return sent
+                return await msg.edit_text(
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                    disable_web_page_preview=True,
+                )
 
             if image and msg.photo:
                 file_id = _image_file_ids.get(image)
@@ -249,7 +261,7 @@ async def preload_images(bot: Bot) -> None:
     
     admin_chat_id = admins[0]
 
-    image_keys = ["welcome", "plugins", "profile", "catalog", "icons", "cat_all", "suggestion"]
+    image_keys = ["welcome", "plugins", "profile", "catalog", "icons", "cat_all", "suggestion", "admin", "notifications", "joinly"]
     for cat in get_categories():
         key = cat.get("key")
         if key:

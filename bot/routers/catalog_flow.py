@@ -1,4 +1,5 @@
 import html
+import time
 import math
 from typing import Any, Dict, List
 
@@ -14,6 +15,7 @@ from aiogram.types import (
     InputTextMessageContent,
     Message,
 )
+from aiogram.exceptions import TelegramBadRequest
 
 from bot.cache import get_categories, get_icons
 from bot.constants import PAGE_SIZE
@@ -51,10 +53,98 @@ from user_store import (
     has_paid_broadcast_disable,
     is_broadcast_enabled,
 )
+from storage import load_stenka, save_stenka
+from storage import load_joinly
+from storage import save_joinly
+from request_store import get_user_requests
 
 router = Router(name="catalog-flow")
 
 BOT_USERNAME = "exteraPluginsRobot"
+
+
+def _stenka_db() -> dict[str, Any]:
+    db = load_stenka()
+    if not isinstance(db, dict):
+        db = {}
+    if "counter" not in db or not isinstance(db.get("counter"), int):
+        db["counter"] = 0
+    if "walls" not in db or not isinstance(db.get("walls"), dict):
+        db["walls"] = {}
+    return db
+
+
+def _stenka_next_id() -> str:
+    db = _stenka_db()
+    db["counter"] = int(db.get("counter") or 0) + 1
+    wall_id = f"stenka{db['counter']}"
+    walls = db.setdefault("walls", {})
+    if isinstance(walls, dict):
+        walls.setdefault(wall_id, {"tags": [], "users": {}, "created_at": int(time.time())})
+    save_stenka(db)
+    return wall_id
+
+
+def _stenka_render_text(wall_id: str) -> str:
+    db = _stenka_db()
+    walls = db.get("walls") if isinstance(db.get("walls"), dict) else {}
+    wall = walls.get(wall_id) if isinstance(walls, dict) else None
+    tags: list[str] = []
+    if isinstance(wall, dict):
+        raw_tags = wall.get("tags")
+        if isinstance(raw_tags, list):
+            tags = [str(t).strip() for t in raw_tags if str(t).strip()]
+    base = t("stenka_title", "ru")
+    if tags:
+        return f"{html.escape(base)}\n\n{html.escape(', '.join(tags))}"
+    return f"{html.escape(base)}"
+
+
+def _stenka_kb(wall_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=t("stenka_btn_leave_tag", lang), callback_data=f"stenka:tag:{wall_id}")]]
+    )
+
+
+def _stenka_kb_url(wall_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    url = f"https://t.me/{BOT_USERNAME}?start=stenka_{wall_id}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text=t("stenka_btn_leave_tag", lang), url=url)]]
+    )
+
+
+@router.callback_query(F.data.startswith("stenka:tag:"))
+async def on_stenka_tag(cb: CallbackQuery) -> None:
+    if not cb.from_user:
+        await cb.answer()
+        return
+
+    lang = get_lang(cb.from_user.id)
+
+    wall_id = cb.data.split(":", 2)[2]
+
+    db = _stenka_db()
+    walls = db.get("walls") if isinstance(db.get("walls"), dict) else {}
+    wall = walls.get(wall_id) if isinstance(walls, dict) else None
+    if not isinstance(wall, dict):
+        await cb.answer(t("stenka_err_not_found", lang), show_alert=True)
+        return
+    if cb.message:
+        wall["chat_id"] = cb.message.chat.id
+        wall["message_id"] = cb.message.message_id
+    if cb.inline_message_id:
+        wall["inline_message_id"] = cb.inline_message_id
+    save_stenka(db)
+
+    try:
+        if cb.message:
+            await cb.message.edit_reply_markup(reply_markup=_stenka_kb_url(wall_id, lang=lang))
+        elif cb.inline_message_id:
+            await cb.bot.edit_message_reply_markup(inline_message_id=cb.inline_message_id, reply_markup=_stenka_kb_url(wall_id, lang=lang))
+    except Exception:
+        pass
+
+    await cb.answer(t("stenka_alert_open_bot", lang), show_alert=True)
 
 
 def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
@@ -92,7 +182,7 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
 
     description = (locale.get("description") or "").strip()
     if description:
-        lines.append(f"<blockquote expandable>{html.escape(description)}</blockquote>")
+        lines.append(f"<blockquote expandable>{description}</blockquote>")
 
     min_version = (entry.get("min_version") or "").strip()
     if min_version:
@@ -135,7 +225,7 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
     if kind == "plugin":
         description = (locale.get("description") or "").strip()
         if description:
-            lines.append(f"<blockquote expandable>{html.escape(description)}</blockquote>")
+            lines.append(f"<blockquote expandable>{description}</blockquote>")
 
         min_version = (entry.get("min_version") or "").strip()
         if min_version:
@@ -147,14 +237,18 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
 async def on_catalog(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await answer(cb, t("catalog_title", lang), catalog_main_kb(get_categories(), lang), "catalog")
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
-async def _show_broadcast_settings(target: CallbackQuery, state: FSMContext) -> None:
+async def _show_broadcast_settings(target: CallbackQuery | Message, state: FSMContext) -> None:
     lang = await get_language(target, state)
     user = target.from_user
     if not user:
-        await target.answer()
+        if isinstance(target, CallbackQuery):
+            await target.answer()
         return
 
     paid = has_paid_broadcast_disable(user.id)
@@ -165,12 +259,16 @@ async def _show_broadcast_settings(target: CallbackQuery, state: FSMContext) -> 
         text += f"\n{t('broadcast_paid_note', lang)}"
 
     await answer(target, text, broadcast_kb(lang, enabled=enabled, paid=paid, back="profile"), "profile")
+    if isinstance(target, CallbackQuery):
+        try:
+            await target.answer()
+        except TelegramBadRequest:
+            pass
 
 
 @router.callback_query(F.data == "profile:broadcast")
 async def on_profile_broadcast(cb: CallbackQuery, state: FSMContext) -> None:
     await _show_broadcast_settings(cb, state)
-    await cb.answer()
 
 
 @router.callback_query(F.data == "profile:broadcast:toggle")
@@ -185,7 +283,10 @@ async def on_profile_broadcast_toggle(cb: CallbackQuery, state: FSMContext) -> N
     enabled = is_broadcast_enabled(user.id)
     set_broadcast_enabled(user.id, not enabled)
     await _show_broadcast_settings(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data == "profile:broadcast:pay")
@@ -208,12 +309,18 @@ async def on_profile_broadcast_pay(cb: CallbackQuery, state: FSMContext) -> None
         currency="XTR",
         prices=[LabeledPrice(label="Disable broadcast", amount=50)],
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data == "page:noop")
 async def on_page_noop(cb: CallbackQuery) -> None:
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("page:picker|"))
@@ -221,7 +328,10 @@ async def on_page_picker(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     payload = cb.data.split("|")
     if len(payload) != 4:
-        await cb.answer()
+        try:
+            await cb.answer()
+        except TelegramBadRequest:
+            pass
         return
 
     nav_prefix = payload[1]
@@ -229,11 +339,17 @@ async def on_page_picker(cb: CallbackQuery, state: FSMContext) -> None:
         page = int(payload[2])
         total_pages = int(payload[3])
     except ValueError:
-        await cb.answer()
+        try:
+            await cb.answer()
+        except TelegramBadRequest:
+            pass
         return
 
     if not cb.message:
-        await cb.answer()
+        try:
+            await cb.answer()
+        except TelegramBadRequest:
+            pass
         return
 
     await cb.message.edit_reply_markup(
@@ -244,7 +360,10 @@ async def on_page_picker(cb: CallbackQuery, state: FSMContext) -> None:
             lang=lang,
         )
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("cat:"))
@@ -258,7 +377,10 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
     total = len(plugins)
 
     if total == 0:
-        await cb.answer(t("catalog_empty", lang), show_alert=True)
+        try:
+            await cb.answer(t("catalog_empty", lang), show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     total_pages = math.ceil(total / PAGE_SIZE)
@@ -284,7 +406,10 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
 
     image_key = "cat_all" if cat_key == "_all" else f"cat_{cat_key}"
     await answer(cb, caption, paginated_list_kb(items, page, total_pages, f"cat:{cat_key}", "catalog", lang=lang), image_key)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("plugin:"))
@@ -294,7 +419,10 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
 
     plugin = find_plugin_by_slug(slug)
     if not plugin:
-        await cb.answer(t("not_found", lang), show_alert=True)
+        try:
+            await cb.answer(t("not_found", lang), show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     text = build_plugin_preview(plugin, lang)
@@ -316,7 +444,10 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
         ),
         "plugins",
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("myplugin:"))
@@ -326,7 +457,10 @@ async def on_my_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
 
     plugin = find_plugin_by_slug(slug)
     if not plugin:
-        await cb.answer(t("not_found", lang), show_alert=True)
+        try:
+            await cb.answer(t("not_found", lang), show_alert=True)
+        except TelegramBadRequest:
+            pass
         return
 
     text = build_plugin_preview(plugin, lang)
@@ -350,7 +484,10 @@ async def on_my_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
         ),
         "profile",
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("sub:toggle:"))
@@ -361,20 +498,32 @@ async def on_toggle_subscription(cb: CallbackQuery, state: FSMContext) -> None:
     source = parts[3] if len(parts) > 3 else "catalog"
 
     if not cb.from_user:
-        await cb.answer()
+        try:
+            await cb.answer()
+        except TelegramBadRequest:
+            pass
         return
 
     if is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY):
-        await cb.answer(t("btn_notify_all_on", lang), show_alert=True)
+        try:
+            await cb.answer(t("btn_notify_all_on", lang), show_alert=True)
+        except TelegramBadRequest:
+            pass
         await _show_subscriptions(cb, state, page=0)
         return
 
     if is_subscribed(cb.from_user.id, slug):
         remove_subscription(cb.from_user.id, slug)
-        await cb.answer(t("unsubscribed", lang))
+        try:
+            await cb.answer(t("unsubscribed", lang))
+        except TelegramBadRequest:
+            pass
     else:
         add_subscription(cb.from_user.id, slug)
-        await cb.answer(t("subscribed", lang))
+        try:
+            await cb.answer(t("subscribed", lang))
+        except TelegramBadRequest:
+            pass
 
     plugin = find_plugin_by_slug(slug)
     if not plugin:
@@ -407,7 +556,10 @@ async def on_search(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await state.set_state(UserFlow.searching)
     await answer(cb, t("search_prompt", lang), search_kb(lang), "catalog")
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.message(UserFlow.searching)
@@ -419,24 +571,65 @@ async def on_search_query(message: Message, state: FSMContext) -> None:
         await message.answer(t("need_text", lang))
         return
 
-    results = search_plugins(query, limit=10)
+    results = search_plugins(query, limit=25)
     await state.set_state(UserFlow.idle)
 
     if not results:
         await answer(message, t("search_empty", lang), search_kb(lang, True), "catalog")
         return
 
-    items = []
+    slugs: list[str] = []
     for plugin in results:
         slug = plugin.get("slug")
         if slug:
-            locale = plugin.get(lang) or plugin.get("ru") or {}
-            name = locale.get("name") or slug
-            items.append((name, f"plugin:{encode_slug(slug)}"))
+            slugs.append(slug)
 
-    text = t("search_results", lang, count=len(results))
-    await state.update_data(catalog_back="search:0")
-    await answer(message, text, paginated_list_kb(items, 0, 1, "search", "catalog", lang=lang), "catalog")
+    await state.update_data(last_search_query=query, last_search_results=slugs)
+    await _render_search_results(message, state, page=0)
+
+
+async def _render_search_results(target: Message | CallbackQuery, state: FSMContext, page: int) -> None:
+    lang = await get_language(target, state)
+    data = await state.get_data()
+    slugs: list[str] = data.get("last_search_results", [])
+    if not slugs:
+        await answer(target, t("search_empty", lang), search_kb(lang, True), "catalog")
+        return
+
+    total = len(slugs)
+    total_pages = math.ceil(total / PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start = page * PAGE_SIZE
+    page_slugs = slugs[start : start + PAGE_SIZE]
+
+    items = []
+    for slug in page_slugs:
+        plugin = find_plugin_by_slug(slug)
+        locale = (plugin.get(lang) if plugin else None) or (plugin.get("ru") if plugin else None) or {}
+        name = (locale.get("name") if isinstance(locale, dict) else None) or slug
+        items.append((name, f"plugin:{encode_slug(slug)}"))
+
+    text = t("search_results", lang, count=total)
+    await state.update_data(catalog_back=f"search:{page}")
+    await answer(
+        target,
+        text,
+        paginated_list_kb(items, page, total_pages, "search", "catalog", lang=lang),
+        "catalog",
+    )
+
+
+@router.callback_query(F.data.startswith("search:"))
+async def on_search_page(cb: CallbackQuery, state: FSMContext) -> None:
+    parts = cb.data.split(":", 1)
+    page = 0
+    if len(parts) > 1 and parts[1].isdigit():
+        page = int(parts[1])
+    await _render_search_results(cb, state, page=page)
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("icons:"))
@@ -467,7 +660,10 @@ async def on_icons_list(cb: CallbackQuery, state: FSMContext) -> None:
     caption = f"{t('icons_title', lang)}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
     await state.update_data(catalog_back=f"icons:{page}")
     await answer(cb, caption, paginated_list_kb(items, page, total_pages, "icons", "catalog", lang=lang), "iconpacks")
-    await cb.answer()
+    try:
+        await cb.answer()
+    except TelegramBadRequest:
+        pass
 
 
 @router.callback_query(F.data.startswith("icon:"))
@@ -500,8 +696,20 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
     user_plugins = find_user_plugins(user.id, user.username or "")
     user_icons = find_user_icons(user.id, user.username or "")
 
+    pending = []
+    for req in get_user_requests(user.id):
+        if req.get("status") != "pending":
+            continue
+        if req.get("type") not in {"new", "update"}:
+            continue
+        payload = req.get("payload", {})
+        if (payload.get("submission_type") or payload.get("type")) != "plugin":
+            continue
+        pending.append(req)
+
     await state.update_data(
         my_plugins=[plugin.get("slug") for plugin in user_plugins],
+        my_pending_plugins=[req.get("id") for req in pending if req.get("id")],
         my_icons=[icon.get("slug") for icon in user_icons],
     )
 
@@ -555,11 +763,12 @@ async def on_subscriptions_page(cb: CallbackQuery, state: FSMContext) -> None:
     await _show_subscriptions(cb, state, page=page)
 
 
-async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: int) -> None:
+async def _show_subscriptions(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
     lang = await get_language(target, state)
     user = target.from_user
     if not user:
-        await target.answer()
+        if isinstance(target, CallbackQuery):
+            await target.answer()
         return
 
     slugs = list_subscriptions(user.id)
@@ -568,7 +777,8 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
         slugs = [ALL_SUBSCRIPTION_KEY]
     if not slugs:
         await answer(target, t("subscriptions_empty", lang), search_kb(lang), "profile")
-        await target.answer()
+        if isinstance(target, CallbackQuery):
+            await target.answer()
         return
 
     total = len(slugs)
@@ -586,7 +796,11 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
         name = (locale.get("name") if locale else None) or slug
         items.append((name, f"plugin:{encode_slug(slug)}"))
 
-    caption = f"{t('subscriptions_title', lang)}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
+    caption = (
+        f"{t('subscriptions_title', lang)}\n"
+        f"{t('subscriptions_hint', lang)}\n"
+        f"{t('catalog_page', lang, current=page + 1, total=total_pages)}"
+    )
     await state.update_data(catalog_back="profile:subscriptions")
 
     kb = paginated_list_kb(items, page, total_pages, "subs:page", "profile", lang=lang)
@@ -601,8 +815,216 @@ async def _show_subscriptions(target: CallbackQuery, state: FSMContext, page: in
             )
         ],
     )
-    await answer(target, caption, kb, "profile")
-    await target.answer()
+    await answer(target, caption, kb, "notifications")
+    if isinstance(target, CallbackQuery):
+        await target.answer()
+
+
+def _user_joinly_chat_ids(db: dict[str, Any], user_id: int) -> list[int]:
+    panel_key = f"PanelMessageId:{user_id}"
+    chat_ids: list[int] = []
+    for k, v in db.items():
+        if not str(k).lstrip("-").isdigit():
+            continue
+        if not isinstance(v, dict):
+            continue
+        if int(v.get(panel_key) or 0) <= 0:
+            continue
+        try:
+            chat_ids.append(int(k))
+        except Exception:
+            continue
+    chat_ids.sort()
+    return chat_ids
+
+
+def _fmt_bool_mark(val: Any) -> str:
+    return "✅" if bool(val) else "❌"
+
+
+async def _render_profile_joinly(target: CallbackQuery | Message, state: FSMContext) -> None:
+    lang = await get_language(target, state)
+    user = target.from_user
+    if not user:
+        if isinstance(target, CallbackQuery):
+            await target.answer()
+        return
+
+    db = load_joinly()
+    if not isinstance(db, dict):
+        db = {}
+
+    text = f"{t('joinly_profile_title', lang)}\n\n"
+    chat_ids = _user_joinly_chat_ids(db, user.id)
+    if not chat_ids:
+        text += t("joinly_profile_no_chats", lang)
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile", style="danger")]]
+        )
+        await answer(target, text, kb, "joinly")
+        if isinstance(target, CallbackQuery):
+            await target.answer()
+        return
+
+    bot = target.bot if isinstance(target, Message) else (target.message.bot if target.message else None)
+    rows: list[list[InlineKeyboardButton]] = []
+    for chat_id in chat_ids:
+        title = str(chat_id)
+        if bot:
+            try:
+                chat = await bot.get_chat(chat_id)
+                title = (getattr(chat, "title", None) or getattr(chat, "full_name", None) or str(chat_id)).strip() or str(chat_id)
+            except Exception:
+                title = str(chat_id)
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{title} · {chat_id}",
+                    callback_data=f"profile:joinly_chat:{chat_id}",
+                )
+            ]
+        )
+
+    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile", style="danger")])
+    kb = InlineKeyboardMarkup(inline_keyboard=rows)
+    await answer(target, text, kb, "joinly")
+    if isinstance(target, CallbackQuery):
+        await target.answer()
+
+
+@router.callback_query(F.data.startswith("profile:joinly_chat:"))
+async def on_profile_joinly_chat(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    user = cb.from_user
+    if not user:
+        await cb.answer()
+        return
+
+    parts = cb.data.split(":", 2)
+    raw_chat_id = parts[2] if len(parts) > 2 else ""
+    try:
+        chat_id = int(raw_chat_id)
+    except Exception:
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    await _render_joinly_chat_detail(cb, state, chat_id)
+    await cb.answer()
+
+
+async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_id: int) -> None:
+    lang = await get_language(cb, state)
+
+    db = load_joinly()
+    chat_cfg = db.get(str(chat_id)) if isinstance(db, dict) else None
+    if not isinstance(chat_cfg, dict):
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    try:
+        chat = await cb.bot.get_chat(chat_id)
+        title = (getattr(chat, "title", None) or getattr(chat, "full_name", None) or str(chat_id)).strip() or str(chat_id)
+    except Exception:
+        title = str(chat_id)
+
+    await state.update_data(joinly_current_chat_id=chat_id)
+
+    text = f"{t('joinly_profile_title', lang)}\n\n"
+    text += f"<b>{title}</b>\n"
+    text += t("joinly_profile_chat", lang, chat_id=chat_id)
+
+    welcome_enabled = bool(chat_cfg.get("WelcomeEnabled"))
+    cleanup_enabled = bool(chat_cfg.get("DeleteServiceMessages"))
+    enabled = bool(chat_cfg.get("Enabled"))
+    ban_enabled = bool(chat_cfg.get("BanMembers"))
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"{t('join_btn_welcome_toggle', lang)}: {'✅' if welcome_enabled else '❌'}",
+                    callback_data=f"profile:joinly_toggle:{chat_id}:WelcomeEnabled",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{t('join_btn_service_cleanup', lang)}: {'✅' if cleanup_enabled else '❌'}",
+                    callback_data=f"profile:joinly_toggle:{chat_id}:DeleteServiceMessages",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=f"{t('join_btn_enabled', lang)}: {'✅' if enabled else '❌'}",
+                    callback_data=f"profile:joinly_toggle:{chat_id}:Enabled",
+                ),
+                InlineKeyboardButton(
+                    text=f"{t('join_btn_ban_on_join', lang)}: {'✅' if ban_enabled else '❌'}",
+                    callback_data=f"profile:joinly_toggle:{chat_id}:BanMembers",
+                ),
+            ],
+            [InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile:joinly", style="danger")],
+        ]
+    )
+    await answer(cb, text, kb, "joinly")
+
+
+@router.callback_query(F.data.startswith("profile:joinly_toggle:"))
+async def on_profile_joinly_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    user = cb.from_user
+    if not user:
+        await cb.answer()
+        return
+
+    parts = cb.data.split(":", 3)
+    if len(parts) < 4:
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    raw_chat_id = parts[2]
+    field = parts[3]
+    if field not in {"WelcomeEnabled", "DeleteServiceMessages", "Enabled", "BanMembers"}:
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    try:
+        chat_id = int(raw_chat_id)
+    except Exception:
+        await cb.answer("Not found", show_alert=True)
+        return
+
+    # Verify user is admin/creator in that chat before allowing edits.
+    try:
+        member = await cb.bot.get_chat_member(chat_id, user.id)
+        status = getattr(member, "status", None)
+        if status not in {"administrator", "creator"}:
+            await cb.answer("Недостаточно прав" if lang == "ru" else "Not enough rights", show_alert=True)
+            return
+    except Exception:
+        await cb.answer("Недостаточно прав" if lang == "ru" else "Not enough rights", show_alert=True)
+        return
+
+    db = load_joinly()
+    if not isinstance(db, dict):
+        db = {}
+    chat_cfg = db.get(str(chat_id))
+    if not isinstance(chat_cfg, dict):
+        chat_cfg = {}
+        db[str(chat_id)] = chat_cfg
+
+    current = bool(chat_cfg.get(field))
+    chat_cfg[field] = (not current)
+    try:
+        save_joinly(db)
+    except Exception:
+        pass
+
+    await _render_joinly_chat_detail(cb, state, chat_id)
+
+
+@router.callback_query(F.data == "profile:joinly")
+async def on_profile_joinly(cb: CallbackQuery, state: FSMContext) -> None:
+    await _render_profile_joinly(cb, state)
 
 
 @router.callback_query(F.data.startswith("my:"))
@@ -616,18 +1038,14 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
 
     data = await state.get_data()
     slugs: List[str] = data.get(f"my_{kind}", [])
+    pending_ids: List[str] = data.get("my_pending_plugins", []) if kind == "plugins" else []
 
-    if not slugs:
+    if not slugs and not pending_ids:
         await cb.answer(t("catalog_empty", lang), show_alert=True)
         return
 
-    total = len(slugs)
-    total_pages = math.ceil(total / PAGE_SIZE)
-    start = page * PAGE_SIZE
-    page_slugs = slugs[start : start + PAGE_SIZE]
-
-    items = []
-    for slug in page_slugs:
+    all_items = []
+    for slug in slugs:
         if kind == "plugins":
             entity = find_plugin_by_slug(slug)
         else:
@@ -637,9 +1055,25 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
             locale = entity.get(lang) or entity.get("ru") or {}
             name = locale.get("name") or slug
             if kind == "plugins":
-                items.append((name, f"myplugin:{encode_slug(slug)}"))
+                all_items.append((name, f"myplugin:{encode_slug(slug)}"))
             else:
-                items.append((name, f"icon:{encode_slug(slug)}"))
+                all_items.append((name, f"icon:{encode_slug(slug)}"))
+
+    if kind == "plugins" and cb.from_user:
+        reqs = get_user_requests(cb.from_user.id)
+        for req_id in pending_ids:
+            req = next((r for r in reqs if r.get("id") == req_id), None)
+            payload = req.get("payload", {}) if isinstance(req, dict) else {}
+            plugin = payload.get("plugin", {}) if isinstance(payload, dict) else {}
+            name = str(plugin.get("name") or req_id).strip() or req_id
+            req_type = req.get("type") if isinstance(req, dict) else "new"
+            cb_data = f"pendupd:{req_id}" if req_type == "update" else f"pendreq:{req_id}"
+            all_items.append((f"{name} ✍", cb_data))
+
+    total = len(all_items)
+    total_pages = math.ceil(total / PAGE_SIZE)
+    start = page * PAGE_SIZE
+    items = all_items[start : start + PAGE_SIZE]
 
     title = t("icons_title" if kind == "icons" else "catalog_title", lang)
     caption = f"{title}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
@@ -653,6 +1087,22 @@ async def on_inline(query: InlineQuery) -> None:
     lang = get_lang(query.from_user.id if query.from_user else None)
 
     lowered = text.lower()
+    if lowered.startswith("stenka"):
+        wall_id = _stenka_next_id()
+        msg_text = _stenka_render_text(wall_id)
+        result = InlineQueryResultArticle(
+            id=f"stenka:{wall_id}",
+            title=t("stenka_title", lang),
+            description=t("stenka_inline_description", lang),
+            input_message_content=InputTextMessageContent(
+                message_text=msg_text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            ),
+            reply_markup=_stenka_kb(wall_id, lang=lang),
+        )
+        await query.answer([result], cache_time=0, is_personal=True)
+        return
     if lowered in {"donate", "inform"}:
         url = "https://t.me/exteraPluginsSup/302" if lowered == "donate" else "https://t.me/exteraPluginsSup/372"
         message_text = t(
@@ -682,7 +1132,7 @@ async def on_inline(query: InlineQuery) -> None:
         return
 
     results = []
-    for plugin in plugins:
+    for idx, plugin in enumerate(plugins):
         slug = plugin.get("slug")
         if not slug:
             continue
@@ -708,7 +1158,7 @@ async def on_inline(query: InlineQuery) -> None:
 
         results.append(
             InlineQueryResultArticle(
-                id=f"plugin:{encode_slug(slug)}",
+                id=f"plugin:{encode_slug(slug)}:{idx}",
                 title=name,
                 description=description[:100],
                 input_message_content=InputTextMessageContent(
@@ -720,7 +1170,7 @@ async def on_inline(query: InlineQuery) -> None:
             )
         )
 
-    for icon in icons:
+    for idx, icon in enumerate(icons):
         slug = icon.get("slug")
         if not slug:
             continue
@@ -738,7 +1188,7 @@ async def on_inline(query: InlineQuery) -> None:
 
         results.append(
             InlineQueryResultArticle(
-                id=f"icon:{encode_slug(slug)}",
+                id=f"icon:{encode_slug(slug)}:{idx}",
                 title=name,
                 description=description[:100],
                 input_message_content=InputTextMessageContent(

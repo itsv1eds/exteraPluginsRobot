@@ -7,6 +7,7 @@ class UserFlow(StatesGroup):
     choosing_submission_type = State()
     uploading_file = State()
     uploading_icon_file = State()
+    uploading_pending_file = State()
     choosing_description_language = State()
     editing_description_translation = State()
     editing_usage_ru = State()
@@ -19,8 +20,11 @@ class UserFlow(StatesGroup):
     
     choosing_plugin_to_update = State()
     uploading_update_file = State()
+    uploading_pending_update_file = State()
     entering_changelog = State()
     confirming_update = State()
+
+    entering_stenka_tag = State()
 
 
 class AdminFlow(StatesGroup):
@@ -41,6 +45,10 @@ class AdminFlow(StatesGroup):
     confirming_post = State()
     scheduling_post = State()
     scheduling_plugin = State()
+    adding_schedule_preset = State()
+    editing_scheduled_time = State()
+    scheduled_post_edit_text = State()
+    scheduled_post_edit_time = State()
     searching_icon = State()
     linking_author_icon_user = State()
     editing_catalog_icon = State()

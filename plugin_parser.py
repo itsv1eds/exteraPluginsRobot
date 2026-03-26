@@ -49,17 +49,17 @@ class PluginParseError(RuntimeError):
     """Raised when a plugin file lacks mandatory metadata."""
 
 
-def parse_plugin_file(path: Path | str) -> PluginMetadata:
+def parse_plugin_file(path: Path | str, fallback_version: str | None = None) -> PluginMetadata:
     """Read the provided plugin file and parse the metadata section."""
 
     plugin_path = Path(path)
     if not plugin_path.exists():
         raise FileNotFoundError(plugin_path)
     text = plugin_path.read_text(encoding="utf-8")
-    return parse_plugin_text(text)
+    return parse_plugin_text(text, fallback_version=fallback_version)
 
 
-def parse_plugin_text(text: str) -> PluginMetadata:
+def parse_plugin_text(text: str, fallback_version: str | None = None) -> PluginMetadata:
     """Parse metadata directly from a plugin file as text."""
 
     normalized = text.replace("\r\n", "\n")
@@ -71,7 +71,11 @@ def parse_plugin_text(text: str) -> PluginMetadata:
 
     missing = [name for name in MANDATORY_FIELDS if not fields.get(name)]
     if missing:
-        raise PluginParseError(f"Missing mandatory fields: {', '.join(missing)}")
+        if missing == ["version"] and fallback_version:
+            fields["version"] = str(fallback_version).strip()
+            missing = [name for name in MANDATORY_FIELDS if not fields.get(name)]
+        if missing:
+            raise PluginParseError(f"Missing mandatory fields: {', '.join(missing)}")
 
     has_ui_settings = _detect_ui_settings_import(normalized)
 
@@ -92,7 +96,7 @@ def parse_plugin_text(text: str) -> PluginMetadata:
 
 def _extract_dunder_value(text: str, dunder_name: str) -> Optional[str]:
     pattern = re.compile(
-        rf"^{re.escape(dunder_name)}\s*=\s*(?P<value>.+)$",
+        rf"^\s*{re.escape(dunder_name)}\s*=\s*(?P<value>.+)$",
         re.MULTILINE,
     )
     match = pattern.search(text)

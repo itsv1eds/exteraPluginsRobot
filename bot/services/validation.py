@@ -45,11 +45,14 @@ def validate_update_submission(
         new_v = pkg_version.parse(new_version)
         old_v = pkg_version.parse(old_version)
         
-        if new_v <= old_v:
-            return False, "version_not_higher"
+        if new_v == old_v:
+            return False, "version_same"
+        if new_v < old_v:
+            return False, "version_lower"
     except Exception:
         if new_version == old_version:
             return False, "version_same"
+        return False, "version_not_higher"
     
     return True, None
 

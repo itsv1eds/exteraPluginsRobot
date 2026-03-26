@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from telethon import TelegramClient, __version__ as TELETHON_VERSION
+from telethon.errors.rpcerrorlist import MessageNotModifiedError
 from telethon.tl.types import DocumentAttributeFilename, Message, MessageEntityBlockquote
 from telethon.extensions import html as telethon_html
 
@@ -440,6 +441,15 @@ class UserbotClient:
                 "link": f"https://t.me/{channel_username}/{message_id}",
                 "updated": True,
             }
+        except MessageNotModifiedError:
+            channel_username = CONFIG.get("publish_channel", "xzcvzxa")
+            logger.info("Message %s not modified; skipping edit", message_id)
+            return {
+                "message_id": message_id,
+                "chat_id": entity.id,
+                "link": f"https://t.me/{channel_username}/{message_id}",
+                "updated": False,
+            }
         except Exception as e:
             logger.error(f"Failed to update message {message_id}: {e}")
             raise
@@ -481,6 +491,15 @@ class UserbotClient:
                 "chat_id": entity.id,
                 "link": f"https://t.me/{channel_username}/{message_id}",
                 "updated": True,
+            }
+        except MessageNotModifiedError:
+            channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
+            logger.info("Icon message %s not modified; skipping edit", message_id)
+            return {
+                "message_id": message_id,
+                "chat_id": entity.id,
+                "link": f"https://t.me/{channel_username}/{message_id}",
+                "updated": False,
             }
         except Exception as e:
             logger.error(f"Failed to update icon message {message_id}: {e}")

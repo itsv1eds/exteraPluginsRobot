@@ -60,6 +60,9 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_btn_banned": {"ru": "Заблокированные", "en": "Banned"},
     "admin_btn_broadcast": {"ru": "Рассылка", "en": "Broadcast"},
     "admin_btn_config": {"ru": "Настройки", "en": "Settings"},
+    "admin_btn_check_updates": {"ru": "Проверить обновления", "en": "Check updates"},
+    "admin_btn_scheduled": {"ru": "Отложенные", "en": "Scheduled"},
+    "admin_btn_scheduled_posts": {"ru": "Отложенные посты", "en": "Scheduled posts"},
     "admin_btn_edit": {"ru": "Редактировать", "en": "Edit"},
     "admin_btn_link_author": {"ru": "Привязать автора", "en": "Link author"},
     "admin_btn_plugins": {"ru": "Плагины", "en": "Plugins"},
@@ -79,6 +82,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_cfg_admins_plugins": {"ru": "Админы плагинов", "en": "Plugin admins"},
     "admin_cfg_admins": {"ru": "Админы", "en": "Admins"},
     "admin_cfg_channel": {"ru": "Канал", "en": "Channel"},
+    "admin_cfg_checked_on_version": {"ru": "Версия проверки", "en": "Checked version"},
     "admin_cfg_superadmins": {"ru": "Суперадмины", "en": "Superadmins"},
     "admin_choose_action": {"ru": "Выберите действие:", "en": "Choose action:"},
     "admin_added": {"ru": "Добавлен: <code>{admin_id}</code>", "en": "Added: <code>{admin_id}</code>"},
@@ -88,6 +92,18 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_denied": {
         "ru": "пошел нахуй.",
         "en": "Access denied",
+    },
+    "admin_updates_check_started": {
+        "ru": "Проверка обновлений запущена",
+        "en": "Updates check started",
+    },
+    "admin_updates_check_already_running": {
+        "ru": "Проверка обновлений уже запущена",
+        "en": "Updates check is already running",
+    },
+    "admin_updates_check_done": {
+        "ru": "Проверка обновлений завершена",
+        "en": "Updates check completed",
     },
     "admin_broadcast_confirm": {
         "ru": "Отправить всем пользователям?",
@@ -128,6 +144,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_prompt_channel_example": {
         "ru": "Пример: <code>-1001234567890 mychannel ExteraPlugins exteraplugintest</code>",
         "en": "Example: <code>-1001234567890 mychannel ExteraPlugins exteraplugintest</code>",
+    },
+    "admin_prompt_checked_on_version": {
+        "ru": "Введите версию для поля «Проверено» (например <code>12.5.1</code>). Дата подставится автоматически.",
+        "en": "Enter version for the 'Checked on' field (e.g. <code>12.5.1</code>). Date will be filled automatically.",
     },
     "admin_unknown_setting": {
         "ru": "Неизвестная настройка",
@@ -353,6 +373,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "btn_icon_pack": {"ru": "Пак иконок", "en": "Icon pack"},
     "btn_icons": {"ru": "Иконки", "en": "Icons"},
     "btn_idea": {"ru": "Предложить идею", "en": "Suggest an idea"},
+    "btn_joinly": {"ru": "Joinly", "en": "Joinly"},
     "btn_more": {"ru": "Ещё...", "en": "More..."},
     "btn_my_packs": {"ru": "Мои паки", "en": "My packs"},
     "btn_my_plugins": {"ru": "Мои плагины", "en": "My plugins"},
@@ -503,6 +524,54 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "catalog_title": {
         "ru": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Каталог плагинов</b>",
         "en": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Plugin Catalog</b>",
+    },
+
+    "stenka_title": {"ru": "Социальная стенка", "en": "Social wall"},
+    "stenka_btn_leave_tag": {"ru": "оставить тег", "en": "leave tag"},
+    "stenka_inline_description": {"ru": "Оставь тег на стенке", "en": "Leave a tag on the wall"},
+    "stenka_alert_open_bot": {"ru": "Открой бота и отправь тег", "en": "Open the bot and send a tag"},
+    "stenka_prompt_enter_tag": {"ru": "Отправь тег (до 15 символов).", "en": "Send a tag (up to 15 chars)."},
+    "stenka_err_not_found": {"ru": "Стенка не найдена", "en": "Wall not found"},
+    "stenka_err_token_invalid": {"ru": "Ссылка устарела или неверная", "en": "Link expired or invalid"},
+    "stenka_err_tag_taken": {"ru": "Тег уже занят", "en": "Tag is already taken"},
+    "stenka_err_tag_too_long": {"ru": "Максимум 15 символов", "en": "Max 15 characters"},
+    "stenka_err_tag_format": {
+        "ru": "Тег может содержать только буквы, цифры и _",
+        "en": "Tag may contain only letters, digits and _",
+    },
+    "stenka_err_already_wrote": {
+        "ru": "Ты уже оставил тег: {tag}",
+        "en": "You already left a tag: {tag}",
+    },
+    "stenka_ok_saved": {"ru": "Готово", "en": "Done"},
+
+    "btn_save_changes": {"ru": "Сохранить", "en": "Save"},
+    "pending_saved": {"ru": "Сохранено.", "en": "Saved."},
+
+    "pending_upload_plugin": {
+        "ru": "Пришли новый файл <code>.plugin</code> для этой заявки.",
+        "en": "Send a new <code>.plugin</code> file for this request.",
+    },
+    "pending_upload_update_plugin": {
+        "ru": "Пришли новый файл <code>.plugin</code> для обновления.",
+        "en": "Send a new <code>.plugin</code> file for the update.",
+    },
+    "pending_file_id_mismatch": {
+        "ru": "ID плагина в файле не совпадает с заявкой.",
+        "en": "Plugin ID in the file does not match the request.",
+    },
+    "pending_delete_confirm": {
+        "ru": "Удалить заявку?",
+        "en": "Delete this request?",
+    },
+    "pending_deleted": {
+        "ru": "Заявка удалена.",
+        "en": "Request deleted.",
+    },
+
+    "admin_request_updated": {
+        "ru": "✍ Обновили заявку\n\nID: <code>{id}</code>\nПлагин: <b>{name}</b>\nПользователь: {user}",
+        "en": "✍ Request updated\n\nID: <code>{id}</code>\nPlugin: <b>{name}</b>\nUser: {user}",
     },
 
     "choose_category": {
@@ -720,6 +789,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Версия не изменилась",
         "en": "Version is unchanged",
     },
+    "version_lower": {
+        "ru": "Указанная версия ниже текущей ({current}). Возможно, вы имели в виду <b>{suggested}</b>",
+        "en": "Provided version is lower than current ({current}). Maybe you meant <b>{suggested}</b>",
+    },
     "subscriptions_empty": {
         "ru": "Нет уведомлений",
         "en": "No notifications",
@@ -727,6 +800,35 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "subscriptions_title": {
         "ru": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> Мои уведомления",
         "en": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> My notifications",
+    },
+    "subscriptions_hint": {
+        "ru": "Вы можете включить уведомления на конкретные плагины, выбрав их в каталоге, или включить уведомления на все плагины.",
+        "en": "You can enable notifications for specific plugins by selecting them in the catalog, or enable notifications for all plugins.",
+    },
+
+    "joinly_profile_title": {
+        "ru": "<b>Joinly</b> — настройки входов в чат",
+        "en": "<b>Joinly</b> — chat join settings",
+    },
+    "joinly_profile_no_chats": {
+        "ru": "Пока не найдено ни одного чата, где вы настраивали Joinly. Добавьте бота в чат и выполните команду /settings.",
+        "en": "No chats found where you configured Joinly yet. Add the bot to a chat and run /settings.",
+    },
+    "joinly_profile_chat": {
+        "ru": "Чат: <code>{chat_id}</code>",
+        "en": "Chat: <code>{chat_id}</code>",
+    },
+    "joinly_profile_settings": {
+        "ru": "Настройки: приветствие {welcome} · очистка сервисных {cleanup} · кик при заходе {enabled} · бан {ban}",
+        "en": "Settings: welcome {welcome} · cleanup {cleanup} · kick on join {enabled} · ban {ban}",
+    },
+    "joinly_deeplink_intro": {
+        "ru": "Чтобы настроить Joinly, добавьте бота в чат и выполните команду <code>/settings</code> (нужны права администратора).",
+        "en": "To configure Joinly, add the bot to your chat and run <code>/settings</code> (admin rights required).",
+    },
+    "joinly_bot_added": {
+        "ru": "Бот добавлен в чат. Для настройки Joinly выполните команду <code>/settings</code> (нужны права администратора).",
+        "en": "The bot was added to the chat. To configure Joinly, run <code>/settings</code> (admin rights required).",
     },
 
     "notify_all_title": {
@@ -751,6 +853,41 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "⏰ Введите дату и время публикации в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5):",
         "en": "⏰ Enter the scheduled date and time in format <code>DD.MM.YYYY HH:MM</code> (UTC+5):",
     },
+    "admin_schedule_presets_title": {
+        "ru": "Выберите пресет времени или введите вручную:",
+        "en": "Choose a time preset or enter manually:",
+    },
+    "admin_scheduled_title": {
+        "ru": "<b>Отложенные</b>",
+        "en": "<b>Scheduled</b>",
+    },
+    "admin_scheduled_empty": {
+        "ru": "Нет отложенных публикаций",
+        "en": "No scheduled publications",
+    },
+    "admin_scheduled_posts_title": {
+        "ru": "<b>Отложенные посты</b>",
+        "en": "<b>Scheduled posts</b>",
+    },
+    "admin_scheduled_posts_empty": {
+        "ru": "Нет отложенных постов",
+        "en": "No scheduled posts",
+    },
+    "btn_edit_text": {"ru": "Изменить текст", "en": "Edit text"},
+    "btn_delete_post": {"ru": "Удалить пост", "en": "Delete post"},
+    "admin_post_edit_prompt": {
+        "ru": "Введите новый текст поста:",
+        "en": "Enter new post text:",
+    },
+    "btn_unschedule": {"ru": "Убрать отложку", "en": "Unschedule"},
+    "btn_change_time": {"ru": "Изменить время", "en": "Change time"},
+    "btn_move_up": {"ru": "Вверх", "en": "Up"},
+    "btn_move_down": {"ru": "Вниз", "en": "Down"},
+    "admin_schedule_preset_add_prompt": {
+        "ru": "Введите дату и время для нового пресета в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5):",
+        "en": "Enter date/time for a new preset in format <code>DD.MM.YYYY HH:MM</code> (UTC+5):",
+    },
+    "btn_add_preset": {"ru": "+", "en": "+"},
     "admin_post_scheduled": {
         "ru": "Пост запланирован на {datetime} UTC+5\n\n{link}",
         "en": "Post scheduled for {datetime} UTC+5\n\n{link}",
@@ -808,8 +945,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "welcome": {
-        "ru": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Добро пожаловать</b>\n\nЗдесь вы можете:\n• Найти плагины в каталоге\n• Предложить свой плагин\n• Управлять своими работами",
-        "en": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Welcome</b>\n\nHere you can:\n• Browse the plugin catalog\n• Submit your plugin\n• Manage your submissions",
+        "ru": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Добро пожаловать в {bot_name}, {user_name}!</b>\n\n{bot_name} — это твой помощник для:\n• <a href=\"https://t.me/{bot}?start=catalog\">Поиска и просмотра</a> плагинов (есть и inline поиск), а также <a href=\"https://t.me/{bot}?start=submit\">предложить</a> свой плагин\n• <a href=\"https://t.me/{bot}?start=notifications\">Уведомлений</a>, когда плагин был обновлён\n• <a href=\"https://t.me/{bot}?start=joinly\">Управление</a> входами в вашем чате с помощью Joinly\n\nВыбери действие:",
+        "en": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Welcome to {bot_name}, {user_name}!</b>\n\n{bot_name} is your assistant for:\n• <a href=\"https://t.me/{bot}?start=catalog\">Browsing</a> plugins (inline search included) and <a href=\"https://t.me/{bot}?start=submit\">submitting</a> your own\n• <a href=\"https://t.me/{bot}?start=notifications\">Notifications</a> when a plugin is updated\n• <a href=\"https://t.me/{bot}?start=joinly\">Managing</a> chat joins with Joinly\n\nChoose an action:",
     },
 }
 

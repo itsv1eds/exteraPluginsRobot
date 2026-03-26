@@ -61,6 +61,7 @@ _DOC_USERS = "users"
 _DOC_SUBSCRIPTIONS = "subscriptions"
 _DOC_UPDATED = "updated"
 _DOC_JOINLY = "joinly"
+_DOC_STENKA = "stenka"
 
 _LEGACY_PATHS = {
     _DOC_PLUGINS: [DATABASE_PLUGINS_PATH],
@@ -175,6 +176,8 @@ def _is_doc_empty(doc_key: str, data: Dict[str, Any]) -> bool:
     if doc_key == _DOC_UPDATED:
         return not bool(data.get("items"))
     if doc_key == _DOC_JOINLY:
+        return len(data) == 0
+    if doc_key == _DOC_STENKA:
         return len(data) == 0
     return len(data) == 0
 
@@ -670,6 +673,16 @@ def _write_joinly_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     _mark_initialized(conn, _DOC_JOINLY)
 
 
+def _read_stenka_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
+    return _get_meta_json(conn, _meta_key(_DOC_STENKA), {})
+
+
+def _write_stenka_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+    payload = dict(data) if isinstance(data, dict) else {}
+    _set_meta_json(conn, _meta_key(_DOC_STENKA), payload)
+    _mark_initialized(conn, _DOC_STENKA)
+
+
 _READERS = {
     _DOC_PLUGINS: _read_plugins_doc,
     _DOC_ICONS: _read_icons_doc,
@@ -678,6 +691,7 @@ _READERS = {
     _DOC_SUBSCRIPTIONS: _read_subscriptions_doc,
     _DOC_UPDATED: _read_updated_doc,
     _DOC_JOINLY: _read_joinly_doc,
+    _DOC_STENKA: _read_stenka_doc,
 }
 
 _WRITERS = {
@@ -688,6 +702,7 @@ _WRITERS = {
     _DOC_SUBSCRIPTIONS: _write_subscriptions_doc,
     _DOC_UPDATED: _write_updated_doc,
     _DOC_JOINLY: _write_joinly_doc,
+    _DOC_STENKA: _write_stenka_doc,
 }
 
 
@@ -876,6 +891,15 @@ def save_joinly(data: Dict[str, Any]) -> None:
     _save_sync(_DOC_JOINLY, data)
 
 
+def load_stenka() -> Dict[str, Any]:
+    data = _get_cached(_DOC_STENKA)
+    return data if isinstance(data, dict) else {}
+
+
+def save_stenka(data: Dict[str, Any]) -> None:
+    _save_sync(_DOC_STENKA, data)
+
+
 async def flush_all() -> None:
     for doc_key, is_dirty in list(_dirty.items()):
         if is_dirty and doc_key in _cache:
@@ -893,5 +917,6 @@ async def preload_storage() -> None:
         _DOC_SUBSCRIPTIONS,
         _DOC_UPDATED,
         _DOC_JOINLY,
+        _DOC_STENKA,
     ):
         await asyncio.to_thread(_get_cached, doc_key)

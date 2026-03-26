@@ -282,10 +282,22 @@ async def on_new_members(message: Message) -> None:
     if not _is_group(message):
         return
 
+    try:
+        gotme = await message.bot.get_me()
+    except Exception:
+        gotme = None
+
+    if gotme and any(getattr(u, "id", None) == getattr(gotme, "id", None) for u in list(message.new_chat_members or [])):
+        try:
+            await message.answer(t("joinly_bot_added", _lang_for(message)), parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
     if not _get_setting(message.chat.id, "WelcomeEnabled"):
         return
 
-    gotme = await message.bot.get_me()
+    if not gotme:
+        gotme = await message.bot.get_me()
 
     if not _get_setting(message.chat.id, "DeleteServiceMessages"):
         emoji = str(_get_setting(message.chat.id, "JoinReactionEmoji") or "").strip()

@@ -1,0 +1,45 @@
+name: "Feature request"
+description: Suggest an improvement for the bot, catalog UX, moderation tools, or Joinly behavior.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement.
+
+        Please focus on the problem first, then describe the proposed solution.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem should be solved?
+      description: Explain the current limitation, friction, or missing behavior.
+      placeholder: ...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you want to see.
+      placeholder: ...
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Describe workarounds or other ideas you considered.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, examples, links, or Telegram flow details.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched for existing feature requests before opening this issue.
+          required: true

@@ -87,6 +87,8 @@ async def on_startup(bot: Bot) -> None:
 
     from bot.services.catalog_auto_updates import start_catalog_auto_updates_worker
     start_catalog_auto_updates_worker(bot)
+
+    admin_flow.start_scheduled_posts_cleanup_worker()
     
     await start_log_worker()
     
@@ -111,6 +113,7 @@ async def on_shutdown(bot: Bot) -> None:
 
     from bot.services.catalog_auto_updates import stop_catalog_auto_updates_worker
     stop_catalog_auto_updates_worker()
+    admin_flow.stop_scheduled_posts_cleanup_worker()
     
     from storage import flush_all
     await flush_all()

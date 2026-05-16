@@ -304,7 +304,7 @@ def draft_category_kb(prefix: str, categories: list, lang: str = "ru") -> Inline
         )
 
     rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-    back_cb = "cancel" if prefix.startswith("adm") else f"{prefix}:back"
+    back_cb = "adm:cancel" if prefix.startswith("adm") else f"{prefix}:back"
     rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=back_cb, style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -769,9 +769,6 @@ def admin_plugins_list_kb(
     if nav:
         rows.append(nav)
     
-    rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=back_callback, style="danger")])
-    
-    return InlineKeyboardMarkup(inline_keyboard=rows)
     rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=back_callback, style="danger")])
     
     return InlineKeyboardMarkup(inline_keyboard=rows)

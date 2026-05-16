@@ -140,11 +140,35 @@ def get_request_by_id(request_id: str) -> Optional[Dict[str, Any]]:
     return _id_index.get(request_id)
 
 
+def _request_plugin_ids(entry: Dict[str, Any]) -> set[str]:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    if not isinstance(payload, dict):
+        return set()
+
+    ids: set[str] = set()
+    for key in ("plugin", "icon", "old_plugin"):
+        item = payload.get(key)
+        if not isinstance(item, dict):
+            continue
+        for id_key in ("id", "slug"):
+            value = str(item.get(id_key) or "").strip()
+            if value:
+                ids.add(value)
+
+    for key in ("update_slug", "delete_slug"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            ids.add(value)
+
+    return ids
+
+
 def get_request_by_plugin_id(plugin_id: str) -> Optional[Dict[str, Any]]:
+    target = str(plugin_id or "").strip()
+    if not target:
+        return None
     for entry in _get_requests_list():
-        payload = entry.get("payload", {})
-        plugin = payload.get("plugin", {})
-        if plugin.get("id") == plugin_id:
+        if target in _request_plugin_ids(entry):
             return entry
     return None
 
@@ -434,3 +458,29 @@ def delete_request(request_id: str) -> bool:
             return True
     
     return False
+
+
+def delete_requests_by_plugin_id(plugin_id: str) -> int:
+    target = str(plugin_id or "").strip()
+    if not target:
+        return 0
+
+    removed = 0
+    for entry in list(_get_requests_list()):
+        request_id = str(entry.get("id") or "")
+        if request_id == target or target in _request_plugin_ids(entry):
+            if delete_request_and_file(request_id):
+                removed += 1
+    return removed
+
+
+def cleanup_hidden_requests(visible_statuses: Optional[set[str]] = None) -> int:
+    visible = visible_statuses or {"draft", "pending", "scheduled"}
+    removed = 0
+    for entry in list(_get_requests_list()):
+        if str(entry.get("status") or "") in visible:
+            continue
+        request_id = str(entry.get("id") or "")
+        if request_id and delete_request_and_file(request_id):
+            removed += 1
+    return removed

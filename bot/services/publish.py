@@ -2,7 +2,7 @@ import html
 import re
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -358,10 +358,35 @@ def add_updated_plugin(name: str, link: str) -> None:
     items = updated.setdefault("items", [])
     if not link:
         return
+    if not isinstance(items, list):
+        items = []
+        updated["items"] = items
+
+    # Prevent unbounded growth of the storage.
+    max_items = 200
+    max_age_days = 30
+    cutoff = datetime.utcnow() - timedelta(days=max_age_days)
+    pruned: list[dict] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        added_at = it.get("added_at")
+        if isinstance(added_at, str):
+            try:
+                if datetime.fromisoformat(added_at.replace("Z", "+00:00")).replace(tzinfo=None) < cutoff:
+                    continue
+            except Exception:
+                pass
+        pruned.append(it)
+    items = pruned[-max_items:]
+    updated["items"] = items
+
     exists = any(isinstance(it, dict) and it.get("link") == link for it in items)
     if exists:
         return
     items.append({"name": name, "link": link, "added_at": datetime.utcnow().isoformat()})
+    if len(items) > max_items:
+        updated["items"] = items[-max_items:]
     save_updated(updated)
 
 
@@ -407,6 +432,8 @@ def seed_updated_plugins() -> int:
 
     updated["items"] = items
     updated["seeded"] = True
+    if len(items) > 200:
+        updated["items"] = items[-200:]
     save_updated(updated)
     return len(items)
 

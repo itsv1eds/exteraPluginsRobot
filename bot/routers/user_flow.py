@@ -256,7 +256,8 @@ async def _render_profile_message(message: Message, state: FSMContext, lang: str
         if req.get("type") not in {"new", "update"}:
             continue
         payload = req.get("payload", {})
-        if (payload.get("submission_type") or payload.get("type")) != "plugin":
+        submission_type = (payload.get("submission_type") or payload.get("type") or "").strip()
+        if submission_type not in {"plugin", "update"} and not payload.get("plugin"):
             continue
         pending.append(req)
 

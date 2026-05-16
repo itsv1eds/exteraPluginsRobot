@@ -1,6 +1,7 @@
 import logging
 import math
 import time
+import asyncio
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -42,7 +43,6 @@ from bot.keyboards import (
     admin_queue_kb,
     admin_review_kb,
     admin_reject_kb,
-    admin_review_kb,
     admin_confirm_delete_plugin_kb,
     admin_cancel_kb,
     cancel_kb,
@@ -76,7 +76,14 @@ from bot.services.submission import PluginData, process_icon_file, process_plugi
 from bot.states import AdminFlow
 from bot.texts import TEXTS, t
 from catalog import find_icon_by_slug, find_plugin_by_slug, list_published_icons, list_published_plugins
-from request_store import get_request_by_id, get_requests, update_request_payload, update_request_status
+from request_store import (
+    cleanup_hidden_requests,
+    delete_requests_by_plugin_id,
+    get_request_by_id,
+    get_requests,
+    update_request_payload,
+    update_request_status,
+)
 from storage import load_plugins, save_config, save_plugins
 from user_store import ban_user, get_banned_users, get_user_language, is_broadcast_enabled, list_users, unban_user
 from subscription_store import list_subscribers
@@ -88,6 +95,8 @@ TZ_UTC_PLUS_5 = timezone(timedelta(hours=5))
 router = Router(name="admin-flow")
 
 _NAV_STACK_KEY = "nav_stack"
+_scheduled_posts_cleanup_task: Optional[asyncio.Task] = None
+_scheduled_posts_cleanup_interval_seconds = 30
 
 
 def _lang_for(target: CallbackQuery | Message | int | None) -> str:
@@ -237,9 +246,24 @@ async def _render_scheduled_view(target: CallbackQuery | Message, state: FSMCont
     await answer(target, text, admin_scheduled_item_kb(str(request_id), lang=lang), "admin")
 
 
+def _scheduled_post_includes_updated_plugins(item: dict) -> bool:
+    if item.get("includes_updated_plugins") is True:
+        return True
+
+    text = str(item.get("text") or "")
+    if not text:
+        return False
+
+    titles = TEXTS.get("admin_updated_block_title", {})
+    if not isinstance(titles, dict):
+        return False
+    return any(str(title or "").strip() and str(title).strip() in text for title in titles.values())
+
+
 def _cleanup_scheduled_posts() -> list[dict]:
     now = datetime.now(timezone.utc)
     kept: list[dict] = []
+    released_with_updates = False
     for it in _get_scheduled_posts():
         if not isinstance(it, dict):
             continue
@@ -248,9 +272,41 @@ def _cleanup_scheduled_posts() -> list[dict]:
             continue
         if dt > now:
             kept.append(it)
+        elif _scheduled_post_includes_updated_plugins(it):
+            released_with_updates = True
     if kept != _get_scheduled_posts():
         _save_scheduled_posts(kept)
+    if released_with_updates:
+        clear_updated_plugins()
     return kept
+
+
+async def _scheduled_posts_cleanup_loop() -> None:
+    while True:
+        await asyncio.sleep(_scheduled_posts_cleanup_interval_seconds)
+        try:
+            _cleanup_scheduled_posts()
+        except Exception:
+            logger.exception("Scheduled posts cleanup error")
+
+
+def start_scheduled_posts_cleanup_worker() -> None:
+    global _scheduled_posts_cleanup_task
+    if _scheduled_posts_cleanup_task and not _scheduled_posts_cleanup_task.done():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    _cleanup_scheduled_posts()
+    _scheduled_posts_cleanup_task = loop.create_task(_scheduled_posts_cleanup_loop())
+
+
+def stop_scheduled_posts_cleanup_worker() -> None:
+    global _scheduled_posts_cleanup_task
+    if _scheduled_posts_cleanup_task and not _scheduled_posts_cleanup_task.done():
+        _scheduled_posts_cleanup_task.cancel()
+    _scheduled_posts_cleanup_task = None
 
 
 def _format_scheduled_post_label(it: dict) -> str:
@@ -915,8 +971,27 @@ async def on_sync_version(message: Message, state: FSMContext) -> None:
     await message.answer("Версия обновлена")
 
 
+@router.message(Command("erase"))
+async def cmd_erase(message: Message) -> None:
+    if not _ensure_admin_role(message, "plugins"):
+        return
 
-@router.callback_query(F.data.startswith("adm:scheduled:"))
+    parts = (message.text or "").strip().split(maxsplit=1)
+    if len(parts) > 1 and parts[1].strip():
+        target_id = parts[1].strip()
+        removed = delete_requests_by_plugin_id(target_id)
+        if removed:
+            await message.answer(f"Удалено заявок: {removed}")
+        else:
+            await message.answer("Заявки с таким ID не найдены")
+        return
+
+    removed = cleanup_hidden_requests()
+    await message.answer(f"Очищено скрытых заявок: {removed}")
+
+
+
+@router.callback_query(F.data.regexp(r"^adm:scheduled:\d+$"))
 async def on_admin_scheduled(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     if not _ensure_admin_role(cb, "plugins") and not _ensure_admin_role(cb, "super"):
@@ -1640,6 +1715,17 @@ def _with_updated_plugins_block(target: CallbackQuery | Message, base_text: str)
     return final_text
 
 
+def _has_updated_plugins() -> bool:
+    try:
+        from storage import load_updated
+
+        updated = load_updated()
+        items = updated.get("items") or []
+        return any(isinstance(it, dict) and it.get("name") and it.get("link") for it in items)
+    except Exception:
+        return False
+
+
 @router.callback_query(F.data == "adm:post:send")
 async def on_admin_post_send(cb: CallbackQuery, state: FSMContext) -> None:
     if not _ensure_admin_role(cb, "super"):
@@ -1789,6 +1875,7 @@ async def on_admin_schedule_datetime(message: Message, state: FSMContext) -> Non
         await answer(message, _tr(message, "admin_title"), admin_menu_kb(_admin_menu_role(message), lang=lang), "admin")
         return
 
+    includes_updated_plugins = _has_updated_plugins()
     post_text = _with_updated_plugins_block(message, post_text)
 
     from userbot.client import get_userbot
@@ -1810,6 +1897,7 @@ async def on_admin_schedule_datetime(message: Message, state: FSMContext) -> Non
             "message_id": result.get("message_id"),
             "chat_id": result.get("chat_id"),
             "link": result.get("link"),
+            "includes_updated_plugins": includes_updated_plugins,
         }
     )
 
@@ -1824,7 +1912,7 @@ async def on_admin_schedule_datetime(message: Message, state: FSMContext) -> Non
     )
 
 
-@router.callback_query(F.data.startswith("adm:scheduled_posts:"))
+@router.callback_query(F.data.regexp(r"^adm:scheduled_posts:\d+$"))
 async def on_admin_scheduled_posts(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     if not _ensure_admin_role(cb, "plugins"):

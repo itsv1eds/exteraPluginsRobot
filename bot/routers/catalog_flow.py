@@ -529,7 +529,8 @@ async def on_toggle_subscription(cb: CallbackQuery, state: FSMContext) -> None:
     if not plugin:
         return
 
-    back = "catalog" if source == "catalog" else "my:plugins:0"
+    data = await state.get_data()
+    back = data.get("catalog_back") or ("catalog" if source == "catalog" else "my:plugins:0")
     text = build_plugin_preview(plugin, lang)
     link = plugin.get("channel_message", {}).get("link")
     notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY)
@@ -703,7 +704,8 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
         if req.get("type") not in {"new", "update"}:
             continue
         payload = req.get("payload", {})
-        if (payload.get("submission_type") or payload.get("type")) != "plugin":
+        submission_type = (payload.get("submission_type") or payload.get("type") or "").strip()
+        if submission_type not in {"plugin", "update"} and not payload.get("plugin"):
             continue
         pending.append(req)
 
@@ -776,7 +778,10 @@ async def _show_subscriptions(target: CallbackQuery | Message, state: FSMContext
     if all_enabled:
         slugs = [ALL_SUBSCRIPTION_KEY]
     if not slugs:
-        await answer(target, t("subscriptions_empty", lang), search_kb(lang), "profile")
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile", style="danger")]]
+        )
+        await answer(target, t("subscriptions_empty", lang), kb, "profile")
         if isinstance(target, CallbackQuery):
             await target.answer()
         return

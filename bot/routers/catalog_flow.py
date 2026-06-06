@@ -22,7 +22,7 @@ from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import quote_html
-from bot.helpers import answer, strip_html
+from bot.helpers import answer, link_preview_options, strip_html
 from bot.icons import CATEGORY_FALLBACKS, CATEGORY_ICONS, ICONS
 from bot.menu_owner import MenuOwnerMiddleware
 from bot.keyboards import (
@@ -66,6 +66,21 @@ router = Router(name="catalog-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
 
 BOT_USERNAME = "exteraPluginsRobot"
+GITHUB_IMG_BASE_URL = "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img"
+
+
+def _github_img_url(image_key: str) -> str:
+    return f"{GITHUB_IMG_BASE_URL}/{image_key}.png?raw=true"
+
+
+def _plugin_category_preview_url(category_key: str) -> str:
+    known = {str(category.get("key")) for category in get_categories()}
+    image_key = f"cat_{category_key}" if category_key in known else "cat_all"
+    return _github_img_url(image_key)
+
+
+def _with_hidden_preview_link(text: str, url: str) -> str:
+    return f'<a href="{html.escape(url, quote=True)}">&#8203;</a>{text}'
 
 
 def _toggle_label(value: bool, lang: str) -> str:
@@ -1169,7 +1184,8 @@ async def on_inline(query: InlineQuery) -> None:
         category_key = str(plugin.get("category") or "").strip()
         category_fallback = CATEGORY_FALLBACKS.get(category_key, "🧩")
         title = f"{category_fallback} {name}"
-        preview = build_inline_preview(plugin, lang, "plugin")
+        preview_url = _plugin_category_preview_url(category_key)
+        preview = _with_hidden_preview_link(build_inline_preview(plugin, lang, "plugin"), preview_url)
         description = strip_html(locale.get("description") or t("catalog_inline_no_description", lang))
         link = plugin.get("channel_message", {}).get("link")
         reply_markup = None
@@ -1194,7 +1210,8 @@ async def on_inline(query: InlineQuery) -> None:
                 input_message_content=InputTextMessageContent(
                     message_text=preview,
                     parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
+                    disable_web_page_preview=False,
+                    link_preview_options=link_preview_options(url=preview_url),
                 ),
                 reply_markup=reply_markup,
             )

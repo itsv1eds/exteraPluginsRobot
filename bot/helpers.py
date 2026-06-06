@@ -11,6 +11,7 @@ from aiogram.types import (
     FSInputFile,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    LinkPreviewOptions,
     Message,
 )
 
@@ -25,6 +26,11 @@ IMAGES_DIR = BASE_DIR / "img"
 _image_file_ids: Dict[str, str] = {}
 _pending_upload: Dict[str, bool] = {}
 logger = logging.getLogger(__name__)
+
+_LINK_PREVIEW_IMAGE_URLS = {
+    "admin": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/admin.png?raw=true",
+    "new": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/new.png?raw=true",
+}
 
 
 def get_uploads_dir() -> Path:
@@ -70,6 +76,25 @@ def _is_too_long_error(exc: Exception) -> bool:
         or "message text is too long" in text
         or "caption is too long" in text
         or "message caption is too long" in text
+    )
+
+
+def _link_preview_url(image: Optional[str]) -> Optional[str]:
+    if not image:
+        return None
+    key = image.removesuffix("_ru")
+    return _LINK_PREVIEW_IMAGE_URLS.get(key)
+
+
+def link_preview_options(image: Optional[str] = None, url: Optional[str] = None) -> Optional[LinkPreviewOptions]:
+    preview_url = url or _link_preview_url(image)
+    if not preview_url:
+        return None
+    return LinkPreviewOptions(
+        url=preview_url,
+        is_disabled=False,
+        prefer_large_media=True,
+        show_above_text=True,
     )
 
 
@@ -131,6 +156,10 @@ async def answer(
                     image = ru_key
         except Exception:
             pass
+    preview_options = link_preview_options(image)
+    if preview_options:
+        image = None
+    disable_web_page_preview = not bool(preview_options)
 
     if isinstance(target, CallbackQuery):
         msg = target.message
@@ -141,12 +170,27 @@ async def answer(
         chat_id = msg.chat.id
         
         try:
+            if preview_options and msg.photo:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return await bot.send_message(
+                    chat_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                    disable_web_page_preview=False,
+                    link_preview_options=preview_options,
+                )
+
             if image and not msg.photo:
                 return await msg.edit_text(
                     text=text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=kb,
-                    disable_web_page_preview=True,
+                    disable_web_page_preview=disable_web_page_preview,
+                    link_preview_options=preview_options,
                 )
 
             if image and msg.photo:
@@ -184,7 +228,8 @@ async def answer(
                         text=text,
                         parse_mode=ParseMode.HTML,
                         reply_markup=kb,
-                        disable_web_page_preview=True,
+                        disable_web_page_preview=disable_web_page_preview,
+                        link_preview_options=preview_options,
                     )
 
                 return None
@@ -200,7 +245,8 @@ async def answer(
                     text=text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=kb,
-                    disable_web_page_preview=True,
+                    disable_web_page_preview=disable_web_page_preview,
+                    link_preview_options=preview_options,
                 )
 
                 return None
@@ -222,7 +268,8 @@ async def answer(
                         text=text,
                         parse_mode=ParseMode.HTML,
                         reply_markup=kb,
-                        disable_web_page_preview=True,
+                        disable_web_page_preview=disable_web_page_preview,
+                        link_preview_options=preview_options,
                     )
                     await target.answer("Текст слишком длинный для редактирования, открыл новым сообщением.", show_alert=True)
                     return sent
@@ -273,7 +320,8 @@ async def answer(
                     text=text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=kb,
-                    disable_web_page_preview=True,
+                    disable_web_page_preview=disable_web_page_preview,
+                    link_preview_options=preview_options,
                 )
     else:
         return await bot.send_message(
@@ -281,7 +329,8 @@ async def answer(
             text=text,
             parse_mode=ParseMode.HTML,
             reply_markup=kb,
-            disable_web_page_preview=True,
+            disable_web_page_preview=disable_web_page_preview,
+            link_preview_options=preview_options,
         )
 
     return None

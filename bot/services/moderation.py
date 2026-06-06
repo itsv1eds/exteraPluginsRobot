@@ -11,6 +11,7 @@ from aiogram.types import FSInputFile
 from bot.cache import get_admins, get_admins_super, get_config
 from bot.context import get_lang
 from bot.formatting import code_html, quote_html, strip_blockquote_tags, telegram_html
+from bot.helpers import link_preview_options
 from bot.keyboards import admin_review_kb, moderation_vote_kb
 from bot.texts import t
 from request_store import get_request_by_id, update_request_payload
@@ -171,40 +172,23 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     chat_id = cfg["chat_id"]
     topic_id = cfg["topic_id"]
 
-    msg = None
-    text_msg = None
+    msg = await bot.send_message(
+        chat_id,
+        rendered_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=reply_markup,
+        disable_web_page_preview=False,
+        link_preview_options=link_preview_options("new"),
+        message_thread_id=topic_id,
+    )
+    file_msg = None
     if file_path and Path(file_path).exists():
-        if len(rendered_text) <= 1024:
-            msg = await bot.send_document(
-                chat_id,
-                FSInputFile(file_path),
-                caption=rendered_text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-                message_thread_id=topic_id,
-            )
-        else:
-            msg = await bot.send_document(
-                chat_id,
-                FSInputFile(file_path),
-                reply_markup=reply_markup,
-                message_thread_id=topic_id,
-            )
-            text_msg = await bot.send_message(
-                chat_id,
-                rendered_text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                message_thread_id=topic_id,
-            )
-    else:
-        msg = await bot.send_message(
+        file_msg = await bot.send_document(
             chat_id,
-            rendered_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup,
-            disable_web_page_preview=True,
+            FSInputFile(file_path),
             message_thread_id=topic_id,
+            reply_to_message_id=msg.message_id,
+            allow_sending_without_reply=True,
         )
 
     if msg:
@@ -213,8 +197,8 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
             "message_thread_id": topic_id,
             "message_id": int(msg.message_id),
         }
-        if text_msg:
-            info["text_message_id"] = int(text_msg.message_id)
+        if file_msg:
+            info["file_message_id"] = int(file_msg.message_id)
         update_request_payload(request_id, {"moderation_forum_message": info})
 
 
@@ -248,7 +232,8 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
                 chat_id=chat_id,
                 message_id=int(text_message_id),
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+                disable_web_page_preview=False,
+                link_preview_options=link_preview_options("new"),
             )
         except Exception:
             pass
@@ -265,7 +250,8 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
             message_id=message_id,
             parse_mode=ParseMode.HTML,
             reply_markup=reply_markup,
-            disable_web_page_preview=True,
+            disable_web_page_preview=False,
+            link_preview_options=link_preview_options("new"),
         )
         return
     except Exception:
@@ -301,7 +287,7 @@ async def delete_forum_request_message(bot, entry: dict | None) -> None:
         return
 
     message_ids: list[int] = []
-    for key in ("text_message_id", "message_id"):
+    for key in ("text_message_id", "file_message_id", "message_id"):
         try:
             message_id = int(info.get(key) or 0)
         except Exception:

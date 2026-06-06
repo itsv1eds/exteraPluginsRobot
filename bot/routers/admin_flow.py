@@ -848,7 +848,7 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
             lang=lang,
             allow_publish=_is_super_admin(cb),
         ),
-        "admin",
+        "new",
     )
     if msg:
         await state.update_data(draft_message_id=msg.message_id)
@@ -3887,7 +3887,7 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
         kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish)
 
     text = f"{text}\n\n{_review_meta_block(entry)}"
-    await answer(cb, text, kb, "admin")
+    review_msg = await answer(cb, text, kb, "new")
 
     if file_path and Path(file_path).exists() and cb.message:
         data = await state.get_data()
@@ -3897,10 +3897,13 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
 
         if request_id not in sent_files:
             try:
+                reply_to_message_id = review_msg.message_id if review_msg else cb.message.message_id
                 await cb.bot.send_document(
                     cb.message.chat.id,
                     document=FSInputFile(file_path),
                     disable_notification=True,
+                    reply_to_message_id=reply_to_message_id,
+                    allow_sending_without_reply=True,
                 )
                 sent_files.append(request_id)
                 await state.update_data(sent_review_files=sent_files)

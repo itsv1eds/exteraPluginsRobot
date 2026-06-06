@@ -81,6 +81,7 @@ async def on_moderation_vote_reason(message: Message, state: FSMContext) -> None
     data = await state.get_data()
     request_id = str(data.get("moderation_vote_request_id") or "")
     inline_message_id = str(data.get("moderation_vote_inline_message_id") or "")
+    dm_reason = bool(data.get("moderation_vote_dm"))
     if not request_id:
         await state.set_state(UserFlow.idle)
         return
@@ -104,7 +105,7 @@ async def on_moderation_vote_reason(message: Message, state: FSMContext) -> None
                 expected_reply_ids.add(value)
 
     reply_to = message.reply_to_message
-    if expected_reply_ids and not inline_message_id and (not reply_to or int(reply_to.message_id) not in expected_reply_ids):
+    if expected_reply_ids and not inline_message_id and not dm_reason and (not reply_to or int(reply_to.message_id) not in expected_reply_ids):
         await state.set_state(UserFlow.idle)
         return
 

@@ -1,6 +1,8 @@
 import html
 import time
 import math
+from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Dict, List
 
 from aiogram import F, Router
@@ -10,6 +12,7 @@ from aiogram.types import (
     CallbackQuery,
     InlineQuery,
     InlineQueryResultArticle,
+    InlineQueryResultCachedDocument,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputTextMessageContent,
@@ -34,6 +37,7 @@ from bot.keyboards import (
     profile_kb,
     broadcast_kb,
     search_kb,
+    moderation_inline_vote_url_kb,
 )
 from bot.states import UserFlow
 from bot.texts import t
@@ -61,7 +65,7 @@ from storage import load_stenka, save_stenka
 from storage import load_joinly
 from storage import save_joinly
 from request_store import get_request_by_plugin_id, get_user_requests, update_request_payload
-from bot.services.moderation import forum_text_with_votes, moderation_vote_kb, vote_counts
+from bot.services.moderation import forum_text_with_votes, vote_counts
 
 router = Router(name="catalog-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
@@ -82,6 +86,122 @@ def _plugin_category_preview_url(category_key: str) -> str:
 
 def _with_hidden_preview_link(text: str, url: str) -> str:
     return f'<a href="{html.escape(url, quote=True)}">&#8203;</a>{text}'
+
+
+class _CaptionHTMLTruncator(HTMLParser):
+    _simple_tags = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "code", "pre", "tg-spoiler"}
+
+    def __init__(self, max_visible: int) -> None:
+        super().__init__(convert_charrefs=True)
+        self.max_visible = max_visible
+        self.visible = 0
+        self.parts: list[str] = []
+        self.stack: list[str] = []
+        self.truncated = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self.truncated:
+            return
+        tag = tag.lower()
+        attrs_map = {str(k).lower(): v for k, v in attrs}
+        if tag in self._simple_tags:
+            if tag == "code":
+                class_name = str(attrs_map.get("class") or "")
+                if class_name.startswith("language-"):
+                    self.parts.append(f'<code class="{html.escape(class_name, quote=True)}">')
+                else:
+                    self.parts.append("<code>")
+            else:
+                self.parts.append(f"<{tag}>")
+            self.stack.append(tag)
+            return
+        if tag == "span" and attrs_map.get("class") == "tg-spoiler":
+            self.parts.append('<span class="tg-spoiler">')
+            self.stack.append(tag)
+            return
+        if tag == "blockquote":
+            expandable = " expandable" if "expandable" in attrs_map else ""
+            self.parts.append(f"<blockquote{expandable}>")
+            self.stack.append(tag)
+            return
+        if tag == "a":
+            href = str(attrs_map.get("href") or "").strip()
+            if href.startswith(("http://", "https://", "tg://", "mailto:")):
+                self.parts.append(f'<a href="{html.escape(href, quote=True)}">')
+                self.stack.append(tag)
+            return
+        if tag == "tg-emoji":
+            emoji_id = str(attrs_map.get("emoji-id") or "").strip()
+            if emoji_id.isdigit():
+                self.parts.append(f'<tg-emoji emoji-id="{emoji_id}">')
+                self.stack.append(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag not in self.stack:
+            return
+        while self.stack:
+            opened = self.stack.pop()
+            self.parts.append(f"</{opened}>")
+            if opened == tag:
+                break
+
+    def handle_data(self, data: str) -> None:
+        if self.truncated or not data:
+            return
+        left = self.max_visible - self.visible
+        if left <= 0:
+            self.truncated = True
+            return
+        chunk = data[:left]
+        self.parts.append(html.escape(chunk, quote=False))
+        self.visible += len(chunk)
+        if len(data) > left:
+            self.truncated = True
+
+    def close_open_tags(self) -> None:
+        while self.stack:
+            self.parts.append(f"</{self.stack.pop()}>")
+
+
+def _truncate_caption_html(value: str, max_visible: int) -> tuple[str, bool]:
+    parser = _CaptionHTMLTruncator(max_visible)
+    parser.feed(value)
+    parser.close_open_tags()
+    return "".join(parser.parts).strip(), parser.truncated
+
+
+def _request_inline_file(payload: dict[str, Any]) -> tuple[str, str, str] | None:
+    plugin = payload.get("plugin") if isinstance(payload.get("plugin"), dict) else {}
+    icon = payload.get("icon") if isinstance(payload.get("icon"), dict) else {}
+    item = plugin or icon
+    if not isinstance(item, dict):
+        return None
+    file_id = str(item.get("file_id") or payload.get("moderation_file_id") or "").strip()
+    if not file_id:
+        return None
+    file_path = str(item.get("file_path") or "").strip()
+    name = (
+        str(item.get("name") or "").strip()
+        or str(item.get("id") or "").strip()
+        or Path(file_path).name
+        or "request file"
+    )
+    kind = "icon" if icon else "plugin"
+    return file_id, name, kind
+
+
+def _request_inline_file_caption(request_id: str, file_kind: str, message_text: str) -> str:
+    text = str(message_text or "").strip()
+    if len(strip_html(text)) <= 1024:
+        return text
+
+    suffix = "\n\nПолный текст есть в отдельной карточке заявки."
+    budget = max(200, 1024 - len(strip_html(suffix)) - 3)
+    body, truncated = _truncate_caption_html(text, budget)
+    if not truncated:
+        return body
+    return f"{body}...{suffix}"
 
 
 def _toggle_label(value: bool, lang: str) -> str:
@@ -1167,6 +1287,8 @@ async def on_inline(query: InlineQuery) -> None:
         await query.answer([result], cache_time=60, is_personal=True)
         return
 
+    results = []
+
     user_id = query.from_user.id if query.from_user else 0
     if text and int(user_id) in get_admins_super():
         request_entry = get_request_by_plugin_id(text)
@@ -1174,30 +1296,45 @@ async def on_inline(query: InlineQuery) -> None:
             request_id = str(request_entry.get("id") or text)
             update_request_payload(request_id, {"moderation_inline_public": True})
             request_entry = get_request_by_plugin_id(text) or request_entry
+            payload = request_entry.get("payload", {}) if isinstance(request_entry.get("payload"), dict) else {}
             yes, no, _ = vote_counts(request_entry)
             message_text = forum_text_with_votes(request_entry)
-            result = InlineQueryResultArticle(
-                id=f"request:{encode_slug(request_id)}",
-                title=f"🗂 Заявка {request_id}",
-                description=strip_html(message_text)[:100],
-                input_message_content=InputTextMessageContent(
-                    message_text=message_text,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                ),
-                reply_markup=moderation_vote_kb(request_id, yes, no),
+            vote_markup = moderation_inline_vote_url_kb(BOT_USERNAME, request_id, yes, no, lang=lang)
+            results.append(
+                InlineQueryResultArticle(
+                    id=f"request:{encode_slug(request_id)}",
+                    title=f"🗂 Заявка {request_id}",
+                    description=strip_html(message_text)[:100],
+                    input_message_content=InputTextMessageContent(
+                        message_text=message_text,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    ),
+                    reply_markup=vote_markup,
+                )
             )
-            await query.answer([result], cache_time=0, is_personal=True)
-            return
+            inline_file = _request_inline_file(payload)
+            if inline_file:
+                file_id, file_name, file_kind = inline_file
+                results.append(
+                    InlineQueryResultCachedDocument(
+                        id=f"request-file:{encode_slug(request_id)}",
+                        title=f"📎 Файл {file_name}",
+                        document_file_id=file_id,
+                        description=f"Файл заявки {request_id}",
+                        caption=_request_inline_file_caption(request_id, file_kind, message_text),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=vote_markup,
+                    )
+                )
 
     plugins = search_plugins(text, limit=10)
     icons = search_icons(text, limit=10)
 
-    if not plugins and not icons:
+    if not results and not plugins and not icons:
         await query.answer([], cache_time=60)
         return
 
-    results = []
     for idx, plugin in enumerate(plugins):
         slug = plugin.get("slug")
         if not slug:

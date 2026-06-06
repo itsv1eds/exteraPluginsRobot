@@ -575,6 +575,7 @@ _CONFIG_FIELD_LABEL_KEYS: dict[str, str] = {
     "moderation.forum_chat_id": "admin_cfg_moderation_forum_chat_id",
     "moderation.forum_topic_id": "admin_cfg_moderation_forum_topic_id",
     "moderation.vote_threshold": "admin_cfg_moderation_vote_threshold",
+    "moderation.notification_chat_ids": "admin_cfg_moderation_notification_chat_ids",
 }
 
 _CONFIG_INT_FIELDS = {
@@ -590,6 +591,7 @@ _CONFIG_LIST_FIELDS = {
     "channel.locale_order",
     "icons_channel.default_tags",
     "icons_channel.locale_order",
+    "moderation.notification_chat_ids",
 }
 
 
@@ -612,6 +614,7 @@ def _config_current_value(config: dict[str, Any], path: str) -> Any:
             "moderation.forum_chat_id": moderation.get("chat_id"),
             "moderation.forum_topic_id": moderation.get("topic_id"),
             "moderation.vote_threshold": moderation.get("threshold"),
+            "moderation.notification_chat_ids": [],
         }.get(path)
     return value
 
@@ -639,7 +642,10 @@ def _format_config_value(value: Any) -> str:
 def _parse_config_value(path: str, raw: str) -> Any:
     text = raw.strip()
     if path in _CONFIG_LIST_FIELDS:
-        return [item.strip() for item in text.split(",") if item.strip()]
+        items = [item.strip() for item in text.split(",") if item.strip()]
+        if path == "moderation.notification_chat_ids":
+            return [int(item) for item in items]
+        return items
     if path in _CONFIG_INT_FIELDS:
         value = int(text)
         if path == "moderation.vote_threshold":
@@ -674,6 +680,7 @@ def _config_section_text(section: str, lang: str) -> str:
             "moderation.forum_chat_id",
             "moderation.forum_topic_id",
             "moderation.vote_threshold",
+            "moderation.notification_chat_ids",
         ]
         title = t("admin_cfg_section_moderation", lang)
     elif section == "admins":

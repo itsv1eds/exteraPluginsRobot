@@ -197,9 +197,19 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
             "message_thread_id": topic_id,
             "message_id": int(msg.message_id),
         }
+        payload_update: dict[str, object] = {"moderation_forum_message": info}
         if file_msg:
             info["file_message_id"] = int(file_msg.message_id)
-        update_request_payload(request_id, {"moderation_forum_message": info})
+            document = getattr(file_msg, "document", None)
+            file_id = str(getattr(document, "file_id", "") or "").strip()
+            file_name = str(getattr(document, "file_name", "") or "").strip()
+            if file_id:
+                info["file_id"] = file_id
+                payload_update["moderation_file_id"] = file_id
+            if file_name:
+                info["file_name"] = file_name
+                payload_update["moderation_file_name"] = file_name
+        update_request_payload(request_id, payload_update)
 
 
 async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:

@@ -102,6 +102,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_cfg_moderation_forum_chat_id": {"ru": "ID форума", "en": "Forum ID"},
     "admin_cfg_moderation_forum_topic_id": {"ru": "ID топика", "en": "Topic ID"},
     "admin_cfg_moderation_vote_threshold": {"ru": "Порог голосов", "en": "Vote threshold"},
+    "admin_cfg_moderation_notification_chat_ids": {"ru": "Чаты уведомлений", "en": "Notification chats"},
     "admin_cfg_checked_on_version": {"ru": "Версия проверки", "en": "Checked version"},
     "admin_cfg_superadmins": {"ru": "Суперадмины", "en": "Superadmins"},
     "admin_choose_action": {"ru": "Выберите действие:", "en": "Choose action:"},

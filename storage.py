@@ -111,6 +111,7 @@ _CONFIG_DEFAULTS: Dict[str, Any] = {
         "forum_chat_id": -1003859317683,
         "forum_topic_id": 97,
         "vote_threshold": 5,
+        "notification_chat_ids": [],
     }
 }
 

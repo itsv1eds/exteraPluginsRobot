@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import unquote
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
@@ -42,7 +43,7 @@ from bot.keyboards import (
 )
 from storage import load_stenka, save_stenka
 from bot.keyboards import admin_review_kb
-from bot.cache import get_admins, get_admins_icons, get_admins_plugins, get_categories
+from bot.cache import get_admins, get_admins_icons, get_admins_plugins, get_admins_super, get_categories, get_config
 from bot.services.submission import (
     PluginData,
     build_icon_submission_payload,
@@ -51,7 +52,7 @@ from bot.services.submission import (
     process_plugin_file,
 )
 from bot.services.publish import build_channel_post, update_plugin
-from bot.services.moderation import send_request_to_forum
+from bot.services.moderation import can_vote_in_context, send_request_to_forum, set_vote
 from bot.services.validation import (
     check_duplicate_icon_pending,
     check_duplicate_pending,
@@ -312,9 +313,39 @@ async def _render_profile_message(message: Message, state: FSMContext, lang: str
 
 
 async def _route_start_payload_message(message: Message, state: FSMContext, lang: str, payload: str) -> bool:
-    value = (payload or "").strip().lower()
-    if not value:
+    raw_value = (payload or "").strip()
+    value = raw_value.lower()
+    if not raw_value:
         return False
+
+    if raw_value.startswith(("modvote_yes_", "modvote_no_")):
+        vote = "yes" if raw_value.startswith("modvote_yes_") else "no"
+        request_id = unquote(raw_value.split("_", 2)[2])
+        entry = get_request_by_id(request_id)
+        request_payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+        inline_public = bool(request_payload.get("moderation_inline_public")) if isinstance(request_payload, dict) else False
+        user = message.from_user
+        if not entry or not user:
+            await message.answer(t("not_found", lang), parse_mode=ParseMode.HTML)
+            return True
+        if not inline_public and not can_vote_in_context(user.id, message.chat.id):
+            await message.answer(t("admin_denied", lang), parse_mode=ParseMode.HTML)
+            return True
+        entry = set_vote(
+            request_id,
+            int(user.id),
+            user.username or "",
+            user.full_name or "",
+            vote,
+        )
+        await state.set_state(UserFlow.entering_moderation_vote_reason)
+        await state.update_data(
+            moderation_vote_request_id=request_id,
+            moderation_vote_inline_message_id="",
+            moderation_vote_dm=True,
+        )
+        await message.answer(t("moderation_vote_reason_prompt", lang), parse_mode=ParseMode.HTML)
+        return True
 
     if value == "catalog":
         await state.set_state(UserFlow.idle)
@@ -2357,3 +2388,59 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
         delivered,
         failed,
     )
+
+    await _notify_review_targets(bot, entry, text, file_path)
+
+
+def _notification_chat_ids() -> list[int]:
+    cfg = get_config()
+    moderation = cfg.get("moderation", {}) if isinstance(cfg, dict) else {}
+    raw = moderation.get("notification_chat_ids") if isinstance(moderation, dict) else []
+    if not isinstance(raw, list):
+        raw = []
+    result: list[int] = []
+    for item in raw:
+        try:
+            chat_id = int(item)
+        except Exception:
+            continue
+        if chat_id and chat_id not in result:
+            result.append(chat_id)
+    return result
+
+
+async def _send_review_notification(bot, chat_id: int, entry: Dict[str, Any], text: str, file_path: str | None) -> None:
+    request_id = str(entry.get("id") or "")
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    user_id = int(payload.get("user_id") or 0)
+    try:
+        msg = await bot.send_message(
+            chat_id,
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=admin_review_kb(request_id, user_id, allow_publish=False),
+            disable_web_page_preview=True,
+        )
+        if file_path and Path(file_path).exists():
+            await bot.send_document(
+                chat_id,
+                FSInputFile(file_path),
+                reply_to_message_id=msg.message_id,
+                allow_sending_without_reply=True,
+                disable_notification=True,
+            )
+    except Exception:
+        logger.warning("event=submission.notify_review_target.failed request_id=%s chat_id=%s", request_id, chat_id, exc_info=True)
+
+
+async def _notify_review_targets(bot, entry: Dict[str, Any], text: str, file_path: str | None) -> None:
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    submission_type = _submission_type(payload)
+    superadmins = set(get_admins_super())
+    if submission_type == "icon":
+        admins = set(get_admins_icons()) - superadmins
+    else:
+        admins = set(get_admins_plugins()) - superadmins
+    targets = sorted({int(x) for x in admins if str(x).lstrip("-").isdigit()} | set(_notification_chat_ids()))
+    for chat_id in targets:
+        await _send_review_notification(bot, chat_id, entry, text, file_path)

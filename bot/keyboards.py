@@ -1,4 +1,5 @@
 from typing import List, Optional, Tuple
+from urllib.parse import quote
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -679,6 +680,7 @@ def admin_config_moderation_kb(lang: str = "ru") -> InlineKeyboardMarkup:
             _btn(t("admin_cfg_moderation_forum_topic_id", lang), callback_data="adm:config:moderation.forum_topic_id", icon="file"),
             _btn(t("admin_cfg_moderation_vote_threshold", lang), callback_data="adm:config:moderation.vote_threshold", icon="vote"),
         ],
+        [_btn(t("admin_cfg_moderation_notification_chat_ids", lang), callback_data="adm:config:moderation.notification_chat_ids", icon="bell")],
         [_btn(t("btn_back", lang), callback_data="adm:config", style="danger", icon="back")],
     ])
 
@@ -809,6 +811,16 @@ def moderation_vote_kb(request_id: str, yes_count: int = 0, no_count: int = 0, l
         [
             _btn(f"{t('btn_vote_yes', lang)} ({yes_count})", callback_data=f"modvote:yes:{request_id}", icon="yes", style="success"),
             _btn(f"{t('btn_vote_no', lang)} ({no_count})", callback_data=f"modvote:no:{request_id}", icon="no", style="danger"),
+        ],
+    ])
+
+
+def moderation_inline_vote_url_kb(bot_username: str, request_id: str, yes_count: int = 0, no_count: int = 0, lang: str = "ru") -> InlineKeyboardMarkup:
+    token = quote(str(request_id), safe="")
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn(f"{t('btn_vote_yes', lang)} ({yes_count})", url=f"https://t.me/{bot_username}?start=modvote_yes_{token}", icon="yes", style="success"),
+            _btn(f"{t('btn_vote_no', lang)} ({no_count})", url=f"https://t.me/{bot_username}?start=modvote_no_{token}", icon="no", style="danger"),
         ],
     ])
 

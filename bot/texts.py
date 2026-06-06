@@ -509,14 +509,49 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "join_btn_ban_on_join": {"ru": "Бан при заходе", "en": "Ban on join"},
     "join_btn_service_cleanup": {"ru": "Очищать сервисные", "en": "Clean service"},
     "join_btn_join_reaction": {"ru": "Реакция при входе", "en": "Join reaction"},
+    "join_btn_post_guard": {"ru": "Посты канала", "en": "Channel posts"},
+    "join_btn_post_guard_toggle": {"ru": "Закрывать чат", "en": "Lock chat"},
+    "join_btn_post_rules_toggle": {"ru": "Правила к посту", "en": "Post rules"},
+    "join_btn_post_lock_seconds": {"ru": "Время закрытия", "en": "Lock time"},
+    "join_btn_post_permissions": {"ru": "Права закрытия", "en": "Lock permissions"},
+    "join_btn_post_rules_edit": {"ru": "Текст правил", "en": "Rules text"},
+    "join_btn_post_unlock_now": {"ru": "Открыть сейчас", "en": "Unlock now"},
     "join_btn_welcome_toggle": {"ru": "Приветствие", "en": "Welcome"},
     "join_btn_edit": {"ru": "Редактировать", "en": "Edit"},
     "join_prompt_welcome": {"ru": "Отправь новый текст приветствия.", "en": "Send the new welcome text."},
+    "join_prompt_post_lock_seconds": {
+        "ru": "Отправь время закрытия чата в секундах. Например: <code>30</code>, <code>120</code>. Чтобы выключить закрытие, отправь <code>0</code>.",
+        "en": "Send chat lock duration in seconds. Example: <code>30</code>, <code>120</code>. Send <code>0</code> to disable locking.",
+    },
+    "join_prompt_post_rules": {
+        "ru": "Отправь текст правил, который бот будет писать ответом на каждый новый пост канала.",
+        "en": "Send the rules text the bot should reply with under each new channel post.",
+    },
+    "join_bad_seconds": {
+        "ru": "Нужно число секунд от 0 до 86400.",
+        "en": "Send a number of seconds from 0 to 86400.",
+    },
     "join_prompt_reaction": {
         "ru": "Отправь один эмодзи для реакции (или напиши off чтобы выключить).",
         "en": "Send one emoji for reaction (or type off to disable).",
     },
     "join_saved": {"ru": "Сохранено.", "en": "Saved."},
+    "join_chat_unlocked": {"ru": "Чат открыт.", "en": "Chat unlocked."},
+    "join_chat_unlock_failed": {"ru": "Не удалось открыть чат. Проверь права бота.", "en": "Failed to unlock chat. Check bot permissions."},
+    "join_post_guard_help": {
+        "ru": "<b>Посты канала</b>\n\n"
+        "Бот реагирует на автофорварды из привязанного канала в чате обсуждений.\n"
+        "Можно временно закрывать чат после нового поста и отправлять правила ответом на пост.\n\n"
+        "<b>Важно:</b> бот должен быть админом с правом менять разрешения чата.",
+        "en": "<b>Channel posts</b>\n\n"
+        "The bot reacts to automatic forwards from the linked channel in the discussion chat.\n"
+        "It can temporarily lock the chat after a new post and reply with rules.\n\n"
+        "<b>Important:</b> the bot must be an admin with permission to change chat permissions.",
+    },
+    "join_post_rules_default": {
+        "ru": "<b>Правила обсуждения</b>\n\nПишите по теме поста, без спама, оскорблений и флуда.",
+        "en": "<b>Discussion rules</b>\n\nStay on topic, avoid spam, insults, and flooding.",
+    },
     "join_reaction_help": {
         "ru": "<b>Реакция при входе</b>\n\n"
         "Бот поставит реакцию на сервисное сообщение о входе пользователя.\n\n",

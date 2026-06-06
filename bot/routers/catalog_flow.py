@@ -17,7 +17,7 @@ from aiogram.types import (
 )
 from aiogram.exceptions import TelegramBadRequest
 
-from bot.cache import get_categories, get_icons
+from bot.cache import get_admins_super, get_categories, get_icons
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
@@ -60,7 +60,8 @@ from user_store import (
 from storage import load_stenka, save_stenka
 from storage import load_joinly
 from storage import save_joinly
-from request_store import get_user_requests
+from request_store import get_request_by_plugin_id, get_user_requests, update_request_payload
+from bot.services.moderation import forum_text_with_votes, moderation_vote_kb, vote_counts
 
 router = Router(name="catalog-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
@@ -1165,6 +1166,29 @@ async def on_inline(query: InlineQuery) -> None:
         )
         await query.answer([result], cache_time=60, is_personal=True)
         return
+
+    user_id = query.from_user.id if query.from_user else 0
+    if text and int(user_id) in get_admins_super():
+        request_entry = get_request_by_plugin_id(text)
+        if request_entry and request_entry.get("status") in {"pending", "error", "scheduled"}:
+            request_id = str(request_entry.get("id") or text)
+            update_request_payload(request_id, {"moderation_inline_public": True})
+            request_entry = get_request_by_plugin_id(text) or request_entry
+            yes, no, _ = vote_counts(request_entry)
+            message_text = forum_text_with_votes(request_entry)
+            result = InlineQueryResultArticle(
+                id=f"request:{encode_slug(request_id)}",
+                title=f"🗂 Заявка {request_id}",
+                description=strip_html(message_text)[:100],
+                input_message_content=InputTextMessageContent(
+                    message_text=message_text,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                ),
+                reply_markup=moderation_vote_kb(request_id, yes, no),
+            )
+            await query.answer([result], cache_time=0, is_personal=True)
+            return
 
     plugins = search_plugins(text, limit=10)
     icons = search_icons(text, limit=10)

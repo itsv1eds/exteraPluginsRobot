@@ -7,16 +7,35 @@ from bot.helpers import try_react_pray
 from bot.formatting import telegram_html
 from bot.services.moderation import (
     can_vote_in_context,
+    forum_text_with_votes,
+    moderation_vote_kb,
     notify_superadmins_if_threshold,
     refresh_forum_vote_keyboard,
     set_vote,
     set_vote_reason,
+    vote_counts,
 )
 from bot.states import UserFlow
 from bot.texts import t
 from request_store import get_request_by_id
 
 router = Router(name="moderation-flow")
+
+
+async def _refresh_inline_vote_message(bot, inline_message_id: str | None, entry: dict | None, request_id: str) -> None:
+    if not inline_message_id or not entry:
+        return
+    yes, no, _ = vote_counts(entry)
+    try:
+        await bot.edit_message_text(
+            forum_text_with_votes(entry),
+            inline_message_id=inline_message_id,
+            parse_mode="HTML",
+            reply_markup=moderation_vote_kb(request_id, yes, no),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("modvote:"))
@@ -30,7 +49,10 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
     request_id = parts[2]
     chat_id = cb.message.chat.id if cb.message and cb.message.chat else None
     user = cb.from_user
-    if not can_vote_in_context(user.id if user else None, chat_id):
+    entry = get_request_by_id(request_id)
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    inline_public = bool(payload.get("moderation_inline_public")) if isinstance(payload, dict) else False
+    if not inline_public and not can_vote_in_context(user.id if user else None, chat_id):
         await cb.answer(t("admin_denied", "ru"), show_alert=True)
         return
 
@@ -42,10 +64,14 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     await refresh_forum_vote_keyboard(cb.bot, entry)
+    await _refresh_inline_vote_message(cb.bot, cb.inline_message_id, entry, request_id)
     await notify_superadmins_if_threshold(cb.bot, entry)
 
     await state.set_state(UserFlow.entering_moderation_vote_reason)
-    await state.update_data(moderation_vote_request_id=request_id)
+    await state.update_data(
+        moderation_vote_request_id=request_id,
+        moderation_vote_inline_message_id=cb.inline_message_id or "",
+    )
     lang = await get_language(cb, state)
     await cb.answer(t("moderation_vote_reason_prompt", lang), show_alert=True)
 
@@ -54,6 +80,7 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_moderation_vote_reason(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     request_id = str(data.get("moderation_vote_request_id") or "")
+    inline_message_id = str(data.get("moderation_vote_inline_message_id") or "")
     if not request_id:
         await state.set_state(UserFlow.idle)
         return
@@ -77,7 +104,7 @@ async def on_moderation_vote_reason(message: Message, state: FSMContext) -> None
                 expected_reply_ids.add(value)
 
     reply_to = message.reply_to_message
-    if expected_reply_ids and (not reply_to or int(reply_to.message_id) not in expected_reply_ids):
+    if expected_reply_ids and not inline_message_id and (not reply_to or int(reply_to.message_id) not in expected_reply_ids):
         await state.set_state(UserFlow.idle)
         return
 
@@ -88,6 +115,7 @@ async def on_moderation_vote_reason(message: Message, state: FSMContext) -> None
     entry = set_vote_reason(request_id, int(user.id), text)
     if entry:
         await refresh_forum_vote_keyboard(message.bot, entry)
+        await _refresh_inline_vote_message(message.bot, inline_message_id, entry, request_id)
         await notify_superadmins_if_threshold(message.bot, entry)
         await try_react_pray(message)
 

@@ -89,6 +89,7 @@ async def on_startup(bot: Bot) -> None:
     start_catalog_auto_updates_worker(bot)
 
     admin_flow.start_scheduled_posts_cleanup_worker()
+    await joinly_flow.schedule_pending_post_guard_unlocks(bot)
     
     await start_log_worker()
     

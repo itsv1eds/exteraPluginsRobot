@@ -21,8 +21,12 @@ from bot.cache import get_categories, get_icons
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
+from bot.formatting import quote_html
 from bot.helpers import answer, strip_html
+from bot.icons import CATEGORY_FALLBACKS, CATEGORY_ICONS, ICONS
+from bot.menu_owner import MenuOwnerMiddleware
 from bot.keyboards import (
+    _btn,
     catalog_main_kb,
     page_picker_kb,
     paginated_list_kb,
@@ -59,8 +63,15 @@ from storage import save_joinly
 from request_store import get_user_requests
 
 router = Router(name="catalog-flow")
+router.callback_query.middleware(MenuOwnerMiddleware())
 
 BOT_USERNAME = "exteraPluginsRobot"
+
+
+def _toggle_label(value: bool, lang: str) -> str:
+    if lang == "en":
+        return "on" if value else "off"
+    return "вкл" if value else "выкл"
 
 
 def _stenka_db() -> dict[str, Any]:
@@ -182,7 +193,7 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
 
     description = (locale.get("description") or "").strip()
     if description:
-        lines.append(f"<blockquote expandable>{description}</blockquote>")
+        lines.append(quote_html(description, expandable=True))
 
     min_version = (entry.get("min_version") or "").strip()
     if min_version:
@@ -218,14 +229,20 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
         icons = entry.get("icons")
         if isinstance(icons, (list, dict)):
             count = len(icons)
-    lines = [t("catalog_inline_header", lang, name=name, author=author)]
+    if kind == "plugin":
+        category = str(entry.get("category") or "").strip()
+        icon_id = CATEGORY_ICONS.get(category) or ICONS["plugin"]
+        fallback = CATEGORY_FALLBACKS.get(category, "🧩")
+        lines = [f'<tg-emoji emoji-id="{icon_id}">{fallback}</tg-emoji> <b>{name}</b> by <code>{author}</code>']
+    else:
+        lines = [t("catalog_inline_header", lang, name=name, author=author)]
     if count is not None:
         lines.append(f"{t('catalog_field_icons', lang)}: {count}")
 
     if kind == "plugin":
         description = (locale.get("description") or "").strip()
         if description:
-            lines.append(f"<blockquote expandable>{description}</blockquote>")
+            lines.append(quote_html(description, expandable=True))
 
         min_version = (entry.get("min_version") or "").strip()
         if min_version:
@@ -813,10 +830,11 @@ async def _show_subscriptions(target: CallbackQuery | Message, state: FSMContext
     kb.inline_keyboard.insert(
         0,
         [
-            InlineKeyboardButton(
-                text=toggle_label,
+            _btn(
+                toggle_label,
                 callback_data=f"subs:all_toggle:{page}",
-                style="success",
+                style="success" if all_enabled else "danger",
+                icon="bell",
             )
         ],
     )
@@ -841,10 +859,6 @@ def _user_joinly_chat_ids(db: dict[str, Any], user_id: int) -> list[int]:
             continue
     chat_ids.sort()
     return chat_ids
-
-
-def _fmt_bool_mark(val: Any) -> str:
-    return "✅" if bool(val) else "❌"
 
 
 async def _render_profile_joinly(target: CallbackQuery | Message, state: FSMContext) -> None:
@@ -946,28 +960,36 @@ async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text=f"{t('join_btn_welcome_toggle', lang)}: {'✅' if welcome_enabled else '❌'}",
+                _btn(
+                    f"{t('join_btn_welcome_toggle', lang)}: {_toggle_label(welcome_enabled, lang)}",
                     callback_data=f"profile:joinly_toggle:{chat_id}:WelcomeEnabled",
+                    icon="yes" if welcome_enabled else "no",
+                    style="success" if welcome_enabled else "danger",
                 )
             ],
             [
-                InlineKeyboardButton(
-                    text=f"{t('join_btn_service_cleanup', lang)}: {'✅' if cleanup_enabled else '❌'}",
+                _btn(
+                    f"{t('join_btn_service_cleanup', lang)}: {_toggle_label(cleanup_enabled, lang)}",
                     callback_data=f"profile:joinly_toggle:{chat_id}:DeleteServiceMessages",
+                    icon="yes" if cleanup_enabled else "no",
+                    style="success" if cleanup_enabled else "danger",
                 )
             ],
             [
-                InlineKeyboardButton(
-                    text=f"{t('join_btn_enabled', lang)}: {'✅' if enabled else '❌'}",
+                _btn(
+                    f"{t('join_btn_enabled', lang)}: {_toggle_label(enabled, lang)}",
                     callback_data=f"profile:joinly_toggle:{chat_id}:Enabled",
+                    icon="yes" if enabled else "no",
+                    style="success" if enabled else "danger",
                 ),
-                InlineKeyboardButton(
-                    text=f"{t('join_btn_ban_on_join', lang)}: {'✅' if ban_enabled else '❌'}",
+                _btn(
+                    f"{t('join_btn_ban_on_join', lang)}: {_toggle_label(ban_enabled, lang)}",
                     callback_data=f"profile:joinly_toggle:{chat_id}:BanMembers",
+                    icon="yes" if ban_enabled else "no",
+                    style="success" if ban_enabled else "danger",
                 ),
             ],
-            [InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile:joinly", style="danger")],
+            [_btn(t("btn_back", lang), callback_data="profile:joinly", style="danger", icon="back")],
         ]
     )
     await answer(cb, text, kb, "joinly")
@@ -1144,6 +1166,9 @@ async def on_inline(query: InlineQuery) -> None:
 
         locale = plugin.get(lang) or plugin.get("ru") or {}
         name = locale.get("name") or slug
+        category_key = str(plugin.get("category") or "").strip()
+        category_fallback = CATEGORY_FALLBACKS.get(category_key, "🧩")
+        title = f"{category_fallback} {name}"
         preview = build_inline_preview(plugin, lang, "plugin")
         description = strip_html(locale.get("description") or t("catalog_inline_no_description", lang))
         link = plugin.get("channel_message", {}).get("link")
@@ -1164,7 +1189,7 @@ async def on_inline(query: InlineQuery) -> None:
         results.append(
             InlineQueryResultArticle(
                 id=f"plugin:{encode_slug(slug)}:{idx}",
-                title=name,
+                title=title,
                 description=description[:100],
                 input_message_content=InputTextMessageContent(
                     message_text=preview,

@@ -2,9 +2,10 @@ import logging
 import math
 import time
 import asyncio
+import html
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
@@ -25,13 +26,19 @@ from bot.cache import (
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
+from bot.formatting import plain_html, strip_blockquote_tags, telegram_html
 from bot.helpers import answer
+from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
 from bot.keyboards import (
     admin_actions_kb,
     admin_banned_kb,
     admin_broadcast_confirm_kb,
     admin_post_confirm_kb,
     admin_config_kb,
+    admin_config_admins_kb,
+    admin_config_channels_kb,
+    admin_config_moderation_kb,
+    admin_config_other_kb,
     admin_confirm_ban_kb,
     admin_icons_section_kb,
     admin_post_section_kb,
@@ -71,9 +78,17 @@ from bot.services.publish import (
     update_icon_catalog_entry,
     update_catalog_entry,
 )
+from bot.services.moderation import (
+    delete_forum_request_message,
+    is_moderation_forum_chat,
+    moderation_config,
+    send_request_to_forum,
+    vote_summary,
+)
 from bot.routers.catalog_flow import build_inline_preview, build_plugin_preview
 from bot.services.submission import PluginData, process_icon_file, process_plugin_file
 from bot.states import AdminFlow
+from bot.icons import emoji_html
 from bot.texts import TEXTS, t
 from catalog import find_icon_by_slug, find_plugin_by_slug, list_published_icons, list_published_plugins
 from request_store import (
@@ -93,6 +108,7 @@ logger = logging.getLogger(__name__)
 
 TZ_UTC_PLUS_5 = timezone(timedelta(hours=5))
 router = Router(name="admin-flow")
+router.callback_query.middleware(MenuOwnerMiddleware())
 
 _NAV_STACK_KEY = "nav_stack"
 _scheduled_posts_cleanup_task: Optional[asyncio.Task] = None
@@ -191,6 +207,37 @@ def _scheduled_dt_utc(entry: dict | None) -> datetime | None:
     return _parse_dt_utc(payload.get("scheduled_at"))
 
 
+def _publish_not_before_dt_utc(entry: dict | None) -> datetime | None:
+    if not isinstance(entry, dict):
+        return None
+    payload = entry.get("payload", {})
+    if not isinstance(payload, dict):
+        return None
+    return _parse_dt_utc(payload.get("publish_not_before"))
+
+
+def _review_meta_block(entry: dict) -> str:
+    parts: list[str] = []
+    not_before = _publish_not_before_dt_utc(entry)
+    if not_before:
+        dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
+        parts.append(f"<b>Не публиковать раньше:</b> <code>{dt_str} UTC+5</code>")
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    if isinstance(payload, dict):
+        last_error = str(payload.get("last_publish_error") or "").strip()
+        if last_error:
+            error_at = _parse_dt_utc(payload.get("last_publish_error_at"))
+            suffix = ""
+            if error_at:
+                suffix = f" ({error_at.astimezone(TZ_UTC_PLUS_5).strftime('%d.%m.%Y %H:%M')} UTC+5)"
+            parts.append(
+                "<b>Последняя ошибка публикации"
+                f"{suffix}:</b>\n<blockquote expandable>{html.escape(last_error)}</blockquote>"
+            )
+    parts.append(vote_summary(entry))
+    return "\n\n".join(parts)
+
+
 async def _render_scheduled_list(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
     lang = _lang_for(target)
     requests = list(get_requests(status="scheduled"))
@@ -217,11 +264,13 @@ async def _render_scheduled_list(target: CallbackQuery | Message, state: FSMCont
     start = page * PAGE_SIZE
     page_items = sorted_requests[start : start + PAGE_SIZE]
 
-    items: List[tuple[str, str]] = []
+    items: List[tuple[str, str] | tuple[str, str, str | None]] = []
     for r in page_items:
         payload = r.get("payload", {})
         plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
         name = (plugin.get("name") if isinstance(plugin, dict) else None) or r.get("id")
+        if isinstance(payload, dict) and payload.get("last_publish_error"):
+            name = f"Ошибка: {name}"
         dt = _scheduled_dt_utc(r)
         dt_str = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M") if dt else "—"
         items.append((f"{dt_str} — {name}", str(r.get("id"))))
@@ -240,7 +289,10 @@ async def _render_scheduled_view(target: CallbackQuery | Message, state: FSMCont
         return
     dt = _scheduled_dt_utc(entry)
     dt_str = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M") if dt else "—"
+    meta = _review_meta_block(entry)
     text = f"{_render_request_draft(entry)}\n\n<b>Отложено на:</b> <code>{dt_str}</code>"
+    if meta:
+        text = f"{text}\n\n{meta}"
     await state.update_data(scheduled_current_request=str(request_id))
     await state.set_state(AdminFlow.menu)
     await answer(target, text, admin_scheduled_item_kb(str(request_id), lang=lang), "admin")
@@ -423,13 +475,220 @@ async def _nav_prev(state: FSMContext) -> Optional[str]:
 async def _render_menu(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     await state.set_state(AdminFlow.menu)
-    await answer(cb, _tr(cb, "admin_title"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
+    await answer(cb, _admin_menu_text(lang), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
+
+
+def _admin_request_counts() -> dict[str, int]:
+    pending = list(get_requests(status="pending")) + list(get_requests(status="error"))
+    scheduled = list(get_requests(status="scheduled"))
+
+    def is_icon(entry: dict) -> bool:
+        payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+        return bool(isinstance(payload, dict) and (payload.get("submission_type") == "icon" or payload.get("icon")))
+
+    plugin_pending = [r for r in pending if not is_icon(r)]
+    icon_pending = [r for r in pending if is_icon(r)]
+    updates = [r for r in plugin_pending if r.get("type") == "update"]
+    new_plugins = [r for r in plugin_pending if r.get("type") in {None, "new"}]
+    deletes = [r for r in plugin_pending if r.get("type") == "delete"]
+    scheduled_plugins = [r for r in scheduled if not is_icon(r)]
+    return {
+        "new_plugins": len(new_plugins),
+        "updates": len(updates),
+        "deletes": len(deletes),
+        "plugin_pending": len(plugin_pending),
+        "icon_pending": len(icon_pending),
+        "scheduled_plugins": len(scheduled_plugins),
+        "scheduled_posts": len(_cleanup_scheduled_posts()),
+    }
+
+
+def _admin_menu_text(lang: str) -> str:
+    c = _admin_request_counts()
+    if lang == "en":
+        return (
+            "<b>Admin Panel</b>\n\n"
+            f"Plugins: {c['plugin_pending']} pending, {c['scheduled_plugins']} scheduled\n"
+            f"Icons: {c['icon_pending']} pending\n"
+            f"Posts: {c['scheduled_posts']} scheduled"
+        )
+    return (
+        "<b>Админ-панель</b>\n\n"
+        f"Плагины: {c['plugin_pending']} заявок, {c['scheduled_plugins']} отложено\n"
+        f"Иконки: {c['icon_pending']} заявок\n"
+        f"Посты: {c['scheduled_posts']} по расписанию"
+    )
+
+
+def _plugins_section_text(lang: str) -> str:
+    c = _admin_request_counts()
+    if lang == "en":
+        return (
+            f"{t('admin_section_plugins', lang)}\n\n"
+            f"New: {c['new_plugins']}\n"
+            f"Updates: {c['updates']}\n"
+            f"Deletes: {c['deletes']}\n"
+            f"Scheduled: {c['scheduled_plugins']}"
+        )
+    return (
+        f"{t('admin_section_plugins', lang)}\n\n"
+        f"Новые: {c['new_plugins']}\n"
+        f"Обновления: {c['updates']}\n"
+        f"Удаления: {c['deletes']}\n"
+        f"Отложенные: {c['scheduled_plugins']}"
+    )
+
+
+def _icons_section_text(lang: str) -> str:
+    c = _admin_request_counts()
+    if lang == "en":
+        return f"{t('admin_section_icons', lang)}\n\nPending requests: {c['icon_pending']}"
+    return f"{t('admin_section_icons', lang)}\n\nЗаявки: {c['icon_pending']}"
+
+
+def _post_section_text(lang: str) -> str:
+    c = _admin_request_counts()
+    title = t("admin_btn_post", lang)
+    if lang == "en":
+        return f"<b>{title}</b>\n\nScheduled posts: {c['scheduled_posts']}"
+    return f"<b>{title}</b>\n\nПосты по расписанию: {c['scheduled_posts']}"
 
 
 async def _render_config(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     await state.set_state(AdminFlow.menu)
     await answer(cb, _tr(cb, "admin_settings_title"), admin_config_kb(lang=lang), "admin")
+
+
+_CONFIG_FIELD_LABEL_KEYS: dict[str, str] = {
+    "channel.id": "admin_cfg_channel_id",
+    "channel.username": "admin_cfg_channel_username",
+    "channel.title": "admin_cfg_channel_title",
+    "publish_channel": "admin_cfg_publish_channel",
+    "channel.default_tags": "admin_cfg_channel_default_tags",
+    "channel.locale_order": "admin_cfg_channel_locale_order",
+    "icons_channel.id": "admin_cfg_icons_channel_id",
+    "icons_channel.username": "admin_cfg_icons_channel_username",
+    "icons_channel.title": "admin_cfg_icons_channel_title",
+    "icons_channel.default_tags": "admin_cfg_icons_channel_default_tags",
+    "icons_channel.locale_order": "admin_cfg_icons_channel_locale_order",
+    "moderation.forum_chat_id": "admin_cfg_moderation_forum_chat_id",
+    "moderation.forum_topic_id": "admin_cfg_moderation_forum_topic_id",
+    "moderation.vote_threshold": "admin_cfg_moderation_vote_threshold",
+}
+
+_CONFIG_INT_FIELDS = {
+    "channel.id",
+    "icons_channel.id",
+    "moderation.forum_chat_id",
+    "moderation.forum_topic_id",
+    "moderation.vote_threshold",
+}
+
+_CONFIG_LIST_FIELDS = {
+    "channel.default_tags",
+    "channel.locale_order",
+    "icons_channel.default_tags",
+    "icons_channel.locale_order",
+}
+
+
+def _config_get_path(config: dict[str, Any], path: str) -> Any:
+    cur: Any = config
+    for part in path.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+
+def _config_current_value(config: dict[str, Any], path: str) -> Any:
+    value = _config_get_path(config, path)
+    if value is not None:
+        return value
+    if path.startswith("moderation."):
+        moderation = moderation_config()
+        return {
+            "moderation.forum_chat_id": moderation.get("chat_id"),
+            "moderation.forum_topic_id": moderation.get("topic_id"),
+            "moderation.vote_threshold": moderation.get("threshold"),
+        }.get(path)
+    return value
+
+
+def _config_set_path(config: dict[str, Any], path: str, value: Any) -> None:
+    parts = path.split(".")
+    cur: dict[str, Any] = config
+    for part in parts[:-1]:
+        child = cur.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            cur[part] = child
+        cur = child
+    cur[parts[-1]] = value
+
+
+def _format_config_value(value: Any) -> str:
+    if isinstance(value, list):
+        return ", ".join(str(x) for x in value) if value else "—"
+    if value is None or value == "":
+        return "—"
+    return str(value)
+
+
+def _parse_config_value(path: str, raw: str) -> Any:
+    text = raw.strip()
+    if path in _CONFIG_LIST_FIELDS:
+        return [item.strip() for item in text.split(",") if item.strip()]
+    if path in _CONFIG_INT_FIELDS:
+        value = int(text)
+        if path == "moderation.vote_threshold":
+            value = max(1, value)
+        if path == "moderation.forum_chat_id" and value > 0:
+            value = int(f"-100{value}")
+        return value
+    if path in {"channel.username", "icons_channel.username", "publish_channel"}:
+        return text.lstrip("@")
+    return text
+
+
+def _config_section_text(section: str, lang: str) -> str:
+    cfg = get_config()
+    if section == "channels":
+        fields = [
+            "channel.id",
+            "channel.username",
+            "channel.title",
+            "publish_channel",
+            "channel.default_tags",
+            "channel.locale_order",
+            "icons_channel.id",
+            "icons_channel.username",
+            "icons_channel.title",
+            "icons_channel.default_tags",
+            "icons_channel.locale_order",
+        ]
+        title = t("admin_cfg_section_channels", lang)
+    elif section == "moderation":
+        fields = [
+            "moderation.forum_chat_id",
+            "moderation.forum_topic_id",
+            "moderation.vote_threshold",
+        ]
+        title = t("admin_cfg_section_moderation", lang)
+    elif section == "admins":
+        return f"<b>{t('admin_cfg_section_admins', lang)}</b>"
+    else:
+        fields = ["checked_on_version"]
+        title = t("admin_cfg_section_other", lang)
+
+    lines = [f"<b>{title}</b>"]
+    for field in fields:
+        label_key = _CONFIG_FIELD_LABEL_KEYS.get(field, f"admin_cfg_{field}")
+        label = t(label_key, lang)
+        value = _format_config_value(_config_current_value(cfg, field))
+        lines.append(f"{label}: <code>{html.escape(value)}</code>")
+    return "\n".join(lines)
 
 
 async def _render_admins_manage(cb: CallbackQuery, state: FSMContext, field: str) -> None:
@@ -475,16 +734,28 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
     parts = token.split(":")
     queue_type = parts[2] if len(parts) > 2 else "plugins"
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
+    visible_requests = list(get_requests(status="pending")) + list(get_requests(status="error"))
 
     if queue_type == "icons":
         requests = [
-            r for r in get_requests(status="pending")
+            r for r in visible_requests
             if r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon")
         ]
-    else:
-        req_type = "new" if queue_type == "plugins" else (None if queue_type == "all" else ("update" if queue_type == "update" else "new"))
+    elif queue_type == "update":
         requests = [
-            r for r in get_requests(status="pending", request_type=req_type)
+            r for r in visible_requests
+            if r.get("type") == "update"
+            if not (r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon"))
+        ]
+    elif queue_type == "plugins":
+        requests = [
+            r for r in visible_requests
+            if not (r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon"))
+            and r.get("type") != "update"
+        ]
+    else:
+        requests = [
+            r for r in visible_requests
             if not (r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon"))
         ]
 
@@ -509,8 +780,23 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
             plugin = payload.get("plugin", {})
             name = plugin.get("name", "?")
             version = plugin.get("version", "")
+        request_type = entry.get("type")
+        if request_type == "delete":
+            name = payload.get("delete_slug") or name
+            prefix = "Удаление "
+            row_icon = "delete"
+        elif request_type == "update":
+            prefix = "Обновление: "
+            row_icon = "updates"
+        else:
+            prefix = ""
+            row_icon = None
+        if entry.get("status") == "error" or payload.get("last_publish_error"):
+            prefix = f"Ошибка: {prefix}"
+            row_icon = row_icon or "warning"
         label = f"{name} v{version}" if version else f"{name}"
-        items.append((label, entry["id"]))
+        label = f"{prefix}{label}"
+        items.append((label, entry["id"], row_icon))
 
     if queue_type == "icons":
         title = _tr(cb, "admin_queue_title_icons")
@@ -541,14 +827,29 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
 
     payload = entry.get("payload", {})
     if payload.get("submission_type") == "icon" or payload.get("icon"):
-        draft_text = _render_request_draft(entry)
-        msg = await answer(cb, draft_text, icon_draft_edit_kb(lang=lang), "iconpacks")
+        draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
+        if _is_super_admin(cb):
+            kb = icon_draft_edit_kb(lang=lang)
+        else:
+            kb = admin_review_kb(request_id, payload.get("user_id", 0), lang=lang, allow_publish=False)
+        msg = await answer(cb, draft_text, kb, "iconpacks")
         if msg:
             await state.update_data(draft_message_id=msg.message_id)
         return
 
     draft_text = _render_request_draft(entry)
-    msg = await answer(cb, draft_text, admin_review_kb(request_id, payload.get("user_id", 0), lang=lang), "admin")
+    full_text = f"{draft_text}\n\n{_review_meta_block(entry)}"
+    msg = await answer(
+        cb,
+        full_text,
+        admin_review_kb(
+            request_id,
+            payload.get("user_id", 0),
+            lang=lang,
+            allow_publish=_is_super_admin(cb),
+        ),
+        "admin",
+    )
     if msg:
         await state.update_data(draft_message_id=msg.message_id)
 
@@ -559,22 +860,34 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await _render_menu(cb, state)
     elif token == "adm:section:plugins":
         await state.set_state(AdminFlow.menu)
-        await answer(cb, _tr(cb, "admin_section_plugins"), admin_plugins_section_kb(lang=lang), "admin")
+        await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang), "admin")
     elif token == "adm:section:updates":
         await _render_updates_list(cb, state, 0)
     elif token == "adm:section:icons":
         await state.set_state(AdminFlow.menu)
-        await answer(cb, _tr(cb, "admin_section_icons"), admin_icons_section_kb(lang=lang), "admin")
+        await answer(cb, _icons_section_text(lang), admin_icons_section_kb(lang=lang), "admin")
     elif token == "adm:section:post":
         await state.set_state(AdminFlow.menu)
-        await answer(cb, _tr(cb, "admin_btn_post"), admin_post_section_kb(lang=lang), "admin")
+        await answer(cb, _post_section_text(lang), admin_post_section_kb(lang=lang), "admin")
     elif token == "adm:config":
         await _render_config(cb, state)
+    elif token.startswith("adm:config_section:"):
+        section = token.split(":")[2]
+        if section == "admins":
+            await answer(cb, _config_section_text("admins", lang), admin_config_admins_kb(lang=lang), "admin")
+        elif section == "channels":
+            await answer(cb, _config_section_text("channels", lang), admin_config_channels_kb(lang=lang), "admin")
+        elif section == "moderation":
+            await answer(cb, _config_section_text("moderation", lang), admin_config_moderation_kb(lang=lang), "admin")
+        elif section == "other":
+            await answer(cb, _config_section_text("other", lang), admin_config_other_kb(lang=lang), "admin")
+        else:
+            await _render_config(cb, state)
     elif token == "adm:broadcast":
         await _render_broadcast_enter(cb, state)
     elif token == "adm:post":
         await state.set_state(AdminFlow.menu)
-        await answer(cb, _tr(cb, "admin_btn_post"), admin_post_section_kb(lang=lang), "admin")
+        await answer(cb, _post_section_text(lang), admin_post_section_kb(lang=lang), "admin")
     elif token.startswith("adm:queue:"):
         await _render_queue(cb, state, token)
     elif token.startswith("adm:review:"):
@@ -608,6 +921,70 @@ def _render_request_draft(entry: dict) -> str:
     return build_channel_post({"payload": patched_payload})
 
 
+def _forum_request_text_and_file(entry: dict) -> tuple[str, str | None]:
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
+    icon = payload.get("icon", {}) if isinstance(payload.get("icon"), dict) else {}
+    user_id = payload.get("user_id", 0)
+    username = str(payload.get("username") or "").strip()
+    request_type = entry.get("type", "new")
+    submission_type = payload.get("submission_type") or ("icon" if icon else "plugin")
+    request_id = entry.get("id", "?")
+    user_link = f"@{plain_html(username)}" if username else f"<code>{plain_html(user_id or '—')}</code>"
+    file_path = plugin.get("file_path") or icon.get("file_path")
+
+    if request_type == "update":
+        changelog = payload.get("changelog", "—")
+        old_plugin = payload.get("old_plugin", {}) if isinstance(payload.get("old_plugin"), dict) else {}
+        old_locale = old_plugin.get("ru") or old_plugin.get("en") or {}
+        old_version = old_locale.get("version") or "?"
+        text = t(
+            "admin_request_update",
+            "ru",
+            id=request_id,
+            name=plain_html(plugin.get("name") or "—"),
+            old_version=plain_html(old_version),
+            version=plain_html(plugin.get("version") or "—"),
+            min_version=plain_html(plugin.get("min_version") or "—"),
+            changelog=strip_blockquote_tags(telegram_html(changelog)) or "—",
+            user=user_link,
+        )
+    elif request_type == "delete":
+        delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
+        text = t(
+            "admin_request_delete",
+            "ru",
+            id=request_id,
+            name=plain_html(plugin.get("name") or "—"),
+            slug=plain_html(delete_slug),
+            user=user_link,
+        )
+    elif submission_type == "icon":
+        text = t(
+            "admin_request_icon",
+            "ru",
+            id=request_id,
+            name=plain_html(icon.get("name") or "—"),
+            author=plain_html(icon.get("author") or "—"),
+            version=plain_html(icon.get("version") or "—"),
+            count=plain_html(icon.get("count") or 0),
+            user=user_link,
+        )
+    else:
+        text = t(
+            "admin_request_plugin",
+            "ru",
+            id=request_id,
+            draft=_render_request_draft(entry),
+            user=user_link,
+        )
+
+    admin_comment = payload.get("admin_comment")
+    if admin_comment:
+        text += "\n\n" + t("admin_request_comment", "ru", comment=strip_blockquote_tags(telegram_html(admin_comment)))
+    return text, str(file_path) if file_path else None
+
+
 async def _notify_subscribers(
     bot,
     slug: str | None,
@@ -619,7 +996,7 @@ async def _notify_subscribers(
 
     entry = find_plugin_by_slug(slug) or {}
     plugin_link = (entry.get("channel_message", {}) or {}).get("link")
-    changes = changelog or "—"
+    changes = strip_blockquote_tags(telegram_html(changelog)) or "—"
 
     for user_id in list_subscribers(slug):
         lang = get_lang(user_id)
@@ -678,6 +1055,15 @@ def _admin_menu_role(cb: CallbackQuery | Message) -> str | None:
     if not user:
         return None
     return get_admin_role(user.id)
+
+
+def _is_super_admin(target: CallbackQuery | Message | int | None) -> bool:
+    if isinstance(target, int):
+        user_id = target
+    else:
+        user = target.from_user if target else None
+        user_id = user.id if user else None
+    return bool(user_id and int(user_id) in get_admins_super())
 
 
 def _ensure_request_role(cb: CallbackQuery | Message, entry: dict) -> bool:
@@ -789,8 +1175,72 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
     if not _ensure_admin(message):
         await message.answer(_tr(message, "admin_denied"))
         return
+    await state.clear()
     await state.set_state(AdminFlow.menu)
-    await answer(message, _tr(message, "admin_title"), admin_menu_kb(_admin_menu_role(message), lang=lang), "admin")
+    sent = await answer(message, _tr(message, "admin_title"), admin_menu_kb(_admin_menu_role(message), lang=lang), "admin")
+    if sent:
+        await remember_menu_owner(message, state, sent)
+
+
+@router.message(Command("new"))
+async def cmd_resend_forum_requests(message: Message) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+
+    if not is_moderation_forum_chat(message.chat.id):
+        await message.answer("Команда /new работает только в форуме модерации.")
+        return
+
+    cfg = moderation_config()
+    if getattr(message, "message_thread_id", None) and int(message.message_thread_id) != int(cfg["topic_id"]):
+        await message.answer("Команду нужно отправлять в настроенном топике модерации.")
+        return
+
+    requests = (
+        list(get_requests(status="pending"))
+        + list(get_requests(status="error"))
+        + list(get_requests(status="scheduled"))
+    )
+    if not requests:
+        await message.answer("Активных заявок нет.")
+        return
+
+    sent = 0
+    failed = 0
+    for entry in requests:
+        try:
+            await delete_forum_request_message(message.bot, entry)
+            text, file_path = _forum_request_text_and_file(entry)
+            await send_request_to_forum(message.bot, entry, text, file_path)
+            sent += 1
+        except Exception:
+            failed += 1
+            logger.warning("event=admin.resend_forum_request.failed request_id=%s", entry.get("id"), exc_info=True)
+
+    await message.answer(f"Отправлено заявок: {sent}\nОшибок: {failed}")
+
+
+@router.message(Command("adminhelp"))
+async def cmd_admin_help(message: Message) -> None:
+    text = (
+        "<b>Команды бота</b>\n\n"
+        "<b>Пользовательские</b>\n"
+        "/start — открыть главное меню. Поддерживает deeplink-переходы: catalog, submit, profile, notifications, joinly, admin, plugin slug.\n"
+        "/lang — сменить язык интерфейса.\n\n"
+        "<b>Joinly</b>\n"
+        "/settings — настройки Joinly в группе. Работает только в группе и только для админов чата.\n\n"
+        "<b>Админка</b>\n"
+        "/admin — открыть админ-панель. Работает для админов и суперадминов.\n"
+        "/adminhelp — показать этот список команд.\n\n"
+        "<b>Суперадмины</b>\n"
+        "/new — переотправить в форум модерации все активные заявки: pending, error, scheduled. Работает только в настроенном форуме/топике.\n"
+        "/sync_catalog &lt;t.me link&gt; &lt;request_id&gt; — вручную привязать опубликованное сообщение к заявке и добавить в каталог.\n\n"
+        "<b>Админы плагинов</b>\n"
+        "/sync_version &lt;plugin_id_or_slug&gt; &lt;version&gt; — вручную обновить версию плагина в каталоге.\n"
+        "/erase — очистить скрытые заявки.\n"
+        "/erase &lt;plugin_id_or_slug&gt; — удалить заявки по ID/slug плагина."
+    )
+    await message.answer(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 @router.message(Command("sync_catalog"))
@@ -924,7 +1374,7 @@ async def on_admin_section_post(cb: CallbackQuery, state: FSMContext) -> None:
     await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:section:post")
     await state.set_state(AdminFlow.menu)
-    await answer(cb, _tr(cb, "admin_btn_post"), admin_post_section_kb(lang=lang), "admin")
+    await answer(cb, _post_section_text(lang), admin_post_section_kb(lang=lang), "admin")
     try:
         await cb.answer()
     except Exception:
@@ -1553,7 +2003,7 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
     await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:section:plugins")
     await state.set_state(AdminFlow.menu)
-    await answer(cb, _tr(cb, "admin_section_plugins"), admin_plugins_section_kb(lang=lang), "admin")
+    await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang), "admin")
     try:
         await cb.answer()
     except Exception:
@@ -1570,7 +2020,7 @@ async def on_admin_section_icons(cb: CallbackQuery, state: FSMContext) -> None:
     await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:section:icons")
     await state.set_state(AdminFlow.menu)
-    await answer(cb, _tr(cb, "admin_section_icons"), admin_icons_section_kb(lang=lang), "admin")
+    await answer(cb, _icons_section_text(lang), admin_icons_section_kb(lang=lang), "admin")
     try:
         await cb.answer()
     except Exception:
@@ -1603,7 +2053,7 @@ async def on_admin_post_text(message: Message, state: FSMContext) -> None:
     if not _ensure_admin_role(message, "super"):
         return
 
-    text = (message.html_text or message.text or "").strip()
+    text = telegram_html(message.html_text or message.text or "")
     if not text:
         await message.answer(_tr(message, "admin_post_no_text"))
         return
@@ -2013,7 +2463,7 @@ async def on_admin_scheduled_posts_edit_text_value(message: Message, state: FSMC
     lang = _lang_for(message)
     if not _ensure_admin_role(message, "plugins"):
         return
-    text = (message.html_text or message.text or "").strip()
+    text = telegram_html(message.html_text or message.text or "")
     if not text:
         await message.answer(_tr(message, "need_text"))
         return
@@ -2344,7 +2794,7 @@ async def on_admins_remove(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "adm:menu")
 async def on_admin_menu(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _ensure_admin_role(cb, "super"):
+    if not _ensure_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     await _nav_push(state, "adm:menu")
@@ -2366,13 +2816,13 @@ async def on_admin_stats(cb: CallbackQuery, state: FSMContext) -> None:
     total = len(users)
     counts: Dict[str, int] = {}
     for user in users:
-        lang = (user.get("language") or "unknown").lower()
-        counts[lang] = counts.get(lang, 0) + 1
+        user_lang = (user.get("language") or "unknown").lower()
+        counts[user_lang] = counts.get(user_lang, 0) + 1
 
     lines = [_tr(cb, "admin_label_users", total=total)]
     if counts:
-        for lang, count in sorted(counts.items()):
-            label = lang.upper() if lang not in {"unknown", ""} else _tr(cb, "admin_label_not_set")
+        for user_lang, count in sorted(counts.items()):
+            label = user_lang.upper() if user_lang not in {"unknown", ""} else _tr(cb, "admin_label_not_set")
             lines.append(f"{label}: {count}")
 
     msg = await answer(cb, "\n".join(lines), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
@@ -2402,6 +2852,40 @@ async def on_admin_config(cb: CallbackQuery, state: FSMContext) -> None:
         pass
 
 
+@router.callback_query(F.data.startswith("adm:config_section:"))
+async def on_admin_config_section(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+
+    section = cb.data.split(":")[2]
+    await _nav_push(state, f"adm:config_section:{section}")
+    await state.set_state(AdminFlow.menu)
+
+    if section == "admins":
+        text = _config_section_text("admins", lang)
+        kb = admin_config_admins_kb(lang=lang)
+    elif section == "channels":
+        text = _config_section_text("channels", lang)
+        kb = admin_config_channels_kb(lang=lang)
+    elif section == "moderation":
+        text = _config_section_text("moderation", lang)
+        kb = admin_config_moderation_kb(lang=lang)
+    elif section == "other":
+        text = _config_section_text("other", lang)
+        kb = admin_config_other_kb(lang=lang)
+    else:
+        text = _tr(cb, "admin_unknown_setting")
+        kb = admin_config_kb(lang=lang)
+
+    await answer(cb, text, kb, "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data.startswith("adm:config:"))
 async def on_admin_config_edit(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
@@ -2409,7 +2893,11 @@ async def on_admin_config_edit(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    field = cb.data.split(":")[2]
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+
+    field = cb.data.split(":", 2)[2]
     if field in {"admins_super", "admins_plugins", "admins_icons"}:
         await _nav_push(state, f"adm:config:{field}")
         await _render_admins_manage(cb, state, field)
@@ -2422,6 +2910,19 @@ async def on_admin_config_edit(cb: CallbackQuery, state: FSMContext) -> None:
             cb,
             f"{_tr(cb, 'admin_prompt_checked_on_version')}\n\n<b>Текущая:</b> <code>{current}</code>",
             admin_config_kb(lang=lang),
+            "profile",
+        )
+    elif field in _CONFIG_FIELD_LABEL_KEYS:
+        cfg = get_config()
+        current = _format_config_value(_config_current_value(cfg, field))
+        label = t(_CONFIG_FIELD_LABEL_KEYS[field], lang)
+        await state.update_data(config_field=field, config_message_id=cb.message.message_id if cb.message else None)
+        await state.set_state(AdminFlow.editing_config)
+        prompt_key = "admin_prompt_config_list" if field in _CONFIG_LIST_FIELDS else "admin_prompt_config_value"
+        await answer(
+            cb,
+            _tr(cb, prompt_key, name=label, current=html.escape(current)),
+            admin_cancel_kb(lang),
             "profile",
         )
     elif field == "channel":
@@ -2505,7 +3006,38 @@ async def on_admin_config_value(message: Message, state: FSMContext) -> None:
         invalidate("config")
         await state.update_data(config_field=None, config_message_id=None)
         await state.set_state(AdminFlow.menu)
-        await answer(message, _tr(message, "admin_title"), admin_menu_kb(_admin_menu_role(message), lang=lang), "admin")
+        await answer(message, _config_section_text("other", lang), admin_config_other_kb(lang=lang), "admin")
+        return
+    elif field in _CONFIG_FIELD_LABEL_KEYS:
+        try:
+            value = _parse_config_value(field, text)
+        except ValueError:
+            await message.answer(
+                _tr(message, "admin_bad_id"),
+                disable_web_page_preview=True,
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        _config_set_path(config, field, value)
+        save_config(config)
+        invalidate("config")
+
+        if field.startswith("moderation."):
+            section = "moderation"
+            kb = admin_config_moderation_kb(lang=lang)
+        else:
+            section = "channels"
+            kb = admin_config_channels_kb(lang=lang)
+
+        await state.update_data(config_field=None, config_message_id=None)
+        await state.set_state(AdminFlow.menu)
+        await answer(
+            message,
+            f"{_tr(message, 'admin_config_updated')}\n\n{_config_section_text(section, lang)}",
+            kb,
+            "admin",
+        )
         return
     elif field == "channel":
         parts = text.split()
@@ -2588,7 +3120,7 @@ async def on_admin_broadcast_message(message: Message, state: FSMContext) -> Non
     if not _ensure_admin_role(message, "super"):
         return
 
-    text = (message.html_text or message.text or "").strip()
+    text = telegram_html(message.html_text or message.text or "")
     if not text:
         await message.answer(
             _tr(message, "need_text"),
@@ -2723,15 +3255,28 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
     await _nav_push(state, "adm:menu")
     await _nav_push(state, f"adm:queue:{queue_type}:{page}")
 
+    visible_requests = list(get_requests(status="pending")) + list(get_requests(status="error"))
+
     if queue_type == "icons":
         requests = [
-            r for r in get_requests(status="pending")
+            r for r in visible_requests
             if r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon")
         ]
-    else:
-        req_type = "new" if queue_type == "plugins" else (None if queue_type == "all" else ("update" if queue_type == "update" else "new"))
+    elif queue_type == "update":
         requests = [
-            r for r in get_requests(status="pending", request_type=req_type)
+            r for r in visible_requests
+            if r.get("type") == "update"
+            if not (r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon"))
+        ]
+    elif queue_type == "plugins":
+        requests = [
+            r for r in visible_requests
+            if not (r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon"))
+            and r.get("type") != "update"
+        ]
+    else:
+        requests = [
+            r for r in visible_requests
             if not (r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon"))
         ]
 
@@ -2745,22 +3290,35 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
     start = page * PAGE_SIZE
     page_items = requests[start : start + PAGE_SIZE]
 
-    items = []
+    items: List[tuple[str, str] | tuple[str, str, str | None]] = []
     for entry in page_items:
         payload = entry.get("payload", {})
         if queue_type == "icons" or payload.get("submission_type") == "icon" or payload.get("icon"):
             icon = payload.get("icon", {})
             name = icon.get("name", "?")
             version = icon.get("version", "")
-            type_icon = ""
+            row_icon = None
         else:
             plugin = payload.get("plugin", {})
             name = plugin.get("name", "?")
             version = plugin.get("version", "")
-            type_icon = ""
-        label_base = f"{name} v{version}" if version else f"{name}"
-        label = f"{type_icon} {label_base}" if type_icon else label_base
-        items.append((label, entry["id"]))
+            row_icon = None
+        request_type = entry.get("type")
+        if request_type == "delete":
+            name = payload.get("delete_slug") or name
+            prefix = "Удаление "
+            row_icon = "delete"
+        elif request_type == "update":
+            prefix = "Обновление: "
+            row_icon = "updates"
+        else:
+            prefix = ""
+        if entry.get("status") == "error" or payload.get("last_publish_error"):
+            prefix = f"Ошибка: {prefix}"
+            row_icon = row_icon or "warning"
+        label = f"{name} v{version}" if version else f"{name}"
+        label = f"{prefix}{label}"
+        items.append((label, entry["id"], row_icon))
 
     if queue_type == "icons":
         title = _tr(cb, "admin_queue_title_icons")
@@ -3238,14 +3796,19 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
     await _nav_push(state, f"adm:review:{request_id}")
 
     payload = entry.get("payload", {})
+    allow_publish = _is_super_admin(cb)
     if payload.get("submission_type") == "icon" or payload.get("icon"):
         await state.set_state(AdminFlow.reviewing)
         await state.update_data(
             current_request=request_id,
             draft_message_id=cb.message.message_id if cb.message else None,
         )
-        draft_text = _render_request_draft(entry)
-        await answer(cb, draft_text, icon_draft_edit_kb(lang=lang), "iconpacks")
+        draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
+        if allow_publish:
+            kb = icon_draft_edit_kb(lang=lang)
+        else:
+            kb = admin_review_kb(request_id, payload.get("user_id", 0), lang=lang, allow_publish=False)
+        await answer(cb, draft_text, kb, "iconpacks")
         try:
             await cb.answer()
         except Exception:
@@ -3265,47 +3828,47 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
     request_type = entry.get("type", "new")
     submission_type = payload.get("submission_type") or ("icon" if payload.get("icon") else "plugin")
 
-    user_link = f"@{username}" if username else f"<code>{user_id}</code>"
+    user_link = f"@{plain_html(username)}" if username else f"<code>{plain_html(user_id)}</code>"
     settings = _tr(cb, "admin_yes") if plugin.get("has_ui_settings") else _tr(cb, "admin_no")
 
     if request_type == "update":
-        changelog = payload.get("changelog", "—")
+        changelog = strip_blockquote_tags(telegram_html(payload.get("changelog"))) or "—"
         old_plugin = payload.get("old_plugin", {})
         old_version = _localized_block(old_plugin, lang).get("version") or "?"
         text = (
             f"<b>Обновление</b>\n\n"
-            f"<b>ID:</b> <code>{request_id}</code>\n"
-            f"<b>Плагин:</b> {plugin.get('name', '—')}\n"
-            f"<b>Версия:</b> {old_version} → {plugin.get('version', '—')}\n"
-            f"<b>Мин. версия:</b> {plugin.get('min_version', '—')}\n\n"
+            f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n"
+            f"<b>Плагин:</b> {plain_html(plugin.get('name', '—'))}\n"
+            f"<b>Версия:</b> {plain_html(old_version)} → {plain_html(plugin.get('version', '—'))}\n"
+            f"<b>Мин. версия:</b> {plain_html(plugin.get('min_version', '—'))}\n\n"
             f"<b>Изменения:</b>\n<blockquote expandable>{changelog}</blockquote>\n\n"
             f"<b>От:</b> {user_link}"
         )
     elif request_type == "delete":
         delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
         text = (
-            f"<b>Удаление</b>\n\n"
-            f"<b>ID:</b> <code>{request_id}</code>\n"
-            f"<b>Плагин:</b> {plugin.get('name', '—')}\n"
-            f"<b>Slug:</b> <code>{delete_slug}</code>\n\n"
+            f"{emoji_html('delete', '🗑')} <b>Удаление <code>{plain_html(delete_slug)}</code></b>\n\n"
+            f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n"
+            f"<b>Плагин:</b> {plain_html(plugin.get('name', '—'))}\n"
+            f"<b>Slug:</b> <code>{plain_html(delete_slug)}</code>\n\n"
             f"<b>От:</b> {user_link}"
         )
     elif submission_type == "icon":
         icon = payload.get("icon", {})
         text = (
             f"<b>Новый пак иконок</b>\n\n"
-            f"<b>ID:</b> <code>{request_id}</code>\n"
-            f"<b>Название:</b> {icon.get('name', '—')}\n"
-            f"<b>Автор:</b> {icon.get('author', '—')}\n"
-            f"<b>Версия:</b> {icon.get('version', '—')}\n"
-            f"<b>Иконок:</b> {icon.get('count', 0)}\n\n"
+            f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n"
+            f"<b>Название:</b> {plain_html(icon.get('name', '—'))}\n"
+            f"<b>Автор:</b> {plain_html(icon.get('author', '—'))}\n"
+            f"<b>Версия:</b> {plain_html(icon.get('version', '—'))}\n"
+            f"<b>Иконок:</b> {plain_html(icon.get('count', 0))}\n\n"
             f"<b>От:</b> {user_link}"
         )
     else:
         draft_text = _render_request_draft(entry)
         text = (
             f"<b>Новый плагин</b>\n\n"
-            f"<b>ID:</b> <code>{request_id}</code>\n\n"
+            f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n\n"
             f"{draft_text}\n\n"
             f"<b>От:</b> {user_link}"
         )
@@ -3318,10 +3881,12 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
             submit_label=_tr(cb, "admin_submit_delete"),
             submit_callback=f"adm:delete:{request_id}",
             lang=lang,
+            allow_publish=allow_publish,
         )
     else:
-        kb = admin_review_kb(request_id, user_id, lang=lang)
+        kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish)
 
+    text = f"{text}\n\n{_review_meta_block(entry)}"
     await answer(cb, text, kb, "admin")
 
     if file_path and Path(file_path).exists() and cb.message:
@@ -3356,11 +3921,13 @@ async def on_admin_actions(cb: CallbackQuery, state: FSMContext) -> None:
     if entry and not _ensure_request_role(cb, entry):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
 
     await _nav_push(state, f"adm:actions:{request_id}")
 
-    allow_ban = bool(cb.from_user and cb.from_user.id in get_admins_super())
-    await cb.message.edit_reply_markup(reply_markup=admin_actions_kb(request_id, allow_ban=allow_ban, lang=lang))
+    await cb.message.edit_reply_markup(reply_markup=admin_actions_kb(request_id, allow_ban=True, lang=lang))
     try:
         await cb.answer()
     except Exception:
@@ -3387,9 +3954,10 @@ async def on_admin_back_review(cb: CallbackQuery, state: FSMContext) -> None:
             submit_label=_tr(cb, "admin_submit_delete"),
             submit_callback=f"adm:delete:{request_id}",
             lang=lang,
+            allow_publish=_is_super_admin(cb),
         )
     else:
-        kb = admin_review_kb(request_id, user_id, lang=lang)
+        kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=_is_super_admin(cb))
 
     await cb.message.edit_reply_markup(reply_markup=kb)
     try:
@@ -3400,6 +3968,9 @@ async def on_admin_back_review(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("adm:delete:"))
 async def on_admin_delete(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     request_id = cb.data.split(":")[2]
     entry = get_request_by_id(request_id)
     if entry and not _ensure_request_role(cb, entry):
@@ -3414,6 +3985,9 @@ async def on_admin_delete(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("adm:prepublish:"))
 async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     request_id = cb.data.split(":")[2]
     entry = get_request_by_id(request_id)
 
@@ -3428,9 +4002,16 @@ async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminFlow.reviewing)
     await state.update_data(current_request=request_id)
 
-    draft_text = _render_request_draft(entry)
+    draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
     payload = entry.get("payload", {})
     include_schedule = _can_schedule_request(entry)
+    not_before = _publish_not_before_dt_utc(entry)
+    include_force_publish = bool(
+        cb.from_user
+        and cb.from_user.id in get_admins_super()
+        and not_before
+        and not_before > datetime.now(timezone.utc)
+    )
     if payload.get("submission_type") == "icon" or payload.get("icon"):
         await answer(cb, draft_text, icon_draft_edit_kb(include_schedule=False, lang=lang), "iconpacks")
     else:
@@ -3443,6 +4024,7 @@ async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
                 _tr(cb, "admin_submit_publish"),
                 include_back=True,
                 include_schedule=include_schedule,
+                include_force_publish=include_force_publish,
                 checked_on_set=checked_on_set,
                 lang=lang,
             ),
@@ -3457,6 +4039,9 @@ async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("adm_icon:edit:"))
 async def on_admin_icon_edit_field(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     field = cb.data.split(":")[2]
 
     await _nav_push(state, f"adm_icon:edit:{field}")
@@ -3486,6 +4071,9 @@ async def on_admin_icon_edit_field(cb: CallbackQuery, state: FSMContext) -> None
 @router.callback_query(F.data == "adm_icon:back")
 async def on_admin_icon_back(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     data = await state.get_data()
     entry = get_request_by_id(data.get("current_request", ""))
     if entry:
@@ -3499,6 +4087,9 @@ async def on_admin_icon_back(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "adm_icon:submit")
 async def on_admin_icon_submit(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     data = await state.get_data()
     request_id = data.get("current_request")
     if request_id:
@@ -3514,7 +4105,11 @@ async def on_admin_icon_submit(cb: CallbackQuery, state: FSMContext) -> None:
 @router.message(AdminFlow.editing_icon_field)
 async def on_admin_icon_field_value(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
-    text = (message.html_text or message.text or "").strip()
+    if not _is_super_admin(message):
+        await state.clear()
+        await state.set_state(AdminFlow.menu)
+        return
+    text = (message.text or "").replace("\\n", "\n").strip()
     if not text:
         await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
         return
@@ -3556,6 +4151,9 @@ async def on_admin_icon_field_value(message: Message, state: FSMContext) -> None
 @router.callback_query(F.data.startswith("adm:edit:"))
 async def on_admin_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     field = cb.data.split(":")[2]
 
     await _nav_push(state, f"adm:edit:{field}")
@@ -3779,8 +4377,9 @@ async def on_admin_catalog_back(cb: CallbackQuery, state: FSMContext) -> None:
 @router.message(AdminFlow.editing_catalog_field)
 async def on_admin_catalog_field_value(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
-    text = (message.html_text or message.text or "").strip()
-    if not text:
+    text_html = telegram_html(message.html_text or message.text or "")
+    text_plain = (message.text or "").replace("\\n", "\n").strip()
+    if not text_html and not text_plain:
         await message.answer(
             _tr(message, "need_text"),
             disable_web_page_preview=True,
@@ -3795,17 +4394,17 @@ async def on_admin_catalog_field_value(message: Message, state: FSMContext) -> N
     plugin = payload.get("plugin", {})
 
     if field in {"description", "usage"}:
-        payload[f"{field}_{edit_lang}"] = text
+        payload[f"{field}_{edit_lang}"] = text_html
     elif field == "name":
-        plugin["name"] = text
+        plugin["name"] = text_plain
     elif field == "author":
-        plugin["author"] = text
+        plugin["author"] = text_plain
     elif field == "min_version":
-        plugin["min_version"] = text
+        plugin["min_version"] = text_plain
     elif field == "checked_on":
-        payload["checked_on"] = text
+        payload["checked_on"] = text_plain
     elif field == "settings":
-        plugin["has_ui_settings"] = text.lower() in {"да", "yes", "1", "true"}
+        plugin["has_ui_settings"] = text_plain.lower() in {"да", "yes", "1", "true"}
 
     payload["plugin"] = plugin
     await state.update_data(edit_payload=payload, edit_field=None, edit_lang=None)
@@ -3926,6 +4525,9 @@ async def on_admin_catalog_submit(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("adm:lang:"))
 async def on_admin_draft_language(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     _, _, field, lang_choice = cb.data.split(":")
     await state.update_data(edit_field=field, edit_lang=lang_choice)
     await state.set_state(AdminFlow.editing_draft_field)
@@ -3941,6 +4543,9 @@ async def on_admin_draft_language(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("adm:cat:"))
 async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     cat_key = cb.data.split(":")[2]
     category = next((c for c in get_categories() if c.get("key") == cat_key), None)
     if category:
@@ -3979,6 +4584,9 @@ async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "adm:back")
 async def on_admin_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     prev = await _nav_prev(state)
     if prev:
         await _render_nav_token(cb, state, prev)
@@ -3993,8 +4601,13 @@ async def on_admin_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
 @router.message(AdminFlow.editing_draft_field)
 async def on_admin_draft_field_value(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
-    text = (message.html_text or message.text or "").strip()
-    if not text:
+    if not _is_super_admin(message):
+        await state.clear()
+        await state.set_state(AdminFlow.menu)
+        return
+    text_html = telegram_html(message.html_text or message.text or "")
+    text_plain = (message.text or "").replace("\\n", "\n").strip()
+    if not text_html and not text_plain:
         await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
         return
 
@@ -4017,20 +4630,20 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
 
     updates = {}
     if field in {"description", "usage"}:
-        updates[f"{field}_{edit_lang}"] = text
+        updates[f"{field}_{edit_lang}"] = text_html
     elif field == "name":
-        plugin["name"] = text
+        plugin["name"] = text_plain
         updates["plugin"] = plugin
     elif field == "author":
-        plugin["author"] = text
+        plugin["author"] = text_plain
         updates["plugin"] = plugin
     elif field == "min_version":
-        plugin["min_version"] = text
+        plugin["min_version"] = text_plain
         updates["plugin"] = plugin
     elif field == "checked_on":
-        updates["checked_on"] = text
+        updates["checked_on"] = text_plain
     elif field == "settings":
-        has_settings = text.lower() in {"да", "yes", "1", "true"}
+        has_settings = text_plain.lower() in {"да", "yes", "1", "true"}
         plugin["has_ui_settings"] = has_settings
         updates["plugin"] = plugin
 
@@ -4093,9 +4706,13 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
                 await state.update_data(draft_message_id=sent.message_id)
 
 
-@router.callback_query(F.data == "adm:submit")
+@router.callback_query(F.data.regexp(r"^adm:submit(_force)?$"))
 async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+
     data = await state.get_data()
     request_id = data.get("current_request")
     entry = get_request_by_id(request_id)
@@ -4109,6 +4726,41 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
     submission_type = payload.get("submission_type") or ("icon" if payload.get("icon") else "plugin")
     item_name = payload.get("plugin", {}).get("name") or payload.get("icon", {}).get("name") or payload.get("delete_slug") or "unknown"
     admin_id = cb.from_user.id if cb.from_user else None
+    force_publish = cb.data == "adm:submit_force"
+
+    not_before = _publish_not_before_dt_utc(entry)
+    if (
+        not force_publish
+        and request_type not in {"update", "delete"}
+        and submission_type != "icon"
+        and not_before
+        and not_before > datetime.now(timezone.utc)
+    ):
+        update_request_payload(request_id, {"scheduled_at": not_before.isoformat()})
+        update_request_status(request_id, "scheduled")
+        dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
+        user_id = entry.get("payload", {}).get("user_id")
+        if user_id:
+            try:
+                await cb.bot.send_message(
+                    user_id,
+                    _tr(user_id, "admin_request_scheduled_by_limit", datetime=dt_str),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                pass
+        await answer(
+            cb,
+            _tr(cb, "admin_request_scheduled_by_limit", datetime=dt_str),
+            admin_menu_kb(_admin_menu_role(cb), lang=lang),
+            "admin",
+        )
+        try:
+            await cb.answer()
+        except Exception:
+            pass
+        return
 
     logger.info(
         "event=moderation.publish.start request_id=%s request_type=%s submission_type=%s item=%s admin_id=%s",
@@ -4168,6 +4820,7 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             )
         except Exception:
             pass
+        await delete_forum_request_message(cb.bot, entry)
 
         user_id = entry.get("payload", {}).get("user_id")
         payload = entry.get("payload", {})
@@ -4213,7 +4866,13 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             item_name,
             admin_id,
         )
-        update_request_status(request_id, "error", comment=str(exc))
+        update_request_payload(
+            request_id,
+            {
+                "last_publish_error": str(exc),
+                "last_publish_error_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         await answer(
             cb,
             f"Ошибка:\n<code>{exc}</code>",
@@ -4225,6 +4884,9 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("adm:reject:"))
 async def on_admin_reject(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     request_id = cb.data.split(":")[2]
     entry = get_request_by_id(request_id)
     if entry:
@@ -4252,6 +4914,9 @@ async def on_admin_reject(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("adm:reject_comment:"))
 async def on_admin_reject_comment(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     request_id = cb.data.split(":")[2]
     entry = get_request_by_id(request_id)
     if entry:
@@ -4282,7 +4947,7 @@ async def on_admin_reject_comment(cb: CallbackQuery, state: FSMContext) -> None:
 @router.message(AdminFlow.entering_reject_comment)
 async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
-    comment = (message.text or "").strip()
+    comment = telegram_html(message.html_text or message.text or "")
     if not comment:
         await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
         return
@@ -4297,6 +4962,8 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
     entry = get_request_by_id(request_id)
     if entry and not _ensure_request_role(message, entry):
         return
+    if not _is_super_admin(message):
+        return
 
     entry = get_request_by_id(request_id)
     if entry:
@@ -4310,6 +4977,7 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
             )
         except Exception:
             pass
+        await delete_forum_request_message(message.bot, entry)
         user_id = entry.get("payload", {}).get("user_id")
         if user_id:
             lang = get_lang(user_id)
@@ -4331,6 +4999,9 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
 @router.callback_query(F.data.startswith("adm:reject_silent:"))
 async def on_admin_reject_silent(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
     request_id = cb.data.split(":")[2]
     entry = get_request_by_id(request_id)
     if entry:
@@ -4360,6 +5031,7 @@ async def on_admin_reject_silent(cb: CallbackQuery, state: FSMContext) -> None:
             )
         except Exception:
             pass
+        await delete_forum_request_message(cb.bot, entry)
     await answer(cb, _tr(cb, "admin_rejected_done"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
     try:
         await cb.answer()
@@ -4426,6 +5098,7 @@ async def on_admin_ban_confirm(cb: CallbackQuery, state: FSMContext) -> None:
         )
     except Exception:
         pass
+    await delete_forum_request_message(cb.bot, entry)
 
     try:
         await cb.bot.send_message(

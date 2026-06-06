@@ -17,6 +17,8 @@ class UserFlow(StatesGroup):
     editing_draft_field = State()
     searching = State()
     entering_admin_comment = State()
+    entering_publish_not_before = State()
+    entering_moderation_vote_reason = State()
     
     choosing_plugin_to_update = State()
     uploading_update_file = State()

@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -392,6 +392,7 @@ async def _scheduled_publish_loop(bot) -> None:
 
             try:
                 from bot.services.publish import publish_icon, publish_plugin
+                from bot.services.moderation import delete_forum_request_message
 
                 logger.info("Publishing scheduled request %s", request_id)
 
@@ -408,6 +409,7 @@ async def _scheduled_publish_loop(bot) -> None:
 
                 update_request_payload(request_id, {"scheduled_at": None})
                 update_request_status(request_id, "published")
+                await delete_forum_request_message(bot, entry)
 
                 user_id = payload.get("user_id")
                 if user_id:
@@ -424,7 +426,15 @@ async def _scheduled_publish_loop(bot) -> None:
 
             except Exception as exc:
                 logger.exception("Scheduled publish error")
-                update_request_status(request_id, "error", comment=str(exc))
+                retry_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+                update_request_payload(
+                    request_id,
+                    {
+                        "last_publish_error": str(exc),
+                        "last_publish_error_at": datetime.now(timezone.utc).isoformat(),
+                        "scheduled_at": retry_at.isoformat(),
+                    },
+                )
 
 
 def start_scheduled_publish_worker(bot) -> None:
@@ -475,7 +485,7 @@ def delete_requests_by_plugin_id(plugin_id: str) -> int:
 
 
 def cleanup_hidden_requests(visible_statuses: Optional[set[str]] = None) -> int:
-    visible = visible_statuses or {"draft", "pending", "scheduled"}
+    visible = visible_statuses or {"draft", "pending", "scheduled", "error"}
     removed = 0
     for entry in list(_get_requests_list()):
         if str(entry.get("status") or "") in visible:

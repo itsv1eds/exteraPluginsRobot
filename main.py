@@ -6,7 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from bot.cache import get_config, preload_cache
-from bot.routers import admin_flow, catalog_flow, user_flow, joinly_flow
+from bot.routers import admin_flow, catalog_flow, user_flow, joinly_flow, moderation_flow
 from bot.middlewares import (
     UserActionLoggingMiddleware,
     start_log_worker,
@@ -144,6 +144,7 @@ async def main() -> None:
     dp.update.middleware(UserActionLoggingMiddleware(enabled=True))
     
     dp.include_router(admin_flow.router)
+    dp.include_router(moderation_flow.router)
     dp.include_router(user_flow.router)
     dp.include_router(catalog_flow.router)
     dp.include_router(joinly_flow.router)

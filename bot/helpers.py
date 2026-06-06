@@ -1,9 +1,11 @@
+import logging
 import re
 from pathlib import Path
 from typing import Dict, Optional
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -14,6 +16,7 @@ from aiogram.types import (
 
 from bot.cache import get_admins, get_categories, get_config
 from bot.context import get_lang
+from bot.formatting import telegram_html
 from storage import DATA_DIR
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -21,6 +24,7 @@ IMAGES_DIR = BASE_DIR / "img"
 
 _image_file_ids: Dict[str, str] = {}
 _pending_upload: Dict[str, bool] = {}
+logger = logging.getLogger(__name__)
 
 
 def get_uploads_dir() -> Path:
@@ -49,6 +53,24 @@ def get_uploads_dir() -> Path:
 
 def sanitize_filename(value: str) -> str:
     return re.sub(r"[^\w\-@.]", "", value).strip("._") or "plugin"
+
+
+def _short_error(exc: Exception, limit: int = 160) -> str:
+    text = str(exc).strip() or exc.__class__.__name__
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
+
+
+def _is_too_long_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "message is too long" in text
+        or "message text is too long" in text
+        or "caption is too long" in text
+        or "message caption is too long" in text
+    )
 
 
 async def try_react_pray(message: Message) -> None:
@@ -183,15 +205,36 @@ async def answer(
 
                 return None
                 
-        except Exception:
+        except Exception as exc:
+            logger.exception(
+                "event=answer.callback_edit_failed chat_id=%s message_id=%s image=%s has_photo=%s text_len=%s error=%s",
+                chat_id,
+                getattr(msg, "message_id", None),
+                image or "-",
+                bool(getattr(msg, "photo", None)),
+                len(text or ""),
+                _short_error(exc, 500),
+            )
+            if isinstance(exc, TelegramBadRequest) and _is_too_long_error(exc):
+                try:
+                    sent = await bot.send_message(
+                        chat_id,
+                        text=text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=kb,
+                        disable_web_page_preview=True,
+                    )
+                    await target.answer("Текст слишком длинный для редактирования, открыл новым сообщением.", show_alert=True)
+                    return sent
+                except Exception as send_exc:
+                    logger.exception(
+                        "event=answer.callback_too_long_fallback_failed chat_id=%s text_len=%s error=%s",
+                        chat_id,
+                        len(text or ""),
+                        _short_error(send_exc, 500),
+                    )
             try:
-                return await bot.send_message(
-                    chat_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    disable_web_page_preview=True,
-                )
+                await target.answer(f"Не удалось обновить сообщение: {_short_error(exc)}", show_alert=True)
             except Exception:
                 pass
         return None
@@ -249,7 +292,7 @@ def strip_html(text: str) -> str:
 
 
 def extract_html_text(message: Message) -> str:
-    return message.html_text or message.text or ""
+    return telegram_html(message.html_text or message.text or "")
 
 
 async def preload_images(bot: Bot) -> None:

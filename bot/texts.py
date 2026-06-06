@@ -1,12 +1,14 @@
 from typing import Any, Dict
 
+from bot.icons import ICONS, emoji_html
+
 DEFAULT_LANGUAGE = "ru"
 
 TEXTS: Dict[str, Dict[str, str]] = {
     "category_informational_label_btn": {"ru": "Информационные", "en": "Informational"},
     "category_informational_label_msg": {
-        "ru": '<tg-emoji emoji-id="5208833059805238499">📊</tg-emoji> Информационные',
-        "en": '<tg-emoji emoji-id="5208833059805238499">📊</tg-emoji> Informational',
+        "ru": f'{emoji_html("informational", "📊")} Информационные',
+        "en": f'{emoji_html("informational", "📊")} Informational',
     },
     "category_informational_tag": {
         "ru": "#Информационные",
@@ -14,8 +16,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
     "category_utilities_label_btn": {"ru": "Утилиты", "en": "Utilities"},
     "category_utilities_label_msg": {
-        "ru": '<tg-emoji emoji-id="5208908006984563084">🛠</tg-emoji> Утилиты',
-        "en": '<tg-emoji emoji-id="5208908006984563084">🛠</tg-emoji> Utilities',
+        "ru": f'{emoji_html("utilities", "🛠")} Утилиты',
+        "en": f'{emoji_html("utilities", "🛠")} Utilities',
     },
     "category_utilities_tag": {
         "ru": "#Утилиты",
@@ -23,8 +25,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
     "category_customization_label_btn": {"ru": "Кастомизация", "en": "Customization"},
     "category_customization_label_msg": {
-        "ru": '<tg-emoji emoji-id="5208480086507952450">🎨</tg-emoji> Кастомизация',
-        "en": '<tg-emoji emoji-id="5208480086507952450">🎨</tg-emoji> Customization',
+        "ru": f'{emoji_html("customization", "🎨")} Кастомизация',
+        "en": f'{emoji_html("customization", "🎨")} Customization',
     },
     "category_customization_tag": {
         "ru": "#Кастомизация",
@@ -32,8 +34,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
     "category_fun_label_btn": {"ru": "Развлечения", "en": "Fun"},
     "category_fun_label_msg": {
-        "ru": '<tg-emoji emoji-id="5208648268837324812">🎮</tg-emoji> Развлечения',
-        "en": '<tg-emoji emoji-id="5208648268837324812">🎮</tg-emoji> Fun',
+        "ru": f'{emoji_html("fun", "🎮")} Развлечения',
+        "en": f'{emoji_html("fun", "🎮")} Fun',
     },
     "category_fun_tag": {
         "ru": "#Развлечения",
@@ -41,13 +43,13 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
     "category_library_label_btn": {"ru": "Библиотека", "en": "Library"},
     "category_library_label_msg": {
-        "ru": '<tg-emoji emoji-id="5208481645581079281">📚</tg-emoji> Библиотека',
-        "en": '<tg-emoji emoji-id="5208481645581079281">📚</tg-emoji> Library',
+        "ru": f'{emoji_html("library", "📚")} Библиотека',
+        "en": f'{emoji_html("library", "📚")} Library',
     },
 
     "all_plugins_title": {
-        "ru": "<tg-emoji emoji-id=\"5208601792996217243\">🧩</tg-emoji> <b>Все плагины</b>",
-        "en": "<tg-emoji emoji-id=\"5208601792996217243\">🧩</tg-emoji> <b>All plugins</b>",
+        "ru": f'{emoji_html("all_plugins", "🧩")} <b>Все плагины</b>',
+        "en": f'{emoji_html("all_plugins", "🧩")} <b>All plugins</b>',
     },
     "category_library_tag": {
         "ru": "#Библиотека",
@@ -57,24 +59,24 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Автор привязан к плагину",
         "en": "Author linked to plugin",
     },
-    "admin_btn_banned": {"ru": "Заблокированные", "en": "Banned"},
+    "admin_btn_banned": {"ru": "Баны", "en": "Bans"},
     "admin_btn_broadcast": {"ru": "Рассылка", "en": "Broadcast"},
     "admin_btn_config": {"ru": "Настройки", "en": "Settings"},
     "admin_btn_check_updates": {"ru": "Проверить обновления", "en": "Check updates"},
     "admin_btn_scheduled": {"ru": "Отложенные", "en": "Scheduled"},
-    "admin_btn_scheduled_posts": {"ru": "Отложенные посты", "en": "Scheduled posts"},
+    "admin_btn_scheduled_posts": {"ru": "Посты по расписанию", "en": "Scheduled posts"},
     "admin_btn_edit": {"ru": "Редактировать", "en": "Edit"},
     "admin_btn_link_author": {"ru": "Привязать автора", "en": "Link author"},
     "admin_btn_plugins": {"ru": "Плагины", "en": "Plugins"},
     "admin_btn_icons": {"ru": "Иконки", "en": "Icons"},
     "admin_btn_requests": {"ru": "Заявки", "en": "Requests"},
     "admin_btn_updates": {"ru": "Обновления", "en": "Updates"},
-    "admin_btn_edit_plugins": {"ru": "Редактировать", "en": "Edit"},
-    "admin_btn_link_author_search": {"ru": "Привязать автора", "en": "Link author"},
-    "admin_btn_edit_icons": {"ru": "Редактировать", "en": "Edit"},
-    "admin_btn_link_author_icons": {"ru": "Привязать автора", "en": "Link author"},
-    "admin_section_plugins": {"ru": "<b>Плагины</b>", "en": "<b>Plugins</b>"},
-    "admin_section_icons": {"ru": "<b>Иконки</b>", "en": "<b>Icons</b>"},
+    "admin_btn_edit_plugins": {"ru": "Каталог", "en": "Catalog"},
+    "admin_btn_link_author_search": {"ru": "Авторы", "en": "Authors"},
+    "admin_btn_edit_icons": {"ru": "Каталог", "en": "Catalog"},
+    "admin_btn_link_author_icons": {"ru": "Авторы", "en": "Authors"},
+    "admin_section_plugins": {"ru": "<b>🧩 Плагины</b>", "en": "<b>🧩 Plugins</b>"},
+    "admin_section_icons": {"ru": "<b>🎨 Иконки</b>", "en": "<b>🎨 Icons</b>"},
     "admin_btn_queue_icons": {"ru": "Заявки иконок", "en": "Icon requests"},
     "admin_btn_queue_plugins": {"ru": "Заявки плагинов", "en": "Plugin requests"},
     "admin_btn_stats": {"ru": "Статистика", "en": "Stats"},
@@ -82,6 +84,24 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_cfg_admins_plugins": {"ru": "Админы плагинов", "en": "Plugin admins"},
     "admin_cfg_admins": {"ru": "Админы", "en": "Admins"},
     "admin_cfg_channel": {"ru": "Канал", "en": "Channel"},
+    "admin_cfg_section_admins": {"ru": "Админы", "en": "Admins"},
+    "admin_cfg_section_channels": {"ru": "Каналы", "en": "Channels"},
+    "admin_cfg_section_moderation": {"ru": "Модерация", "en": "Moderation"},
+    "admin_cfg_section_other": {"ru": "Прочее", "en": "Other"},
+    "admin_cfg_channel_id": {"ru": "ID канала плагинов", "en": "Plugin channel ID"},
+    "admin_cfg_channel_username": {"ru": "Username плагинов", "en": "Plugin username"},
+    "admin_cfg_channel_title": {"ru": "Название плагинов", "en": "Plugin title"},
+    "admin_cfg_publish_channel": {"ru": "Публикация", "en": "Publish channel"},
+    "admin_cfg_channel_default_tags": {"ru": "Теги плагинов", "en": "Plugin tags"},
+    "admin_cfg_channel_locale_order": {"ru": "Языки плагинов", "en": "Plugin locales"},
+    "admin_cfg_icons_channel_id": {"ru": "ID канала иконок", "en": "Icon channel ID"},
+    "admin_cfg_icons_channel_username": {"ru": "Username иконок", "en": "Icon username"},
+    "admin_cfg_icons_channel_title": {"ru": "Название иконок", "en": "Icon title"},
+    "admin_cfg_icons_channel_default_tags": {"ru": "Теги иконок", "en": "Icon tags"},
+    "admin_cfg_icons_channel_locale_order": {"ru": "Языки иконок", "en": "Icon locales"},
+    "admin_cfg_moderation_forum_chat_id": {"ru": "ID форума", "en": "Forum ID"},
+    "admin_cfg_moderation_forum_topic_id": {"ru": "ID топика", "en": "Topic ID"},
+    "admin_cfg_moderation_vote_threshold": {"ru": "Порог голосов", "en": "Vote threshold"},
     "admin_cfg_checked_on_version": {"ru": "Версия проверки", "en": "Checked version"},
     "admin_cfg_superadmins": {"ru": "Суперадмины", "en": "Superadmins"},
     "admin_choose_action": {"ru": "Выберите действие:", "en": "Choose action:"},
@@ -90,8 +110,12 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_removed": {"ru": "Удалён: <code>{admin_id}</code>", "en": "Removed: <code>{admin_id}</code>"},
     "admin_removed_short": {"ru": "Удалён: {admin_id}", "en": "Removed: {admin_id}"},
     "admin_denied": {
-        "ru": "пошел нахуй.",
+        "ru": "Иди нахуй.",
         "en": "Access denied",
+    },
+    "menu_owner_mismatch": {
+        "ru": "Это меню открыто другим пользователем.",
+        "en": "This menu belongs to another user.",
     },
     "admin_updates_check_started": {
         "ru": "Проверка обновлений запущена",
@@ -144,6 +168,18 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_prompt_channel_example": {
         "ru": "Пример: <code>-1001234567890 mychannel ExteraPlugins exteraplugintest</code>",
         "en": "Example: <code>-1001234567890 mychannel ExteraPlugins exteraplugintest</code>",
+    },
+    "admin_prompt_config_value": {
+        "ru": "Введите новое значение для <b>{name}</b>.\n\n<b>Текущее:</b> <code>{current}</code>",
+        "en": "Enter new value for <b>{name}</b>.\n\n<b>Current:</b> <code>{current}</code>",
+    },
+    "admin_prompt_config_list": {
+        "ru": "Введите значения для <b>{name}</b> через запятую.\n\n<b>Текущее:</b> <code>{current}</code>",
+        "en": "Enter values for <b>{name}</b> separated by commas.\n\n<b>Current:</b> <code>{current}</code>",
+    },
+    "admin_config_updated": {
+        "ru": "Настройка обновлена",
+        "en": "Setting updated",
     },
     "admin_prompt_checked_on_version": {
         "ru": "Введите версию для поля «Проверено» (например <code>12.5.1</code>). Дата подставится автоматически.",
@@ -278,7 +314,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Userbot недоступен",
         "en": "Userbot unavailable",
     },
-    "admin_btn_post": {"ru": "Пост", "en": "Post"},
+    "admin_btn_post": {"ru": "Посты", "en": "Posts"},
     "admin_post_prompt": {
         "ru": "Введите текст для поста:",
         "en": "Enter post text:",
@@ -381,6 +417,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "btn_open": {"ru": "Открыть", "en": "Open"},
     "btn_profile": {"ru": "Профиль", "en": "Profile"},
     "btn_publish": {"ru": "Опубликовать", "en": "Publish"},
+    "btn_publish_now": {"ru": "Опубликовать сейчас", "en": "Publish now"},
+    "btn_publish_not_before": {"ru": "Не раньше...", "en": "Not before..."},
+    "btn_vote_yes": {"ru": "За", "en": "Yes"},
+    "btn_vote_no": {"ru": "Отказано", "en": "No"},
     "btn_retry": {"ru": "Ещё раз", "en": "Try again"},
     "btn_search": {"ru": "Поиск", "en": "Search"},
     "btn_send": {"ru": "Отправить", "en": "Send"},
@@ -396,8 +436,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "btn_unsubscribe": {"ru": "Не уведомлять", "en": "Mute"},
     "btn_update": {"ru": "Обновить", "en": "Update"},
 
-    "btn_notify_all_on": {"ru": "Все плагины: ✅", "en": "All plugins: ✅"},
-    "btn_notify_all_off": {"ru": "Все плагины: ❌", "en": "All plugins: ❌"},
+    "btn_notify_all_on": {"ru": "Все плагины: включено", "en": "All plugins: on"},
+    "btn_notify_all_off": {"ru": "Все плагины: выключено", "en": "All plugins: off"},
 
     "rules_before_submit": {
         "ru": "Обязательно прочитайте правила распространения плагинов перед отправкой заявки администратору: https://teletype.in/@exterasquad/forum-rules-ru#veFl",
@@ -432,11 +472,11 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "catalog_field_link": {"ru": "Ссылка", "en": "Link"},
     "catalog_field_min_version": {"ru": "Минимальная версия", "en": "Min version"},
     "catalog_inline_header": {
-        "ru": '<a href=\"tg://emoji?id=5208601792996217243">🧩</a> <b>{name}</b> by <code>{author}</code>',
-        "en": '<a href=\"tg://emoji?id=5208601792996217243">🧩</a> <b>{name}</b> by <code>{author}</code>',
+        "ru": f'<a href="tg://emoji?id={ICONS["plugin"]}">🧩</a> <b>{{name}}</b> by <code>{{author}}</code>',
+        "en": f'<a href="tg://emoji?id={ICONS["plugin"]}">🧩</a> <b>{{name}}</b> by <code>{{author}}</code>',
     },
-    "catalog_inline_download": {"ru": "📥 Скачать", "en": "📥 Download"},
-    "catalog_inline_open_in_bot": {"ru": "🤖 Открыть в боте", "en": "🤖 Open in bot"},
+    "catalog_inline_download": {"ru": "Скачать", "en": "Download"},
+    "catalog_inline_open_in_bot": {"ru": "Открыть в боте", "en": "Open in bot"},
     "catalog_inline_no_description": {"ru": "—", "en": "—"},
     "catalog_inline_quick_donate": {
         "ru": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Поддержать канал:</b> {url}',
@@ -448,11 +488,11 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "broadcast_title": {"ru": "<b>Рассылка</b>", "en": "<b>Broadcast</b>"},
-    "btn_broadcast": {"ru": "📣 Рассылка", "en": "📣 Broadcast"},
-    "btn_broadcast_on": {"ru": "📣 Рассылка: ✅", "en": "📣 Broadcast: ✅"},
-    "btn_broadcast_off": {"ru": "📣 Рассылка: ❌", "en": "📣 Broadcast: ❌"},
+    "btn_broadcast": {"ru": "Рассылка", "en": "Broadcast"},
+    "btn_broadcast_on": {"ru": "Рассылка: включена", "en": "Broadcast: on"},
+    "btn_broadcast_off": {"ru": "Рассылка: выключена", "en": "Broadcast: off"},
     "btn_broadcast_paid": {"ru": "Я заплатил за это.", "en": "I paid for this."},
-    "btn_broadcast_paid_disable": {"ru": "⭐️ Выключить за 50 Stars", "en": "⭐️ Disable for 50 Stars"},
+    "btn_broadcast_paid_disable": {"ru": "Выключить за 50 Stars", "en": "Disable for 50 Stars"},
     "broadcast_paid_note": {"ru": "Платное выключение активно.", "en": "Paid disable is active."},
     "broadcast_invoice_title": {"ru": "Платное выключение рассылки", "en": "Paid broadcast disable"},
     "broadcast_invoice_description": {"ru": "Ты можешь выключить рассылку и беслпатно, это просто ПРИОРИТЕТНОЕ выключение.", "en": "You can disable broadcast for free, this is simply a PRIORITY disable."},
@@ -522,8 +562,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Dear {fullname} \\({username}\\), this is not a chat for communication.\nFor chatting use @exteraForum"
     },
     "catalog_title": {
-        "ru": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Каталог плагинов</b>",
-        "en": "<tg-emoji emoji-id=\"5208448436893944155\">🧩</tg-emoji> <b>Plugin Catalog</b>",
+        "ru": f'{emoji_html("catalog", "🧩")} <b>Каталог плагинов</b>',
+        "en": f'{emoji_html("catalog", "🧩")} <b>Plugin Catalog</b>',
     },
 
     "stenka_title": {"ru": "Социальная стенка", "en": "Social wall"},
@@ -589,12 +629,12 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "choose_type": {"ru": "Что хотите сделать?", "en": "What would you like to do?"},
 
     "confirm_submission": {
-        "ru": "<tg-emoji emoji-id=\"5208793627710496375\">✅</tg-emoji> <b>Проверьте заявку</b>\n\n<b>Название:</b> {name}\n<b>Автор:</b> {author}\n<b>Описание:</b> {description}\n<b>Версия:</b> {version}\n<b>Мин. версия:</b> {min_version}\n<b>Настройки:</b> {settings}\n<b>Категория:</b> {category}\n\n🇷🇺 <b>Использование:</b>\n{usage_ru}\n\n🇺🇸 <b>Usage:</b>\n{usage_en}\n\nВсё верно?",
-        "en": "<tg-emoji emoji-id=\"5208793627710496375\">✅</tg-emoji> <b>Review submission</b>\n\n<b>Name:</b> {name}\n<b>Author:</b> {author}\n<b>Description:</b> {description}\n<b>Version:</b> {version}\n<b>Min version:</b> {min_version}\n<b>Settings:</b> {settings}\n<b>Category:</b> {category}\n\n🇷🇺 <b>Использование:</b>\n{usage_ru}\n\n🇺🇸 <b>Usage:</b>\n{usage_en}\n\nIs everything correct?",
+        "ru": f'{emoji_html("yes", "✅")} <b>Проверьте заявку</b>\n\n<b>Название:</b> {{name}}\n<b>Автор:</b> {{author}}\n<b>Описание:</b> {{description}}\n<b>Версия:</b> {{version}}\n<b>Мин. версия:</b> {{min_version}}\n<b>Настройки:</b> {{settings}}\n<b>Категория:</b> {{category}}\n\n🇷🇺 <b>Использование:</b>\n{{usage_ru}}\n\n🇺🇸 <b>Usage:</b>\n{{usage_en}}\n\nВсё верно?',
+        "en": f'{emoji_html("yes", "✅")} <b>Review submission</b>\n\n<b>Name:</b> {{name}}\n<b>Author:</b> {{author}}\n<b>Description:</b> {{description}}\n<b>Version:</b> {{version}}\n<b>Min version:</b> {{min_version}}\n<b>Settings:</b> {{settings}}\n<b>Category:</b> {{category}}\n\n🇷🇺 <b>Использование:</b>\n{{usage_ru}}\n\n🇺🇸 <b>Usage:</b>\n{{usage_en}}\n\nIs everything correct?',
     },
     "confirm_update": {
-        "ru": "<tg-emoji emoji-id=\"5208793627710496375\">✅</tg-emoji> <b>Проверьте обновление</b>\n\n<b>Плагин:</b> {name}\n<b>Версия:</b> {old_version} → {version}\n<b>Мин. версия:</b> {min_version}\n\n<b>Что нового:</b>\n{changelog}\n\nОтправить?",
-        "en": "<tg-emoji emoji-id=\"5208793627710496375\">✅</tg-emoji> <b>Review update</b>\n\n<b>Plugin:</b> {name}\n<b>Version:</b> {old_version} → {version}\n<b>Min version:</b> {min_version}\n\n<b>What's new:</b>\n{changelog}\n\nSubmit?",
+        "ru": f'{emoji_html("yes", "✅")} <b>Проверьте обновление</b>\n\n<b>Плагин:</b> {{name}}\n<b>Версия:</b> {{old_version}} → {{version}}\n<b>Мин. версия:</b> {{min_version}}\n\n<b>Что нового:</b>\n{{changelog}}\n\nОтправить?',
+        "en": f'{emoji_html("yes", "✅")} <b>Review update</b>\n\n<b>Plugin:</b> {{name}}\n<b>Version:</b> {{old_version}} → {{version}}\n<b>Min version:</b> {{min_version}}\n\n<b>What\'s new:</b>\n{{changelog}}\n\nSubmit?',
     },
 
     "delete_sent": {
@@ -659,8 +699,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
 
     "icons_soon": {"ru": "Скоро", "en": "Coming soon"},
     "icons_title": {
-        "ru": "<tg-emoji emoji-id=\"5208532553828441562\">🎨</tg-emoji> <b>Паки иконок</b>",
-        "en": "<tg-emoji emoji-id=\"5208532553828441562\">🎨</tg-emoji> <b>Icon Packs</b>",
+        "ru": f'{emoji_html("art", "🎨")} <b>Паки иконок</b>',
+        "en": f'{emoji_html("art", "🎨")} <b>Icon Packs</b>',
     },
 
     "invalid_file": {
@@ -719,8 +759,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Plugin <b>{name}</b> published",
     },
     "notify_rejected": {
-        "ru": "<tg-emoji emoji-id=\"5208443540631229262\">❌</tg-emoji> <b>Заявка отклонена</b>\n\n{comment}",
-        "en": "<tg-emoji emoji-id=\"5208443540631229262\">❌</tg-emoji> <b>Submission rejected</b>\n\n{comment}",
+        "ru": f'{emoji_html("no", "❌")} <b>Заявка отклонена</b>\n\n{{comment}}',
+        "en": f'{emoji_html("no", "❌")} <b>Submission rejected</b>\n\n{{comment}}',
     },
     "notify_subscription_update": {
         "ru": "Плагин {name} обновился до версии <b>{version}</b>\n\n<b>Что нового:</b>\n<blockquote expandable>{changelog}</blockquote>",
@@ -755,8 +795,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "profile_empty": {"ru": "Нет работ в каталоге", "en": "No works in catalog"},
     "profile_stats": {"ru": "Плагинов: <b>{plugins}</b> · Паков: <b>{icons}</b>", "en": "Plugins: <b>{plugins}</b> · Packs: <b>{icons}</b>"},
     "profile_title": {
-        "ru": "<tg-emoji emoji-id=\"5208724165204418466\">👤</tg-emoji> <b>Профиль</b>",
-        "en": "<tg-emoji emoji-id=\"5208724165204418466\">👤</tg-emoji> <b>Profile</b>",
+        "ru": f'{emoji_html("profile", "👤")} <b>Профиль</b>',
+        "en": f'{emoji_html("profile", "👤")} <b>Profile</b>',
     },
 
     "search_empty": {
@@ -798,8 +838,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "No notifications",
     },
     "subscriptions_title": {
-        "ru": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> Мои уведомления",
-        "en": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> My notifications",
+        "ru": f'{emoji_html("bell", "🔔")} Мои уведомления',
+        "en": f'{emoji_html("bell", "🔔")} My notifications',
     },
     "subscriptions_hint": {
         "ru": "Вы можете включить уведомления на конкретные плагины, выбрав их в каталоге, или включить уведомления на все плагины.",
@@ -832,8 +872,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "notify_all_title": {
-        "ru": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> Уведомления на все плагины",
-        "en": "<tg-emoji emoji-id=\"5208864456016175929\">🔔</tg-emoji> All plugins notifications",
+        "ru": f'{emoji_html("bell", "🔔")} Уведомления на все плагины',
+        "en": f'{emoji_html("bell", "🔔")} All plugins notifications',
     },
     "notify_all_item": {
         "ru": "Уведомления на все плагины",
@@ -841,13 +881,37 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "admin_rejected_done": {
-        "ru": "<tg-emoji emoji-id=\"5208443540631229262\">❌</tg-emoji> Отклонено",
-        "en": "<tg-emoji emoji-id=\"5208443540631229262\">❌</tg-emoji> Rejected",
+        "ru": f'{emoji_html("no", "❌")} Отклонено',
+        "en": f'{emoji_html("no", "❌")} Rejected',
     },
 
     "admin_publish_done": {
         "ru": "Опубликовано!\n\n{link}",
         "en": "Published!\n\n{link}",
+    },
+    "moderation_vote_reason_prompt": {
+        "ru": "Голос учтён. Чтобы добавить причину, ответьте на сообщение с плагином.",
+        "en": "Vote saved. To add a reason, reply to the plugin message.",
+    },
+    "moderation_vote_reason_saved": {
+        "ru": "Причина сохранена",
+        "en": "Reason saved",
+    },
+    "moderation_threshold_title": {
+        "ru": "<b>Заявка набрала минимум голосов</b>",
+        "en": "<b>Request reached the voting threshold</b>",
+    },
+    "publish_not_before_prompt": {
+        "ru": "Введите время, раньше которого публикация не должна выйти.\nФормат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5).",
+        "en": "Enter the earliest publication time.\nFormat: <code>DD.MM.YYYY HH:MM</code> (UTC+5).",
+    },
+    "publish_not_before_saved": {
+        "ru": "Время сохранено",
+        "en": "Earliest publication time saved",
+    },
+    "admin_request_scheduled_by_limit": {
+        "ru": "Заявка принята и запланирована на {datetime} UTC+5",
+        "en": "Request approved and scheduled for {datetime} UTC+5",
     },
     "admin_post_schedule_prompt": {
         "ru": "⏰ Введите дату и время публикации в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5):",
@@ -905,8 +969,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Date must be in the future",
     },
     "btn_schedule": {
-        "ru": "🕐 Запланировать",
-        "en": "🕐 Schedule",
+        "ru": "Запланировать",
+        "en": "Schedule",
     },
     "unsubscribed": {
         "ru": "Уведомления отключены",
@@ -945,8 +1009,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "welcome": {
-        "ru": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Добро пожаловать в {bot_name}, {user_name}!</b>\n\n{bot_name} — это твой помощник для:\n• <a href=\"https://t.me/{bot}?start=catalog\">Поиска и просмотра</a> плагинов (есть и inline поиск), а также <a href=\"https://t.me/{bot}?start=submit\">предложить</a> свой плагин\n• <a href=\"https://t.me/{bot}?start=notifications\">Уведомлений</a>, когда плагин был обновлён\n• <a href=\"https://t.me/{bot}?start=joinly\">Управление</a> входами в вашем чате с помощью Joinly\n\nВыбери действие:",
-        "en": "<tg-emoji emoji-id=\"5208587318956429136\">🤖</tg-emoji> <b>Welcome to {bot_name}, {user_name}!</b>\n\n{bot_name} is your assistant for:\n• <a href=\"https://t.me/{bot}?start=catalog\">Browsing</a> plugins (inline search included) and <a href=\"https://t.me/{bot}?start=submit\">submitting</a> your own\n• <a href=\"https://t.me/{bot}?start=notifications\">Notifications</a> when a plugin is updated\n• <a href=\"https://t.me/{bot}?start=joinly\">Managing</a> chat joins with Joinly\n\nChoose an action:",
+        "ru": f'{emoji_html("bot", "🤖")} <b>Добро пожаловать в {{bot_name}}, {{user_name}}!</b>\n\n{{bot_name}} — это твой помощник для:\n• <a href="https://t.me/{{bot}}?start=catalog">Поиска и просмотра</a> плагинов (есть и inline поиск), а также <a href="https://t.me/{{bot}}?start=submit">предложить</a> свой плагин\n• <a href="https://t.me/{{bot}}?start=notifications">Уведомлений</a>, когда плагин был обновлён\n• <a href="https://t.me/{{bot}}?start=joinly">Управление</a> входами в вашем чате с помощью Joinly\n\nВыбери действие:',
+        "en": f'{emoji_html("bot", "🤖")} <b>Welcome to {{bot_name}}, {{user_name}}!</b>\n\n{{bot_name}} is your assistant for:\n• <a href="https://t.me/{{bot}}?start=catalog">Browsing</a> plugins (inline search included) and <a href="https://t.me/{{bot}}?start=submit">submitting</a> your own\n• <a href="https://t.me/{{bot}}?start=notifications">Notifications</a> when a plugin is updated\n• <a href="https://t.me/{{bot}}?start=joinly">Managing</a> chat joins with Joinly\n\nChoose an action:',
     },
 }
 

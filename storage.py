@@ -10,19 +10,61 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 ROOT = Path(__file__).resolve().parent
-CONFIG_PATH = ROOT / "config.json"
+_CONFIG_META_KEY = "app_config"
 
 
-def _load_storage_config() -> Dict[str, Any]:
-    if not CONFIG_PATH.exists():
+def _read_config_from_sqlite_path(path: Path) -> Dict[str, Any]:
+    if not path.exists():
         return {}
     try:
-        with CONFIG_PATH.open("r", encoding="utf-8") as file:
-            config = json.load(file)
+        conn = sqlite3.connect(path)
+        conn.row_factory = sqlite3.Row
+        try:
+            row = conn.execute(
+                "SELECT value FROM meta_store WHERE key = ?",
+                (_CONFIG_META_KEY,),
+            ).fetchone()
+        finally:
+            conn.close()
     except Exception:
         return {}
-    storage_cfg = config.get("storage", {})
-    return storage_cfg if isinstance(storage_cfg, dict) else {}
+
+    if not row:
+        return {}
+    try:
+        data = json.loads(row["value"])
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _load_storage_config_from_sqlite() -> Dict[str, Any]:
+    candidates = []
+    env_path = os.environ.get("SQLITE_PATH")
+    if env_path:
+        candidates.append(Path(env_path))
+    candidates.extend(
+        [
+            ROOT / "data" / "data" / "storage.sqlite3",
+            ROOT / "data" / "storage.sqlite3",
+            Path("/app/data/data/storage.sqlite3"),
+            Path("/app/data/storage.sqlite3"),
+        ]
+    )
+
+    seen = set()
+    for path in candidates:
+        if not path.is_absolute():
+            path = ROOT / path
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        config = _read_config_from_sqlite_path(resolved)
+        storage_cfg = config.get("storage", {}) if isinstance(config, dict) else {}
+        if isinstance(storage_cfg, dict) and storage_cfg:
+            return storage_cfg
+    return {}
 
 
 def _resolve_path(value: Optional[str], fallback: Path) -> Path:
@@ -30,11 +72,11 @@ def _resolve_path(value: Optional[str], fallback: Path) -> Path:
         return fallback
     path = Path(value)
     if not path.is_absolute():
-        path = CONFIG_PATH.parent / path
+        path = ROOT / path
     return path
 
 
-_storage_cfg = _load_storage_config()
+_storage_cfg = _load_storage_config_from_sqlite()
 
 DATA_DIR = _resolve_path(
     os.environ.get("DATA_DIR") or _storage_cfg.get("data_dir"),
@@ -46,14 +88,6 @@ SQLITE_PATH = _resolve_path(
     DATA_DIR / "storage.sqlite3",
 )
 
-DATABASE_PLUGINS_PATH = DATA_DIR / "databaseplugins.json"
-DATABASE_ICONS_PATH = DATA_DIR / "databaseicons.json"
-DATABASE_REQUESTS_PATH = DATA_DIR / "databaserequests.json"
-DATABASE_USERS_PATH = DATA_DIR / "databaseusers.json"
-DATABASE_SUBSCRIPTIONS_PATH = DATA_DIR / "databasesubscriptions.json"
-DATABASE_UPDATED_PATH = DATA_DIR / "databaseupdated.json"
-DATABASE_USERS_ALT_PATH = DATA_DIR / "users.json"
-
 _DOC_PLUGINS = "plugins"
 _DOC_ICONS = "icons"
 _DOC_REQUESTS = "requests"
@@ -62,15 +96,6 @@ _DOC_SUBSCRIPTIONS = "subscriptions"
 _DOC_UPDATED = "updated"
 _DOC_JOINLY = "joinly"
 _DOC_STENKA = "stenka"
-
-_LEGACY_PATHS = {
-    _DOC_PLUGINS: [DATABASE_PLUGINS_PATH],
-    _DOC_ICONS: [DATABASE_ICONS_PATH],
-    _DOC_REQUESTS: [DATABASE_REQUESTS_PATH],
-    _DOC_USERS: [DATABASE_USERS_ALT_PATH, DATABASE_USERS_PATH],
-    _DOC_SUBSCRIPTIONS: [DATABASE_SUBSCRIPTIONS_PATH],
-    _DOC_UPDATED: [DATABASE_UPDATED_PATH],
-}
 
 _cache: Dict[str, Dict[str, Any]] = {}
 _cache_time: Dict[str, float] = {}
@@ -81,6 +106,13 @@ _last_save: Dict[str, float] = {}
 _TTL = 30.0
 _SAVE_INTERVAL = 3.0
 _CONFIG_TTL = 300.0
+_CONFIG_DEFAULTS: Dict[str, Any] = {
+    "moderation": {
+        "forum_chat_id": -1003859317683,
+        "forum_topic_id": 97,
+        "vote_threshold": 5,
+    }
+}
 
 _config_cache: Optional[Dict[str, Any]] = None
 _config_cache_time: float = 0.0
@@ -358,20 +390,6 @@ def _migrate_from_kv_store(conn: sqlite3.Connection) -> None:
         _WRITERS[key](conn, doc)
 
     _set_meta_value(conn, "migration:kv_store_to_rows", "1")
-
-
-def _read_legacy_json(doc_key: str) -> Dict[str, Any]:
-    for path in _LEGACY_PATHS.get(doc_key, []):
-        if not path.exists():
-            continue
-        try:
-            with path.open("r", encoding="utf-8") as file:
-                data = json.load(file)
-        except Exception:
-            continue
-        if isinstance(data, dict):
-            return data
-    return {}
 
 
 def _read_items_payload(rows: list[sqlite3.Row]) -> list[Any]:
@@ -717,11 +735,6 @@ def _read_sqlite_doc_sync(doc_key: str) -> Dict[str, Any]:
             conn.commit()
             return data
 
-    legacy = _read_legacy_json(doc_key)
-    if legacy:
-        _write_sqlite_doc_sync(doc_key, legacy)
-        return legacy
-
     return data
 
 
@@ -801,19 +814,54 @@ def _normalize_dict(data: Dict[str, Any], default: Dict[str, Any]) -> Dict[str, 
     return result
 
 
+def _normalize_config_defaults(data: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    result = deepcopy(data)
+    changed = False
+
+    for key, default_value in _CONFIG_DEFAULTS.items():
+        current_value = result.get(key)
+        if isinstance(default_value, dict):
+            if not isinstance(current_value, dict):
+                result[key] = deepcopy(default_value)
+                changed = True
+                continue
+            for child_key, child_default in default_value.items():
+                if child_key not in current_value:
+                    current_value[child_key] = deepcopy(child_default)
+                    changed = True
+        elif key not in result:
+            result[key] = deepcopy(default_value)
+            changed = True
+
+    return result, changed
+
+
 def load_config() -> Dict[str, Any]:
     global _config_cache, _config_cache_time
-    if not CONFIG_PATH.exists():
-        raise StorageError(f"Config not found: {CONFIG_PATH}")
-
     now = time.time()
     if _config_cache is not None and (now - _config_cache_time) < _CONFIG_TTL:
         return _config_cache
 
-    with CONFIG_PATH.open("r", encoding="utf-8") as file:
-        data = json.load(file)
+    try:
+        _ensure_db()
+        with _connect() as conn:
+            data = _get_meta_json(conn, _CONFIG_META_KEY, {})
+    except Exception:
+        data = {}
+
     if not isinstance(data, dict):
         raise StorageError("Config format is invalid")
+    if not data:
+        raise StorageError(f"Config not found in SQLite: {SQLITE_PATH}")
+
+    data, changed = _normalize_config_defaults(data)
+    if changed:
+        try:
+            with _connect() as conn:
+                _set_meta_json(conn, _CONFIG_META_KEY, data)
+                conn.commit()
+        except Exception:
+            pass
 
     _config_cache = data
     _config_cache_time = now
@@ -822,8 +870,14 @@ def load_config() -> Dict[str, Any]:
 
 def save_config(data: Dict[str, Any]) -> None:
     payload = dict(data) if isinstance(data, dict) else {}
+    payload, _ = _normalize_config_defaults(payload)
     payload.setdefault("updated_at", _now_iso())
-    CONFIG_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    _ensure_db()
+    with _connect() as conn:
+        _set_meta_json(conn, _CONFIG_META_KEY, payload)
+        conn.commit()
+
     global _config_cache, _config_cache_time
     _config_cache = payload
     _config_cache_time = time.time()
@@ -909,6 +963,7 @@ async def flush_all() -> None:
 
 
 async def preload_storage() -> None:
+    await asyncio.to_thread(load_config)
     for doc_key in (
         _DOC_PLUGINS,
         _DOC_ICONS,

@@ -1,25 +1,15 @@
 import asyncio
-import json
 import time
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from storage import load_icons, load_plugins
+from storage import load_config, load_icons, load_plugins
+from bot.icons import CATEGORY_ICONS
 from bot.texts import t
 
 _cache: Dict[str, Any] = {}
 _cache_time: Dict[str, float] = {}
 _TTL = 30.0
 _lock = asyncio.Lock()
-
-ROOT = Path(__file__).resolve().parent.parent
-
-
-def _load_json(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
 
 
 def _get_cached_sync(key: str, loader: Callable, ttl: float = _TTL) -> Any:
@@ -59,7 +49,7 @@ def invalidate(key: Optional[str] = None) -> None:
 
 
 def get_config() -> Dict[str, Any]:
-    return _get_cached_sync("config", lambda: _load_json(ROOT / "config.json"), ttl=300)
+    return _get_cached_sync("config", load_config, ttl=300)
 
 
 def get_plugins() -> List[Dict[str, Any]]:
@@ -74,11 +64,11 @@ def get_icons() -> List[Dict[str, Any]]:
 
 def get_categories() -> List[Dict[str, Any]]:
     keys = [
-        ("informational", "5208833059805238499"),
-        ("utilities", "5208908006984563084"),
-        ("customization", "5208480086507952450"),
-        ("fun", "5208648268837324812"),
-        ("library", "5208481645581079281"),
+        ("informational", CATEGORY_ICONS["informational"]),
+        ("utilities", CATEGORY_ICONS["utilities"]),
+        ("customization", CATEGORY_ICONS["customization"]),
+        ("fun", CATEGORY_ICONS["fun"]),
+        ("library", CATEGORY_ICONS["library"]),
     ]
     categories: List[Dict[str, Any]] = []
     for key, emoji_id in keys:
@@ -135,7 +125,7 @@ def get_channel_config() -> Dict[str, Any]:
 
 
 async def get_config_async() -> Dict[str, Any]:
-    return await _get_cached_async("config", lambda: _load_json(ROOT / "config.json"), ttl=300)
+    return await _get_cached_async("config", load_config, ttl=300)
 
 
 async def get_plugins_async() -> List[Dict[str, Any]]:

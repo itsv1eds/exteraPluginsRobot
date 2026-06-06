@@ -1,4 +1,3 @@
-import html
 import re
 import logging
 import json
@@ -6,6 +5,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html
 from storage import flush_all, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
 from request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
@@ -45,25 +45,19 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
     settings = "✅" if plugin.get("has_ui_settings") else "❌"
     checked = checked_on or payload.get("checked_on")
 
-    author = html.escape(plugin.get("author", ""))
+    author = plain_html(plugin.get("author", ""))
+    name = plain_html(plugin.get("name", "")) or "—"
 
-    name = html.escape(plugin.get("name", "")) or "—"
+    desc_fallback = plain_html(plugin.get("description", ""))
+    desc_ru = telegram_html(payload.get("description_ru")) or desc_fallback or "—"
+    desc_en = telegram_html(payload.get("description_en")) or desc_fallback or "—"
+    usage_ru = telegram_html(payload.get("usage_ru")) or "—"
+    usage_en = telegram_html(payload.get("usage_en")) or "—"
+    min_ver = plain_html(plugin.get("min_version", ""))
+    checked_safe = plain_html(checked)
 
-    def _norm_text(value: str) -> str:
-        return (value or "").replace("\\n", "\n").strip()
-
-    def _norm_html(value: str) -> str:
-        return _norm_text(value)
-
-    desc_fallback = _norm_html(plugin.get("description", ""))
-    desc_ru = (_norm_html(payload.get("description_ru") or desc_fallback or "") or "—")
-    desc_en = (_norm_html(payload.get("description_en") or desc_fallback or "") or "—")
-    usage_ru = _norm_html(payload.get("usage_ru") or "—")
-    usage_en = _norm_html(payload.get("usage_en") or "—")
-    min_ver = html.escape(plugin.get("min_version", ""))
-
-    checked_line = f"<b>Проверено на:</b> {checked}" if checked else ""
-    checked_line_en = f"<b>Checked on:</b> {checked}" if checked else ""
+    checked_line = f"<b>Проверено на:</b> {checked_safe}" if checked_safe else ""
+    checked_line_en = f"<b>Checked on:</b> {checked_safe}" if checked_safe else ""
 
     min_version_line = f"<b>Минимальная версия:</b> {min_ver}" if min_ver else ""
     min_version_line_en = f"<b>Min.version:</b> {min_ver}" if min_ver else ""
@@ -79,7 +73,7 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
         ru_lines.append(min_version_line)
     if checked_line:
         ru_lines.append(checked_line)
-    ru_block = "\n".join(ru_lines)
+    ru_block = strip_blockquote_tags("\n".join(ru_lines))
 
     en_lines = [
         f"<b>Title:</b> {name}",
@@ -92,9 +86,9 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
         en_lines.append(min_version_line_en)
     if checked_line_en:
         en_lines.append(checked_line_en)
-    en_block = "\n".join(en_lines)
+    en_block = strip_blockquote_tags("\n".join(en_lines))
 
-    tags_line = " | ".join(tags)
+    tags_line = join_plain(tags)
 
     parts = [
         f"<b>🇷🇺 [RU]:</b>\n<blockquote expandable>{ru_block}</blockquote>",
@@ -113,10 +107,10 @@ def build_icon_channel_post(entry: Dict[str, Any]) -> str:
     channel_cfg = config.get("icons_channel", {})
     tags = list(channel_cfg.get("default_tags", []))
 
-    name = html.escape(icon.get("name", "")) or "—"
-    author = html.escape(icon.get("author", "")) or "—"
-    version = html.escape(icon.get("version", ""))
-    count = icon.get("count", 0)
+    name = plain_html(icon.get("name", "")) or "—"
+    author = plain_html(icon.get("author", "")) or "—"
+    version = plain_html(icon.get("version", ""))
+    count = plain_html(icon.get("count", 0))
 
     ru_lines = [
         f"<b>Название:</b> {name}",
@@ -134,7 +128,7 @@ def build_icon_channel_post(entry: Dict[str, Any]) -> str:
         en_lines.append(f"<b>Version:</b> {version}")
     en_lines.append(f"<b>Icons:</b> {count}")
 
-    tags_line = " | ".join(tags)
+    tags_line = join_plain(tags)
 
     parts = [
         f"<b>🇷🇺 [RU]:</b>\n<blockquote expandable>{chr(10).join(ru_lines)}</blockquote>",

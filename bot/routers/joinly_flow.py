@@ -12,6 +12,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, InlineKeyboardButton
 from storage import load_joinly, save_joinly
 from bot.helpers import try_react_pray
 from bot.context import get_lang
+from bot.keyboards import _btn
 from bot.texts import t
 
 router = Router()
@@ -129,47 +130,63 @@ def _extract_flags(text: str) -> tuple[str, dict[str, bool]]:
     return out.strip(), flags
 
 
+def _onoff(value: bool, lang: str) -> str:
+    if lang == "en":
+        return "on" if value else "off"
+    return "вкл" if value else "выкл"
+
+
+def _status_icon(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def _status_style(value: bool) -> str:
+    return "success" if value else "danger"
+
+
 def _settings_kb(chat_id: int, lang: str) -> InlineKeyboardMarkup:
     enabled = bool(_get_setting(chat_id, "Enabled"))
     ban = bool(_get_setting(chat_id, "BanMembers"))
     cleanup = bool(_get_setting(chat_id, "DeleteServiceMessages"))
     welcome_enabled = bool(_get_setting(chat_id, "WelcomeEnabled"))
     reaction_emoji = str(_get_setting(chat_id, "JoinReactionEmoji") or "").strip()
-    welcome_label = f"{t('join_btn_welcome', lang)}: {'✅' if welcome_enabled else '❌'}"
-    enabled_label = f"{t('join_btn_enabled', lang)}: {'✅' if enabled else '❌'}"
-    ban_label = f"{t('join_btn_ban_on_join', lang)}: {'✅' if ban else '❌'}"
-    cleanup_label = f"{t('join_btn_service_cleanup', lang)}: {'✅' if cleanup else '❌'}"
+    welcome_label = f"{t('join_btn_welcome', lang)}: {_onoff(welcome_enabled, lang)}"
+    enabled_label = f"{t('join_btn_enabled', lang)}: {_onoff(enabled, lang)}"
+    ban_label = f"{t('join_btn_ban_on_join', lang)}: {_onoff(ban, lang)}"
+    cleanup_label = f"{t('join_btn_service_cleanup', lang)}: {_onoff(cleanup, lang)}"
 
     rows: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(text=welcome_label, callback_data="join:welcome")],
+        [_btn(welcome_label, callback_data="join:welcome", icon=_status_icon(welcome_enabled), style=_status_style(welcome_enabled))],
         [
-            InlineKeyboardButton(text=enabled_label, callback_data="join:toggle_enabled"),
-            InlineKeyboardButton(text=ban_label, callback_data="join:toggle_ban"),
+            _btn(enabled_label, callback_data="join:toggle_enabled", icon=_status_icon(enabled), style=_status_style(enabled)),
+            _btn(ban_label, callback_data="join:toggle_ban", icon=_status_icon(ban), style=_status_style(ban)),
         ],
-        [InlineKeyboardButton(text=cleanup_label, callback_data="join:toggle_service")],
+        [_btn(cleanup_label, callback_data="join:toggle_service", icon=_status_icon(cleanup), style=_status_style(cleanup))],
     ]
 
     if not cleanup:
-        label = reaction_emoji if reaction_emoji else "❌"
+        label = "задана" if reaction_emoji else "не задана"
+        if lang == "en":
+            label = "set" if reaction_emoji else "not set"
         rows.append(
-            [InlineKeyboardButton(text=f"{t('join_btn_join_reaction', lang)}: {label}", callback_data="join:reaction")]
+            [_btn(f"{t('join_btn_join_reaction', lang)}: {label}", callback_data="join:reaction", icon="edit")]
         )
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _panel_kb_back() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="←", callback_data="join:back")]])
+def _panel_kb_back(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[_btn(t("btn_back", lang), callback_data="join:back", icon="back")]])
 
 
 def _panel_kb_welcome(chat_id: int, lang: str) -> InlineKeyboardMarkup:
     welcome_enabled = bool(_get_setting(chat_id, "WelcomeEnabled"))
-    welcome_toggle_label = f"{t('join_btn_welcome_toggle', lang)}: {'✅' if welcome_enabled else '❌'}"
+    welcome_toggle_label = f"{t('join_btn_welcome_toggle', lang)}: {_onoff(welcome_enabled, lang)}"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=welcome_toggle_label, callback_data="join:welcome_toggle")],
-            [InlineKeyboardButton(text=t("join_btn_edit", lang), callback_data="join:welcome_edit")],
-            [InlineKeyboardButton(text="←", callback_data="join:back")],
+            [_btn(welcome_toggle_label, callback_data="join:welcome_toggle", icon=_status_icon(welcome_enabled), style=_status_style(welcome_enabled))],
+            [_btn(t("join_btn_edit", lang), callback_data="join:welcome_edit", icon="edit")],
+            [_btn(t("btn_back", lang), callback_data="join:back", icon="back")],
         ]
     )
 
@@ -177,8 +194,8 @@ def _panel_kb_welcome(chat_id: int, lang: str) -> InlineKeyboardMarkup:
 def _panel_kb_reaction(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=t("join_btn_edit", lang), callback_data="join:reaction_edit")],
-            [InlineKeyboardButton(text="←", callback_data="join:back")],
+            [_btn(t("join_btn_edit", lang), callback_data="join:reaction_edit", icon="edit")],
+            [_btn(t("btn_back", lang), callback_data="join:back", icon="back")],
         ]
     )
 
@@ -435,7 +452,7 @@ async def on_settings_cb(cb: CallbackQuery) -> None:
             t("join_prompt_welcome", lang),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
-            reply_markup=_panel_kb_back(),
+            reply_markup=_panel_kb_back(lang),
         )
         await cb.answer()
         return
@@ -471,7 +488,7 @@ async def on_settings_cb(cb: CallbackQuery) -> None:
             t("join_prompt_reaction", lang),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
-            reply_markup=_panel_kb_back(),
+            reply_markup=_panel_kb_back(lang),
         )
         await cb.answer()
         return

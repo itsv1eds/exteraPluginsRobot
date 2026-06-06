@@ -53,18 +53,12 @@ python3 main.py
    - `docker compose down`
    
 ## SQLite storage
-Storage backend is SQLite (`storage.sqlite3`).
+Storage backend is SQLite (`storage.sqlite3`). Runtime data and app config are
+stored in SQLite; legacy `database*.json` files are not read.
 
-Configure path in `config.json`:
+The bot can bootstrap storage path from `app_config` inside SQLite. You can
+override paths at runtime with env vars:
 
-```json
-"storage": {
-  "data_dir": "data/data",
-  "sqlite_path": "data/data/storage.sqlite3"
-}
-```
-
-You can also override at runtime with env vars:
 - `DATA_DIR`
 - `SQLITE_PATH`
 

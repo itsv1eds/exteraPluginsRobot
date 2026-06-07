@@ -112,6 +112,7 @@ _CONFIG_DEFAULTS: Dict[str, Any] = {
         "forum_topic_id": 97,
         "vote_threshold": 5,
         "notification_chat_ids": [],
+        "delete_review_notifications_on_decision": False,
     }
 }
 

@@ -681,6 +681,7 @@ def admin_config_moderation_kb(lang: str = "ru") -> InlineKeyboardMarkup:
             _btn(t("admin_cfg_moderation_vote_threshold", lang), callback_data="adm:config:moderation.vote_threshold", icon="vote"),
         ],
         [_btn(t("admin_cfg_moderation_notification_chat_ids", lang), callback_data="adm:config:moderation.notification_chat_ids", icon="bell")],
+        [_btn(t("admin_cfg_moderation_delete_review_notifications_on_decision", lang), callback_data="adm:config:moderation.delete_review_notifications_on_decision", icon="delete")],
         [_btn(t("btn_back", lang), callback_data="adm:config", style="danger", icon="back")],
     ])
 

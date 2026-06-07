@@ -576,6 +576,7 @@ _CONFIG_FIELD_LABEL_KEYS: dict[str, str] = {
     "moderation.forum_topic_id": "admin_cfg_moderation_forum_topic_id",
     "moderation.vote_threshold": "admin_cfg_moderation_vote_threshold",
     "moderation.notification_chat_ids": "admin_cfg_moderation_notification_chat_ids",
+    "moderation.delete_review_notifications_on_decision": "admin_cfg_moderation_delete_review_notifications_on_decision",
 }
 
 _CONFIG_INT_FIELDS = {
@@ -592,6 +593,10 @@ _CONFIG_LIST_FIELDS = {
     "icons_channel.default_tags",
     "icons_channel.locale_order",
     "moderation.notification_chat_ids",
+}
+
+_CONFIG_BOOL_FIELDS = {
+    "moderation.delete_review_notifications_on_decision",
 }
 
 
@@ -615,6 +620,7 @@ def _config_current_value(config: dict[str, Any], path: str) -> Any:
             "moderation.forum_topic_id": moderation.get("topic_id"),
             "moderation.vote_threshold": moderation.get("threshold"),
             "moderation.notification_chat_ids": [],
+            "moderation.delete_review_notifications_on_decision": False,
         }.get(path)
     return value
 
@@ -634,6 +640,8 @@ def _config_set_path(config: dict[str, Any], path: str, value: Any) -> None:
 def _format_config_value(value: Any) -> str:
     if isinstance(value, list):
         return ", ".join(str(x) for x in value) if value else "—"
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if value is None or value == "":
         return "—"
     return str(value)
@@ -653,6 +661,13 @@ def _parse_config_value(path: str, raw: str) -> Any:
         if path == "moderation.forum_chat_id" and value > 0:
             value = int(f"-100{value}")
         return value
+    if path in _CONFIG_BOOL_FIELDS:
+        normalized = text.lower()
+        if normalized in {"1", "true", "yes", "y", "on", "да", "д", "вкл", "включено"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "нет", "н", "выкл", "выключено"}:
+            return False
+        raise ValueError(text)
     if path in {"channel.username", "icons_channel.username", "publish_channel"}:
         return text.lstrip("@")
     return text
@@ -681,6 +696,7 @@ def _config_section_text(section: str, lang: str) -> str:
             "moderation.forum_topic_id",
             "moderation.vote_threshold",
             "moderation.notification_chat_ids",
+            "moderation.delete_review_notifications_on_decision",
         ]
         title = t("admin_cfg_section_moderation", lang)
     elif section == "admins":
@@ -1106,22 +1122,43 @@ async def _finalize_admin_notify_messages(
         return
 
     final_text = f"{decision_text} {actor_label}"
+    cfg = get_config()
+    moderation = cfg.get("moderation", {}) if isinstance(cfg, dict) else {}
+    delete_on_decision = bool(
+        moderation.get("delete_review_notifications_on_decision")
+        if isinstance(moderation, dict)
+        else False
+    )
 
-    for admin_id_str, info in mapping.items():
+    for chat_id_str, info in mapping.items():
         try:
-            admin_id = int(admin_id_str)
+            fallback_chat_id = int(chat_id_str)
         except Exception:
             continue
         if not isinstance(info, dict):
             continue
+        chat_id = int(info.get("chat_id") or fallback_chat_id)
         kind = info.get("kind")
         msg_id = info.get("message_id")
         if not msg_id:
             continue
+        if delete_on_decision:
+            for key in ("file_message_id", "message_id"):
+                try:
+                    message_id = int(info.get(key) or 0)
+                except Exception:
+                    message_id = 0
+                if not message_id:
+                    continue
+                try:
+                    await bot.delete_message(chat_id, message_id)
+                except Exception:
+                    pass
+            continue
         try:
             if kind == "document":
                 await bot.edit_message_caption(
-                    chat_id=admin_id,
+                    chat_id=chat_id,
                     message_id=int(msg_id),
                     caption=final_text,
                     parse_mode=ParseMode.HTML,
@@ -1130,7 +1167,7 @@ async def _finalize_admin_notify_messages(
             else:
                 await bot.edit_message_text(
                     final_text,
-                    chat_id=admin_id,
+                    chat_id=chat_id,
                     message_id=int(msg_id),
                     parse_mode=ParseMode.HTML,
                     reply_markup=None,

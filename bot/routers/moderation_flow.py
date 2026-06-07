@@ -10,6 +10,7 @@ from bot.services.moderation import (
     forum_text_with_votes,
     moderation_vote_kb,
     notify_superadmins_if_threshold,
+    refresh_admin_notify_messages,
     refresh_forum_vote_keyboard,
     set_vote,
     set_vote_reason,
@@ -48,6 +49,8 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
     vote = parts[1]
     request_id = parts[2]
     chat_id = cb.message.chat.id if cb.message and cb.message.chat else None
+    chat_type = getattr(cb.message.chat, "type", "") if cb.message and cb.message.chat else ""
+    is_private_chat = (getattr(chat_type, "value", chat_type) == "private")
     user = cb.from_user
     entry = get_request_by_id(request_id)
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
@@ -64,6 +67,7 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     await refresh_forum_vote_keyboard(cb.bot, entry)
+    await refresh_admin_notify_messages(cb.bot, entry)
     await _refresh_inline_vote_message(cb.bot, cb.inline_message_id, entry, request_id)
     await notify_superadmins_if_threshold(cb.bot, entry)
 
@@ -71,9 +75,13 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(
         moderation_vote_request_id=request_id,
         moderation_vote_inline_message_id=cb.inline_message_id or "",
+        moderation_vote_dm=is_private_chat,
+        moderation_vote_source_chat_id=chat_id or 0,
+        moderation_vote_source_message_id=cb.message.message_id if cb.message else 0,
     )
     lang = await get_language(cb, state)
-    await cb.answer(t("moderation_vote_reason_prompt", lang), show_alert=True)
+    prompt_key = "moderation_vote_reason_dm_prompt" if is_private_chat else "moderation_vote_reason_prompt"
+    await cb.answer(t(prompt_key, lang), show_alert=True)
 
 
 @router.message(UserFlow.entering_moderation_vote_reason)
@@ -103,6 +111,14 @@ async def on_moderation_vote_reason(message: Message, state: FSMContext) -> None
                 value = 0
             if value:
                 expected_reply_ids.add(value)
+    try:
+        source_chat_id = int(data.get("moderation_vote_source_chat_id") or 0)
+        source_message_id = int(data.get("moderation_vote_source_message_id") or 0)
+    except Exception:
+        source_chat_id = 0
+        source_message_id = 0
+    if source_message_id and source_chat_id == message.chat.id:
+        expected_reply_ids.add(source_message_id)
 
     reply_to = message.reply_to_message
     if expected_reply_ids and not inline_message_id and not dm_reason and (not reply_to or int(reply_to.message_id) not in expected_reply_ids):
@@ -116,6 +132,7 @@ async def on_moderation_vote_reason(message: Message, state: FSMContext) -> None
     entry = set_vote_reason(request_id, int(user.id), text)
     if entry:
         await refresh_forum_vote_keyboard(message.bot, entry)
+        await refresh_admin_notify_messages(message.bot, entry)
         await _refresh_inline_vote_message(message.bot, inline_message_id, entry, request_id)
         await notify_superadmins_if_threshold(message.bot, entry)
         await try_react_pray(message)

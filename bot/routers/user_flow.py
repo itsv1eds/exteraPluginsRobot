@@ -52,7 +52,7 @@ from bot.services.submission import (
     process_plugin_file,
 )
 from bot.services.publish import build_channel_post, update_plugin
-from bot.services.moderation import can_vote_in_context, send_request_to_forum, set_vote
+from bot.services.moderation import can_vote_in_context, refresh_admin_notify_messages, send_request_to_forum, set_vote
 from bot.services.validation import (
     check_duplicate_icon_pending,
     check_duplicate_pending,
@@ -338,13 +338,15 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
             user.full_name or "",
             vote,
         )
+        if entry:
+            await refresh_admin_notify_messages(message.bot, entry)
         await state.set_state(UserFlow.entering_moderation_vote_reason)
         await state.update_data(
             moderation_vote_request_id=request_id,
             moderation_vote_inline_message_id="",
             moderation_vote_dm=True,
         )
-        await message.answer(t("moderation_vote_reason_prompt", lang), parse_mode=ParseMode.HTML)
+        await message.answer(t("moderation_vote_reason_dm_prompt", lang), parse_mode=ParseMode.HTML)
         return True
 
     if value == "catalog":
@@ -2421,14 +2423,28 @@ async def _send_review_notification(bot, chat_id: int, entry: Dict[str, Any], te
             reply_markup=admin_review_kb(request_id, user_id, allow_publish=False),
             disable_web_page_preview=True,
         )
+        file_msg = None
         if file_path and Path(file_path).exists():
-            await bot.send_document(
+            file_msg = await bot.send_document(
                 chat_id,
                 FSInputFile(file_path),
                 reply_to_message_id=msg.message_id,
                 allow_sending_without_reply=True,
                 disable_notification=True,
             )
+        mapping = payload.get("admin_notify_messages")
+        if not isinstance(mapping, dict):
+            mapping = {}
+        info: dict[str, Any] = {
+            "chat_id": int(chat_id),
+            "kind": "text",
+            "message_id": int(msg.message_id),
+        }
+        if file_msg:
+            info["file_message_id"] = int(file_msg.message_id)
+        mapping[str(chat_id)] = info
+        payload["admin_notify_messages"] = mapping
+        update_request_payload(request_id, {"admin_notify_messages": mapping})
     except Exception:
         logger.warning("event=submission.notify_review_target.failed request_id=%s chat_id=%s", request_id, chat_id, exc_info=True)
 

@@ -286,6 +286,49 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
         pass
 
 
+async def refresh_admin_notify_messages(bot, entry: dict) -> None:
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    mapping = payload.get("admin_notify_messages")
+    if not isinstance(mapping, dict) or not mapping:
+        return
+
+    request_id = str(entry.get("id") or "")
+    if not request_id:
+        return
+
+    user_id = int(payload.get("user_id") or 0)
+    text = forum_text_with_votes(entry)
+
+    for chat_id_str, info in mapping.items():
+        if not isinstance(info, dict):
+            continue
+        try:
+            chat_id = int(info.get("chat_id") or chat_id_str)
+            message_id = int(info.get("message_id") or 0)
+        except Exception:
+            continue
+        if not message_id:
+            continue
+        try:
+            await bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=message_id,
+                parse_mode=ParseMode.HTML,
+                reply_markup=admin_review_kb(request_id, user_id, allow_publish=False),
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    reply_markup=admin_review_kb(request_id, user_id, allow_publish=False),
+                )
+            except Exception:
+                pass
+
+
 async def delete_forum_request_message(bot, entry: dict | None) -> None:
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     info = payload.get("moderation_forum_message") if isinstance(payload, dict) else None

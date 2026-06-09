@@ -531,6 +531,7 @@ def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMa
             _btn(t("admin_btn_plugins", lang), callback_data="adm:section:plugins", icon="plugin"),
             _btn(t("admin_btn_icons", lang), callback_data="adm:section:icons", icon="art"),
         ])
+        rows.append([_btn(t("admin_btn_my_notifications", lang), callback_data="adm:notifs", icon="bell")])
         rows.append([_btn(t("admin_btn_post", lang), callback_data="adm:section:post", icon="send")])
         rows.append([
             _btn(t("admin_btn_broadcast", lang), callback_data="adm:broadcast", icon="broadcast"),
@@ -542,13 +543,32 @@ def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMa
         ])
     elif role == "plugins":
         rows.append([_btn(t("admin_btn_plugins", lang), callback_data="adm:section:plugins", icon="plugin")])
+        rows.append([_btn(t("admin_btn_my_notifications", lang), callback_data="adm:notifs", icon="bell")])
         rows.append([_btn(t("admin_btn_post", lang), callback_data="adm:section:post", icon="send")])
         rows.append([
             _btn(t("admin_btn_stats", lang), callback_data="adm:stats", icon="stats"),
         ])
     else:
         rows.append([_btn(t("admin_btn_icons", lang), callback_data="adm:section:icons", icon="art")])
+        rows.append([_btn(t("admin_btn_my_notifications", lang), callback_data="adm:notifs", icon="bell")])
         rows.append([_btn(t("admin_btn_stats", lang), callback_data="adm:stats", icon="stats")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_notification_settings_kb(prefs: dict[str, bool], labels: list[tuple[str, str]], lang: str = "ru") -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for key, label in labels:
+        enabled = bool(prefs.get(key, True))
+        state = t("admin_notify_pref_on", lang) if enabled else t("admin_notify_pref_off", lang)
+        rows.append([
+            _btn(
+                f"{label}: {state}",
+                callback_data=f"adm:notifs:toggle:{key}",
+                icon=("yes" if enabled else "no"),
+                style=("success" if enabled else "danger"),
+            )
+        ])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:menu", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

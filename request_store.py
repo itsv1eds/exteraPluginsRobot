@@ -392,6 +392,8 @@ async def _scheduled_publish_loop(bot) -> None:
 
             try:
                 from bot.services.publish import publish_icon, publish_plugin
+                from bot.services.admin_notifications import finalize_admin_notify_messages
+                from bot.services.audit import add_audit_event
                 from bot.services.moderation import delete_forum_request_message
 
                 logger.info("Publishing scheduled request %s", request_id)
@@ -409,7 +411,14 @@ async def _scheduled_publish_loop(bot) -> None:
 
                 update_request_payload(request_id, {"scheduled_at": None})
                 update_request_status(request_id, "published")
+                await finalize_admin_notify_messages(bot, entry, "Заявка была принята по расписанию", "<code>scheduler</code>")
                 await delete_forum_request_message(bot, entry)
+                add_audit_event(
+                    "moderation.scheduled_publish_success",
+                    actor="scheduler",
+                    request_id=str(request_id),
+                    details={"link": result.get("link", ""), "name": name, "version": version},
+                )
 
                 user_id = payload.get("user_id")
                 if user_id:

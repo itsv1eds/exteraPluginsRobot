@@ -29,6 +29,7 @@ from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html
 from bot.helpers import answer
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
+from bot.services.audit import add_audit_event, recent_audit_events
 from bot.keyboards import (
     admin_actions_kb,
     admin_banned_kb,
@@ -45,6 +46,7 @@ from bot.keyboards import (
     admin_updates_list_kb,
     admin_manage_admins_kb,
     admin_menu_kb,
+    admin_notification_settings_kb,
     admin_plugins_list_kb,
     admin_plugins_section_kb,
     admin_queue_kb,
@@ -78,6 +80,13 @@ from bot.services.publish import (
     update_icon_catalog_entry,
     update_catalog_entry,
 )
+from bot.services.admin_notifications import (
+    NOTIFICATION_PREF_LABEL_KEYS,
+    admin_notification_preferences,
+    finalize_admin_notify_messages,
+    set_admin_notification_preference,
+)
+from bot.services.forum import answer_in_moderation_topic
 from bot.services.moderation import (
     delete_forum_request_message,
     is_moderation_forum_chat,
@@ -99,7 +108,7 @@ from request_store import (
     update_request_payload,
     update_request_status,
 )
-from storage import load_plugins, save_config, save_plugins
+from storage import DATA_DIR, SQLITE_PATH, load_plugins, save_config, save_plugins
 from user_store import ban_user, get_banned_users, get_user_language, is_broadcast_enabled, list_users, unban_user
 from subscription_store import list_subscribers
 from catalog import invalidate_catalog_cache
@@ -894,6 +903,8 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await answer(cb, _post_section_text(lang), admin_post_section_kb(lang=lang), "admin")
     elif token == "adm:config":
         await _render_config(cb, state)
+    elif token == "adm:notifs":
+        await _render_admin_notifications(cb, state)
     elif token.startswith("adm:config_section:"):
         section = token.split(":")[2]
         if section == "admins":
@@ -927,6 +938,54 @@ def _can_schedule_request(entry: dict | None) -> bool:
     if payload.get("submission_type") == "icon" or payload.get("icon"):
         return False
     return req_type not in {"update", "delete"}
+
+
+def _validate_request_before_publish(entry: dict | None) -> list[str]:
+    if not isinstance(entry, dict):
+        return ["Заявка не найдена"]
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    request_type = str(entry.get("type") or "new")
+    submission_type = payload.get("submission_type") or ("icon" if payload.get("icon") else "plugin")
+    errors: list[str] = []
+
+    if request_type == "delete":
+        delete_slug = str(payload.get("delete_slug") or payload.get("plugin", {}).get("id") or "").strip()
+        if not delete_slug:
+            errors.append("Не указан slug для удаления")
+        elif not find_plugin_by_slug(delete_slug):
+            errors.append(f"Плагин для удаления не найден: {delete_slug}")
+        return errors
+
+    item = payload.get("icon") if submission_type == "icon" else payload.get("plugin")
+    if not isinstance(item, dict):
+        errors.append("Нет данных файла в payload")
+        return errors
+
+    item_id = str(item.get("id") or "").strip()
+    name = str(item.get("name") or "").strip()
+    version = str(item.get("version") or "").strip()
+    file_path = str(item.get("file_path") or "").strip()
+    if not item_id:
+        errors.append("Не указан ID/slug")
+    if not name:
+        errors.append("Не указано название")
+    if not version:
+        errors.append("Не указана версия")
+    if not file_path:
+        errors.append("Не указан путь к файлу")
+    elif not Path(file_path).exists():
+        errors.append(f"Файл не найден: {file_path}")
+    if submission_type != "icon" and request_type != "update":
+        category = str(payload.get("category_key") or "").strip()
+        if not category:
+            errors.append("Не указана категория")
+    try:
+        draft = _render_request_draft(entry)
+        if len(draft) > 3900:
+            errors.append("Текст публикации слишком длинный для безопасной отправки")
+    except Exception as exc:
+        errors.append(f"Не удалось собрать текст публикации: {exc}")
+    return errors
 
 
 def _render_request_draft(entry: dict) -> str:
@@ -1105,81 +1164,40 @@ def _admin_actor_label(target: CallbackQuery | Message) -> str:
     return f"<code>{user.id}</code>"
 
 
-async def _finalize_admin_notify_messages(
-    bot,
-    entry: dict,
-    decision_text: str,
-    actor_label: str,
-) -> None:
-    if not isinstance(entry, dict):
-        return
-    request_id = str(entry.get("id") or "")
-    if not request_id:
-        return
-    payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-    mapping = payload.get("admin_notify_messages")
-    if not isinstance(mapping, dict) or not mapping:
-        return
+def _admin_notification_label_items(user_id: int | None, lang: str) -> list[tuple[str, str]]:
+    role = get_admin_role(user_id) if user_id else None
+    if role == "icons":
+        keys = ["icons"]
+    elif role == "plugins":
+        keys = ["new_plugins", "updates", "deletions"]
+    else:
+        keys = ["new_plugins", "updates", "deletions", "icons", "threshold"]
+    return [(key, t(NOTIFICATION_PREF_LABEL_KEYS[key], lang)) for key in keys]
 
-    final_text = f"{decision_text} {actor_label}"
-    cfg = get_config()
-    moderation = cfg.get("moderation", {}) if isinstance(cfg, dict) else {}
-    delete_on_decision = bool(
-        moderation.get("delete_review_notifications_on_decision")
-        if isinstance(moderation, dict)
-        else False
+
+def _admin_notifications_text(user_id: int | None, lang: str) -> str:
+    prefs = admin_notification_preferences(user_id)
+    lines = [t("admin_notifications_title", lang)]
+    for key, label in _admin_notification_label_items(user_id, lang):
+        state = t("admin_notify_pref_on", lang) if prefs.get(key, True) else t("admin_notify_pref_off", lang)
+        lines.append(f"{label}: <code>{state}</code>")
+    return "\n".join(lines)
+
+
+async def _render_admin_notifications(target: CallbackQuery | Message, state: FSMContext) -> None:
+    lang = _lang_for(target)
+    user = target.from_user
+    if not user or not _ensure_admin(target):
+        return
+    prefs = admin_notification_preferences(user.id)
+    labels = _admin_notification_label_items(user.id, lang)
+    await state.set_state(AdminFlow.menu)
+    await answer(
+        target,
+        _admin_notifications_text(user.id, lang),
+        admin_notification_settings_kb(prefs, labels, lang=lang),
+        "admin",
     )
-
-    for chat_id_str, info in mapping.items():
-        try:
-            fallback_chat_id = int(chat_id_str)
-        except Exception:
-            continue
-        if not isinstance(info, dict):
-            continue
-        chat_id = int(info.get("chat_id") or fallback_chat_id)
-        kind = info.get("kind")
-        msg_id = info.get("message_id")
-        if not msg_id:
-            continue
-        if delete_on_decision:
-            for key in ("file_message_id", "message_id"):
-                try:
-                    message_id = int(info.get(key) or 0)
-                except Exception:
-                    message_id = 0
-                if not message_id:
-                    continue
-                try:
-                    await bot.delete_message(chat_id, message_id)
-                except Exception:
-                    pass
-            continue
-        try:
-            if kind == "document":
-                await bot.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=int(msg_id),
-                    caption=final_text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=None,
-                )
-            else:
-                await bot.edit_message_text(
-                    final_text,
-                    chat_id=chat_id,
-                    message_id=int(msg_id),
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=None,
-                    disable_web_page_preview=True,
-                )
-        except Exception:
-            pass
-
-    try:
-        update_request_payload(request_id, {"admin_notify_messages": {}})
-    except Exception:
-        pass
 
 
 async def _render_updates_list(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
@@ -1217,7 +1235,7 @@ async def _render_updates_list(target: CallbackQuery | Message, state: FSMContex
 async def cmd_admin(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
     if not _ensure_admin(message):
-        await message.answer(_tr(message, "admin_denied"))
+        await answer(message, _tr(message, "admin_denied"))
         return
     await state.clear()
     await state.set_state(AdminFlow.menu)
@@ -1232,12 +1250,16 @@ async def cmd_resend_forum_requests(message: Message) -> None:
         return
 
     if not is_moderation_forum_chat(message.chat.id):
-        await message.answer("Команда /new работает только в форуме модерации.")
+        await answer(message, "Команда /new работает только в форуме модерации.")
         return
 
     cfg = moderation_config()
-    if getattr(message, "message_thread_id", None) and int(message.message_thread_id) != int(cfg["topic_id"]):
-        await message.answer("Команду нужно отправлять в настроенном топике модерации.")
+    try:
+        current_thread_id = int(getattr(message, "message_thread_id", None) or 0)
+    except Exception:
+        current_thread_id = 0
+    if current_thread_id != int(cfg["topic_id"]):
+        await answer_in_moderation_topic(message, "Команду нужно отправлять в настроенном топике модерации.")
         return
 
     requests = (
@@ -1246,7 +1268,7 @@ async def cmd_resend_forum_requests(message: Message) -> None:
         + list(get_requests(status="scheduled"))
     )
     if not requests:
-        await message.answer("Активных заявок нет.")
+        await answer_in_moderation_topic(message, "Активных заявок нет.")
         return
 
     sent = 0
@@ -1261,7 +1283,7 @@ async def cmd_resend_forum_requests(message: Message) -> None:
             failed += 1
             logger.warning("event=admin.resend_forum_request.failed request_id=%s", entry.get("id"), exc_info=True)
 
-    await message.answer(f"Отправлено заявок: {sent}\nОшибок: {failed}")
+    await answer_in_moderation_topic(message, f"Отправлено заявок: {sent}\nОшибок: {failed}")
 
 
 @router.message(Command("adminhelp"))
@@ -1278,13 +1300,63 @@ async def cmd_admin_help(message: Message) -> None:
         "/adminhelp — показать этот список команд.\n\n"
         "<b>Суперадмины</b>\n"
         "/new — переотправить в форум модерации все активные заявки: pending, error, scheduled. Работает только в настроенном форуме/топике.\n"
+        "/health — диагностика БД, очередей, форума и audit log.\n"
         "/sync_catalog &lt;t.me link&gt; &lt;request_id&gt; — вручную привязать опубликованное сообщение к заявке и добавить в каталог.\n\n"
         "<b>Админы плагинов</b>\n"
         "/sync_version &lt;plugin_id_or_slug&gt; &lt;version&gt; — вручную обновить версию плагина в каталоге.\n"
         "/erase — очистить скрытые заявки.\n"
         "/erase &lt;plugin_id_or_slug&gt; — удалить заявки по ID/slug плагина."
     )
-    await message.answer(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    await answer_in_moderation_topic(
+        message,
+        text,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
+
+
+@router.message(Command("health"))
+async def cmd_admin_health(message: Message) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+    cfg = get_config()
+    moderation = cfg.get("moderation", {}) if isinstance(cfg, dict) else {}
+    forum_cfg = moderation_config()
+    counts = {
+        "pending": len(get_requests(status="pending")),
+        "error": len(get_requests(status="error")),
+        "scheduled": len(get_requests(status="scheduled")),
+        "published": len(get_requests(status="published")),
+        "rejected": len(get_requests(status="rejected")),
+    }
+    plugins_count = len(load_plugins().get("plugins", []) or [])
+    audit_count = len(recent_audit_events(1000))
+    latest_audit = recent_audit_events(1)
+    latest_audit_line = "—"
+    if latest_audit:
+        event = latest_audit[0]
+        latest_audit_line = f"{plain_html(event.get('event') or '—')} / {plain_html(event.get('created_at') or '—')}"
+
+    lines = [
+        "<b>Health</b>",
+        f"SQLite: <code>{plain_html(SQLITE_PATH)}</code> {'✅' if SQLITE_PATH.exists() else '❌'}",
+        f"Data dir: <code>{plain_html(DATA_DIR)}</code> {'✅' if DATA_DIR.exists() else '❌'}",
+        f"Plugins in catalog: <code>{plugins_count}</code>",
+        f"Requests pending/error/scheduled: <code>{counts['pending']}/{counts['error']}/{counts['scheduled']}</code>",
+        f"Requests published/rejected: <code>{counts['published']}/{counts['rejected']}</code>",
+        f"Forum chat: <code>{forum_cfg['chat_id']}</code>",
+        f"Forum topic: <code>{forum_cfg['topic_id']}</code>",
+        f"Vote threshold: <code>{forum_cfg['threshold']}</code>",
+        f"Notification chats: <code>{plain_html(', '.join(str(x) for x in (moderation.get('notification_chat_ids') or [])) or '—')}</code>",
+        f"Audit events: <code>{audit_count}</code>",
+        f"Latest audit: <code>{latest_audit_line}</code>",
+    ]
+    await answer_in_moderation_topic(
+        message,
+        "\n".join(lines),
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 @router.message(Command("sync_catalog"))
@@ -2843,6 +2915,47 @@ async def on_admin_menu(cb: CallbackQuery, state: FSMContext) -> None:
         return
     await _nav_push(state, "adm:menu")
     await _render_menu(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:notifs")
+async def on_admin_notifications(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _nav_push(state, "adm:notifs")
+    await _render_admin_notifications(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm:notifs:toggle:"))
+async def on_admin_notifications_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    user = cb.from_user
+    if not user or not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    key = cb.data.rsplit(":", 1)[-1]
+    allowed = {item_key for item_key, _ in _admin_notification_label_items(user.id, lang)}
+    if key not in allowed:
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    prefs = admin_notification_preferences(user.id)
+    enabled = not prefs.get(key, True)
+    set_admin_notification_preference(user.id, key, enabled)
+    add_audit_event(
+        "admin.notification_preference_changed",
+        actor_id=user.id,
+        actor=user.username or user.full_name or "",
+        details={"key": key, "enabled": enabled},
+    )
+    await _render_admin_notifications(cb, state)
     try:
         await cb.answer()
     except Exception:
@@ -4809,6 +4922,35 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             pass
         return
 
+    validation_errors = _validate_request_before_publish(entry)
+    if validation_errors:
+        error_text = "\n".join(f"• {plain_html(error)}" for error in validation_errors)
+        update_request_payload(
+            request_id,
+            {
+                "last_publish_error": "\n".join(validation_errors),
+                "last_publish_error_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        add_audit_event(
+            "moderation.publish_validation_failed",
+            actor_id=admin_id,
+            actor=_admin_actor_label(cb),
+            request_id=str(request_id),
+            details={"errors": validation_errors},
+        )
+        await answer(
+            cb,
+            f"<b>Публикация остановлена</b>\n\n{error_text}",
+            admin_menu_kb(_admin_menu_role(cb), lang=lang),
+            "admin",
+        )
+        try:
+            await cb.answer("Есть ошибки", show_alert=True)
+        except Exception:
+            pass
+        return
+
     logger.info(
         "event=moderation.publish.start request_id=%s request_type=%s submission_type=%s item=%s admin_id=%s",
         request_id,
@@ -4859,7 +5001,7 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             notify_key = "notify_published"
 
         try:
-            await _finalize_admin_notify_messages(
+            await finalize_admin_notify_messages(
                 cb.bot,
                 entry,
                 "Заявка была принята",
@@ -4902,6 +5044,18 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             admin_id,
             user_id or "-",
             result.get("link", ""),
+        )
+        add_audit_event(
+            "moderation.publish_success",
+            actor_id=admin_id,
+            actor=_admin_actor_label(cb),
+            request_id=str(request_id),
+            details={
+                "request_type": request_type,
+                "submission_type": submission_type,
+                "item": item_name,
+                "link": result.get("link", ""),
+            },
         )
 
     except Exception as exc:
@@ -5015,8 +5169,15 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
     entry = get_request_by_id(request_id)
     if entry:
         update_request_status(request_id, "rejected", comment=comment)
+        add_audit_event(
+            "moderation.reject",
+            actor_id=message.from_user.id if message.from_user else None,
+            actor=_admin_actor_label(message),
+            request_id=str(request_id),
+            details={"silent": False},
+        )
         try:
-            await _finalize_admin_notify_messages(
+            await finalize_admin_notify_messages(
                 message.bot,
                 entry,
                 "Заявка была отклонена",
@@ -5069,8 +5230,15 @@ async def on_admin_reject_silent(cb: CallbackQuery, state: FSMContext) -> None:
     await _nav_push(state, f"adm:reject_silent:{request_id}")
     update_request_status(request_id, "rejected")
     if entry:
+        add_audit_event(
+            "moderation.reject",
+            actor_id=cb.from_user.id if cb.from_user else None,
+            actor=_admin_actor_label(cb),
+            request_id=str(request_id),
+            details={"silent": True},
+        )
         try:
-            await _finalize_admin_notify_messages(
+            await finalize_admin_notify_messages(
                 cb.bot,
                 entry,
                 "Заявка была отклонена",
@@ -5137,7 +5305,7 @@ async def on_admin_ban_confirm(cb: CallbackQuery, state: FSMContext) -> None:
     update_request_status(request_id, "rejected", comment="Пользователь заблокирован")
 
     try:
-        await _finalize_admin_notify_messages(
+        await finalize_admin_notify_messages(
             cb.bot,
             entry,
             "Заявка была отклонена",

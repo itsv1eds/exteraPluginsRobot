@@ -98,6 +98,17 @@ def link_preview_options(image: Optional[str] = None, url: Optional[str] = None)
     )
 
 
+def _topic_kwargs(target: Message | None) -> dict[str, int]:
+    if not target:
+        return {}
+    try:
+        from bot.services.forum import moderation_topic_kwargs
+
+        return moderation_topic_kwargs(target)
+    except Exception:
+        return {}
+
+
 async def try_react_pray(message: Message) -> None:
     try:
         bot = message.bot
@@ -168,6 +179,7 @@ async def answer(
         
         bot = msg.bot
         chat_id = msg.chat.id
+        thread_kwargs = _topic_kwargs(msg)
         
         try:
             if preview_options and msg.photo:
@@ -182,6 +194,7 @@ async def answer(
                     reply_markup=kb,
                     disable_web_page_preview=False,
                     link_preview_options=preview_options,
+                    **thread_kwargs,
                 )
 
             if image and not msg.photo:
@@ -270,6 +283,7 @@ async def answer(
                         reply_markup=kb,
                         disable_web_page_preview=disable_web_page_preview,
                         link_preview_options=preview_options,
+                        **thread_kwargs,
                     )
                     await target.answer("Текст слишком длинный для редактирования, открыл новым сообщением.", show_alert=True)
                     return sent
@@ -289,6 +303,7 @@ async def answer(
     else:
         chat_id = target.chat.id
         bot = target.bot
+        thread_kwargs = _topic_kwargs(target)
     
     if image:
         file_id = _image_file_ids.get(image)
@@ -300,6 +315,7 @@ async def answer(
                 caption=text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=kb,
+                **thread_kwargs,
             )
         else:
             path = IMAGES_DIR / f"{image}.png"
@@ -310,6 +326,7 @@ async def answer(
                     caption=text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=kb,
+                    **thread_kwargs,
                 )
                 if msg.photo:
                     _image_file_ids[image] = msg.photo[-1].file_id
@@ -322,6 +339,7 @@ async def answer(
                     reply_markup=kb,
                     disable_web_page_preview=disable_web_page_preview,
                     link_preview_options=preview_options,
+                    **thread_kwargs,
                 )
     else:
         return await bot.send_message(
@@ -331,6 +349,7 @@ async def answer(
             reply_markup=kb,
             disable_web_page_preview=disable_web_page_preview,
             link_preview_options=preview_options,
+            **thread_kwargs,
         )
 
     return None

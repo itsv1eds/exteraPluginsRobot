@@ -13,7 +13,6 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
-    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
@@ -42,7 +41,6 @@ from bot.keyboards import (
     user_plugins_kb,
 )
 from storage import load_stenka, save_stenka
-from bot.keyboards import admin_review_kb
 from bot.cache import get_admins, get_admins_icons, get_admins_plugins, get_admins_super, get_categories, get_config
 from bot.services.submission import (
     PluginData,
@@ -52,7 +50,8 @@ from bot.services.submission import (
     process_plugin_file,
 )
 from bot.services.publish import build_channel_post, update_plugin
-from bot.services.moderation import can_vote_in_context, refresh_admin_notify_messages, send_request_to_forum, set_vote
+from bot.services.admin_notifications import refresh_admin_notify_messages, send_review_notifications
+from bot.services.moderation import can_vote_in_context, send_request_to_forum, set_vote
 from bot.services.validation import (
     check_duplicate_icon_pending,
     check_duplicate_pending,
@@ -546,10 +545,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     if is_user_banned(user_id):
         lang = get_lang(user_id)
-        await message.answer(
-            t("user_banned", lang),
-            parse_mode=ParseMode.HTML,
-        )
+        await answer(message, t("user_banned", lang))
         return
 
     if payload:
@@ -559,11 +555,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             wall_id = payload[len("stenka_") :]
             await state.update_data(lang=get_lang(user_id), stenka_wall_id=wall_id)
             await state.set_state(UserFlow.entering_stenka_tag)
-            await message.answer(
-                t("stenka_prompt_enter_tag", get_lang(user_id)),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
+            await answer(message, t("stenka_prompt_enter_tag", get_lang(user_id)))
             return
         await state.update_data(start_payload=payload)
 
@@ -612,11 +604,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     lang = get_lang(user_id)
     await state.set_state(UserFlow.choosing_language)
-    sent = await message.answer(
-        t("language_prompt", lang),
-        reply_markup=language_kb(),
-        parse_mode=ParseMode.HTML,
-    )
+    sent = await answer(message, t("language_prompt", lang), language_kb())
     if sent:
         await remember_menu_owner(message, state, sent)
 
@@ -2391,72 +2379,4 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
         failed,
     )
 
-    await _notify_review_targets(bot, entry, text, file_path)
-
-
-def _notification_chat_ids() -> list[int]:
-    cfg = get_config()
-    moderation = cfg.get("moderation", {}) if isinstance(cfg, dict) else {}
-    raw = moderation.get("notification_chat_ids") if isinstance(moderation, dict) else []
-    if not isinstance(raw, list):
-        raw = []
-    result: list[int] = []
-    for item in raw:
-        try:
-            chat_id = int(item)
-        except Exception:
-            continue
-        if chat_id and chat_id not in result:
-            result.append(chat_id)
-    return result
-
-
-async def _send_review_notification(bot, chat_id: int, entry: Dict[str, Any], text: str, file_path: str | None) -> None:
-    request_id = str(entry.get("id") or "")
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
-    user_id = int(payload.get("user_id") or 0)
-    try:
-        msg = await bot.send_message(
-            chat_id,
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=admin_review_kb(request_id, user_id, allow_publish=False),
-            disable_web_page_preview=True,
-        )
-        file_msg = None
-        if file_path and Path(file_path).exists():
-            file_msg = await bot.send_document(
-                chat_id,
-                FSInputFile(file_path),
-                reply_to_message_id=msg.message_id,
-                allow_sending_without_reply=True,
-                disable_notification=True,
-            )
-        mapping = payload.get("admin_notify_messages")
-        if not isinstance(mapping, dict):
-            mapping = {}
-        info: dict[str, Any] = {
-            "chat_id": int(chat_id),
-            "kind": "text",
-            "message_id": int(msg.message_id),
-        }
-        if file_msg:
-            info["file_message_id"] = int(file_msg.message_id)
-        mapping[str(chat_id)] = info
-        payload["admin_notify_messages"] = mapping
-        update_request_payload(request_id, {"admin_notify_messages": mapping})
-    except Exception:
-        logger.warning("event=submission.notify_review_target.failed request_id=%s chat_id=%s", request_id, chat_id, exc_info=True)
-
-
-async def _notify_review_targets(bot, entry: Dict[str, Any], text: str, file_path: str | None) -> None:
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
-    submission_type = _submission_type(payload)
-    superadmins = set(get_admins_super())
-    if submission_type == "icon":
-        admins = set(get_admins_icons()) - superadmins
-    else:
-        admins = set(get_admins_plugins()) - superadmins
-    targets = sorted({int(x) for x in admins if str(x).lstrip("-").isdigit()} | set(_notification_chat_ids()))
-    for chat_id in targets:
-        await _send_review_notification(bot, chat_id, entry, text, file_path)
+    await send_review_notifications(bot, entry, text, file_path)

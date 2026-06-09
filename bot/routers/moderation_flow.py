@@ -5,16 +5,19 @@ from aiogram.types import CallbackQuery, Message
 from bot.context import get_language
 from bot.helpers import try_react_pray
 from bot.formatting import telegram_html
+from bot.services.audit import add_audit_event
 from bot.services.moderation import (
     can_vote_in_context,
     forum_text_with_votes,
     moderation_vote_kb,
-    notify_superadmins_if_threshold,
-    refresh_admin_notify_messages,
     refresh_forum_vote_keyboard,
     set_vote,
     set_vote_reason,
     vote_counts,
+)
+from bot.services.admin_notifications import (
+    notify_superadmins_if_threshold,
+    refresh_admin_notify_messages,
 )
 from bot.states import UserFlow
 from bot.texts import t
@@ -70,6 +73,13 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
     await refresh_admin_notify_messages(cb.bot, entry)
     await _refresh_inline_vote_message(cb.bot, cb.inline_message_id, entry, request_id)
     await notify_superadmins_if_threshold(cb.bot, entry)
+    add_audit_event(
+        "moderation.vote",
+        actor_id=int(user.id),
+        actor=username or name,
+        request_id=request_id,
+        details={"vote": vote, "chat_id": chat_id},
+    )
 
     await state.set_state(UserFlow.entering_moderation_vote_reason)
     await state.update_data(
@@ -136,5 +146,11 @@ async def on_moderation_vote_reason(message: Message, state: FSMContext) -> None
         await _refresh_inline_vote_message(message.bot, inline_message_id, entry, request_id)
         await notify_superadmins_if_threshold(message.bot, entry)
         await try_react_pray(message)
+        add_audit_event(
+            "moderation.vote_reason",
+            actor_id=int(user.id),
+            actor=user.username or user.full_name or "",
+            request_id=request_id,
+        )
 
     await state.set_state(UserFlow.idle)

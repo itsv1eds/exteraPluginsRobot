@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import html
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -8,12 +7,10 @@ from typing import Literal
 from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile
 
-from bot.cache import get_admins, get_admins_super, get_config
-from bot.context import get_lang
+from bot.cache import get_admins, get_config
 from bot.formatting import code_html, quote_html, strip_blockquote_tags, telegram_html
 from bot.helpers import link_preview_options
-from bot.keyboards import admin_review_kb, moderation_vote_kb
-from bot.texts import t
+from bot.keyboards import moderation_vote_kb
 from request_store import get_request_by_id, update_request_payload
 
 VoteValue = Literal["yes", "no"]
@@ -192,9 +189,10 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
         )
 
     if msg:
+        actual_topic_id = int(getattr(msg, "message_thread_id", None) or topic_id)
         info = {
             "chat_id": chat_id,
-            "message_thread_id": topic_id,
+            "message_thread_id": actual_topic_id,
             "message_id": int(msg.message_id),
         }
         payload_update: dict[str, object] = {"moderation_forum_message": info}
@@ -286,49 +284,6 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
         pass
 
 
-async def refresh_admin_notify_messages(bot, entry: dict) -> None:
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
-    mapping = payload.get("admin_notify_messages")
-    if not isinstance(mapping, dict) or not mapping:
-        return
-
-    request_id = str(entry.get("id") or "")
-    if not request_id:
-        return
-
-    user_id = int(payload.get("user_id") or 0)
-    text = forum_text_with_votes(entry)
-
-    for chat_id_str, info in mapping.items():
-        if not isinstance(info, dict):
-            continue
-        try:
-            chat_id = int(info.get("chat_id") or chat_id_str)
-            message_id = int(info.get("message_id") or 0)
-        except Exception:
-            continue
-        if not message_id:
-            continue
-        try:
-            await bot.edit_message_text(
-                text,
-                chat_id=chat_id,
-                message_id=message_id,
-                parse_mode=ParseMode.HTML,
-                reply_markup=admin_review_kb(request_id, user_id, allow_publish=False),
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            try:
-                await bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    reply_markup=admin_review_kb(request_id, user_id, allow_publish=False),
-                )
-            except Exception:
-                pass
-
-
 async def delete_forum_request_message(bot, entry: dict | None) -> None:
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     info = payload.get("moderation_forum_message") if isinstance(payload, dict) else None
@@ -353,46 +308,6 @@ async def delete_forum_request_message(bot, entry: dict | None) -> None:
             await bot.delete_message(int(chat_id), message_id)
         except Exception:
             pass
-
-
-async def notify_superadmins_if_threshold(bot, entry: dict) -> None:
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
-    if payload.get("moderation_threshold_notified_at"):
-        return
-    _, _, total = vote_counts(entry)
-    threshold = moderation_config()["threshold"]
-    if total < threshold:
-        return
-
-    request_id = str(entry.get("id") or "")
-    if not request_id:
-        return
-    title = html.escape(request_title(entry))
-    text = (
-        f"{t('moderation_threshold_title', 'ru')}\n\n"
-        f"<b>ID:</b> <code>{html.escape(request_id)}</code>\n"
-        f"<b>Заявка:</b> {title}\n\n"
-        f"{vote_summary(entry)}"
-    )
-
-    delivered = 0
-    for admin_id in get_admins_super():
-        try:
-            await bot.send_message(
-                admin_id,
-                text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                reply_markup=admin_review_kb(request_id, 0, lang=get_lang(admin_id)),
-            )
-            delivered += 1
-        except Exception:
-            continue
-    if delivered:
-        update_request_payload(
-            request_id,
-            {"moderation_threshold_notified_at": datetime.now(timezone.utc).isoformat()},
-        )
 
 
 def can_vote_in_context(user_id: int | None, chat_id: int | None) -> bool:

@@ -12,6 +12,7 @@ from aiogram.filters.chat_member_updated import IS_MEMBER, IS_NOT_MEMBER
 from aiogram.types import CallbackQuery, ChatMemberUpdated, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from storage import load_joinly, save_joinly
+from bot.cache import get_admins_super
 from bot.helpers import try_react_pray
 from bot.context import get_lang
 from bot.formatting import telegram_html
@@ -311,14 +312,24 @@ async def _show_panel_main_by_id(bot, chat_id: int, message_id: int, lang: str) 
 
 
 
-async def _is_chat_admin(message: Message) -> bool:
-    if not message.from_user:
+async def _can_manage_chat_settings(bot, chat_id: int, user_id: int | None) -> bool:
+    if not user_id:
         return False
+    if int(user_id) in get_admins_super():
+        return True
     try:
-        member = await message.bot.get_chat_member(message.chat.id, message.from_user.id)
+        member = await bot.get_chat_member(chat_id, int(user_id))
         return getattr(member, "status", None) in {"administrator", "creator"}
     except Exception:
         return False
+
+
+async def _is_chat_admin(message: Message) -> bool:
+    return await _can_manage_chat_settings(
+        message.bot,
+        message.chat.id,
+        message.from_user.id if message.from_user else None,
+    )
 
 
 def _load_db() -> dict[str, Any]:
@@ -841,12 +852,7 @@ async def on_settings_cb(cb: CallbackQuery) -> None:
         await cb.answer()
         return
 
-    try:
-        member = await cb.bot.get_chat_member(cb.message.chat.id, cb.from_user.id)
-        if getattr(member, "status", None) not in {"administrator", "creator"}:
-            await cb.answer()
-            return
-    except Exception:
+    if not await _can_manage_chat_settings(cb.bot, cb.message.chat.id, cb.from_user.id):
         await cb.answer()
         return
 

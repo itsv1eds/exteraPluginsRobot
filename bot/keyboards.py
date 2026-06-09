@@ -352,10 +352,18 @@ def user_plugins_kb(plugins: List[Tuple[str, str]], lang: str) -> InlineKeyboard
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def catalog_main_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
+def catalog_main_kb(categories: list, lang: str, source_label: str | None = None) -> InlineKeyboardMarkup:
     rows = []
 
     rows.append([_btn(t("btn_search", lang), callback_data="search", style="success", icon="search")])
+    if source_label:
+        rows.append([
+            _btn(
+                t("btn_catalog_source", lang, source=source_label),
+                callback_data="catalog:source:0",
+                icon="tag",
+            )
+        ])
 
     rows.append([
         _btn(t("btn_all_plugins", lang), callback_data="cat:_all:0", icon="all_plugins"),

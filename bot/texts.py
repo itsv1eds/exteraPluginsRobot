@@ -479,6 +479,18 @@ TEXTS: Dict[str, Dict[str, str]] = {
 
     "catalog_empty": {"ru": "Пусто", "en": "Empty"},
     "catalog_page": {"ru": "Стр. {current}/{total}", "en": "Page {current}/{total}"},
+    "catalog_source_title": {
+        "ru": f'{emoji_html("tag", "🔖")} <b>Источники каталога</b>',
+        "en": f'{emoji_html("tag", "🔖")} <b>Catalog Sources</b>',
+    },
+    "catalog_source_hint": {
+        "ru": "Выбери, чьи плагины показывать в каталоге и обычном поиске.",
+        "en": "Choose whose plugins are shown in the catalog and regular search.",
+    },
+    "catalog_source_all": {"ru": "Все источники", "en": "All sources"},
+    "catalog_source_current": {"ru": "Источник: {source}", "en": "Source: {source}"},
+    "catalog_source_count": {"ru": "{count} плагинов", "en": "{count} plugins"},
+    "btn_catalog_source": {"ru": "Источник: {source}", "en": "Source: {source}"},
     "catalog_field_title": {"ru": "Название", "en": "Title"},
     "catalog_field_author": {"ru": "Автор", "en": "Author"},
     "catalog_field_author_channel": {"ru": "Канал автора", "en": "Author channel"},
@@ -859,6 +871,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "search_results": {
         "ru": "Найдено <b>{count}</b>",
         "en": "Found <b>{count}</b>",
+    },
+    "catalog_field_source": {
+        "ru": "Источник",
+        "en": "Source",
     },
 
     "submission_cancelled": {

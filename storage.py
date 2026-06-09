@@ -402,14 +402,20 @@ def _read_items_payload(rows: list[sqlite3.Row]) -> list[Any]:
     out: list[Any] = []
     for row in rows:
         try:
-            out.append(json.loads(row["payload"]))
+            out.append(_loads_sqlite_json(row["payload"]))
         except Exception:
             continue
     return out
 
 
+def _loads_sqlite_json(value: Any) -> Any:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    return json.loads(value)
+
+
 def _read_plugins_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
-    rows = conn.execute("SELECT payload FROM plugins_items ORDER BY sort_order").fetchall()
+    rows = conn.execute("SELECT CAST(payload AS BLOB) AS payload FROM plugins_items ORDER BY sort_order").fetchall()
     items = _read_items_payload(rows)
     meta = _get_meta_json(conn, _meta_key(_DOC_PLUGINS), {})
     meta["plugins"] = items
@@ -453,7 +459,7 @@ def _write_plugins_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
 
 
 def _read_icons_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
-    rows = conn.execute("SELECT payload FROM icons_items ORDER BY sort_order").fetchall()
+    rows = conn.execute("SELECT CAST(payload AS BLOB) AS payload FROM icons_items ORDER BY sort_order").fetchall()
     items = _read_items_payload(rows)
     meta = _get_meta_json(conn, _meta_key(_DOC_ICONS), {})
     meta["iconpacks"] = items
@@ -497,7 +503,7 @@ def _write_icons_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
 
 
 def _read_requests_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
-    rows = conn.execute("SELECT payload FROM requests_items ORDER BY sort_order").fetchall()
+    rows = conn.execute("SELECT CAST(payload AS BLOB) AS payload FROM requests_items ORDER BY sort_order").fetchall()
     items = _read_items_payload(rows)
     meta = _get_meta_json(conn, _meta_key(_DOC_REQUESTS), {})
     meta["requests"] = items
@@ -547,11 +553,11 @@ def _write_requests_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
 
 
 def _read_users_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
-    rows = conn.execute("SELECT user_id, payload FROM users_items ORDER BY user_id").fetchall()
+    rows = conn.execute("SELECT user_id, CAST(payload AS BLOB) AS payload FROM users_items ORDER BY user_id").fetchall()
     users: Dict[str, Any] = {}
     for row in rows:
         try:
-            users[str(row["user_id"])] = json.loads(row["payload"])
+            users[str(row["user_id"])] = _loads_sqlite_json(row["payload"])
         except Exception:
             continue
     meta = _get_meta_json(conn, _meta_key(_DOC_USERS), {})
@@ -629,7 +635,7 @@ def _write_subscriptions_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> 
 
 
 def _read_updated_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
-    rows = conn.execute("SELECT payload FROM updated_items ORDER BY sort_order").fetchall()
+    rows = conn.execute("SELECT CAST(payload AS BLOB) AS payload FROM updated_items ORDER BY sort_order").fetchall()
     items = _read_items_payload(rows)
     meta = _get_meta_json(conn, _meta_key(_DOC_UPDATED), {})
     meta["items"] = items
@@ -664,11 +670,11 @@ def _write_updated_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
 
 
 def _read_joinly_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
-    rows = conn.execute("SELECT chat_id, payload FROM joinly_items ORDER BY chat_id").fetchall()
+    rows = conn.execute("SELECT chat_id, CAST(payload AS BLOB) AS payload FROM joinly_items ORDER BY chat_id").fetchall()
     result = _get_meta_json(conn, _meta_key(_DOC_JOINLY), {})
     for row in rows:
         try:
-            result[str(row["chat_id"])] = json.loads(row["payload"])
+            result[str(row["chat_id"])] = _loads_sqlite_json(row["payload"])
         except Exception:
             continue
     return result

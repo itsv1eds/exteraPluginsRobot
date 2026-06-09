@@ -3608,7 +3608,7 @@ async def on_admin_search_plugins(message: Message, state: FSMContext) -> None:
         )
         return
 
-    plugins = list_published_plugins()
+    plugins = list_published_plugins(source_filter="official")
     filtered = [
         p
         for p in plugins
@@ -3857,7 +3857,7 @@ async def on_admin_plugins_list(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     page = int(cb.data.split(":")[2])
-    plugins = list_published_plugins()
+    plugins = list_published_plugins(source_filter="official")
 
     total = len(plugins)
     total_pages = math.ceil(total / PAGE_SIZE)

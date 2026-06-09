@@ -13,6 +13,12 @@ _slug_index: Dict[str, CatalogEntry] = {}
 _icon_slug_index: Dict[str, CatalogEntry] = {}
 
 
+SOURCE_ALL = "all"
+SOURCE_OFFICIAL = "official"
+SOURCE_EXTERNAL = "external"
+OFFICIAL_SOURCE_USERNAME = "exteraPluginsSup"
+
+
 def invalidate_catalog_cache() -> None:
     global _plugins_cache, _icons_cache, _published_plugins_cache, _published_icons_cache
     global _slug_index, _icon_slug_index
@@ -63,7 +69,11 @@ def _get_published_plugins() -> List[CatalogEntry]:
     if _published_plugins_cache is not None:
         return _published_plugins_cache
     
-    _published_plugins_cache = [p for p in _load_plugins() if p.get("status") == "published"]
+    _published_plugins_cache = sorted(
+        [p for p in _load_plugins() if p.get("status") == "published"],
+        key=_plugin_sort_key,
+        reverse=True,
+    )
     return _published_plugins_cache
 
 
@@ -76,8 +86,102 @@ def _get_published_icons() -> List[CatalogEntry]:
     return _published_icons_cache
 
 
-def list_published_plugins(limit: Optional[int] = None) -> List[CatalogEntry]:
+def _plugin_sort_key(plugin: CatalogEntry) -> tuple[str, str]:
+    channel_message = plugin.get("channel_message") if isinstance(plugin.get("channel_message"), dict) else {}
+    date = (
+        plugin.get("published_at")
+        or channel_message.get("date")
+        or plugin.get("updated_at")
+        or ""
+    )
+    return (str(date).lower(), str(plugin.get("slug") or "").lower())
+
+
+def plugin_source_type(plugin: CatalogEntry) -> str:
+    source = plugin.get("source")
+    if isinstance(source, dict):
+        source_type = str(source.get("type") or "").strip().lower()
+        if source_type:
+            return source_type
+    if plugin.get("external"):
+        return SOURCE_EXTERNAL
+    return SOURCE_OFFICIAL
+
+
+def is_external_plugin(plugin: Optional[CatalogEntry]) -> bool:
+    return bool(plugin and plugin_source_type(plugin) == SOURCE_EXTERNAL)
+
+
+def _filter_plugins_by_source(entries: List[CatalogEntry], source_filter: str = SOURCE_ALL) -> List[CatalogEntry]:
+    source_filter = (source_filter or SOURCE_ALL).strip().lower()
+    if source_filter in {"", SOURCE_ALL}:
+        return entries
+    if source_filter == SOURCE_EXTERNAL:
+        return [p for p in entries if is_external_plugin(p)]
+    if source_filter == SOURCE_OFFICIAL:
+        return [p for p in entries if not is_external_plugin(p)]
+    return [
+        p
+        for p in entries
+        if isinstance(p.get("source"), dict)
+        and str(p["source"].get("id") or p["source"].get("username") or "").strip().lower() == source_filter
+    ]
+
+
+def plugin_source_filter_key(plugin: CatalogEntry) -> str:
+    if not is_external_plugin(plugin):
+        return SOURCE_OFFICIAL
+    source = plugin.get("source") if isinstance(plugin.get("source"), dict) else {}
+    return str(source.get("id") or source.get("username") or SOURCE_EXTERNAL).strip().lower() or SOURCE_EXTERNAL
+
+
+def plugin_source_display(plugin: CatalogEntry) -> str:
+    if not is_external_plugin(plugin):
+        return f"@{OFFICIAL_SOURCE_USERNAME}"
+    source = plugin.get("source") if isinstance(plugin.get("source"), dict) else {}
+    username = str(source.get("username") or "").strip().lstrip("@")
+    if username:
+        return f"@{username}"
+    return str(source.get("title") or source.get("id") or "External").strip() or "External"
+
+
+def list_plugin_sources() -> List[Dict[str, Any]]:
     entries = _get_published_plugins()
+    counts: Dict[str, Dict[str, Any]] = {
+        SOURCE_ALL: {"key": SOURCE_ALL, "label": "Все источники", "count": len(entries), "type": SOURCE_ALL},
+        SOURCE_OFFICIAL: {
+            "key": SOURCE_OFFICIAL,
+            "label": f"@{OFFICIAL_SOURCE_USERNAME}",
+            "count": 0,
+            "type": SOURCE_OFFICIAL,
+        },
+    }
+
+    for plugin in entries:
+        key = plugin_source_filter_key(plugin)
+        if key == SOURCE_OFFICIAL:
+            counts[SOURCE_OFFICIAL]["count"] += 1
+            continue
+        item = counts.setdefault(
+            key,
+            {
+                "key": key,
+                "label": plugin_source_display(plugin),
+                "count": 0,
+                "type": SOURCE_EXTERNAL,
+            },
+        )
+        item["count"] += 1
+
+    external = sorted(
+        [item for key, item in counts.items() if key not in {SOURCE_ALL, SOURCE_OFFICIAL}],
+        key=lambda item: str(item.get("label") or "").lower(),
+    )
+    return [counts[SOURCE_ALL], counts[SOURCE_OFFICIAL], *external]
+
+
+def list_published_plugins(limit: Optional[int] = None, source_filter: str = SOURCE_ALL) -> List[CatalogEntry]:
+    entries = _filter_plugins_by_source(_get_published_plugins(), source_filter)
     if limit is not None:
         return entries[:limit]
     return entries
@@ -90,8 +194,8 @@ def list_published_icons(limit: Optional[int] = None) -> List[CatalogEntry]:
     return entries
 
 
-def list_plugins_by_category(category_key: str) -> List[CatalogEntry]:
-    entries = _get_published_plugins()
+def list_plugins_by_category(category_key: str, source_filter: str = SOURCE_ALL) -> List[CatalogEntry]:
+    entries = _filter_plugins_by_source(_get_published_plugins(), source_filter)
     if category_key in (None, "", "_all"):
         return entries
     return [p for p in entries if p.get("category") == category_key]
@@ -104,9 +208,9 @@ def list_icons_by_category(category_key: str) -> List[CatalogEntry]:
     return [i for i in entries if i.get("category") == category_key]
 
 
-def search_plugins(query: str, limit: int = 10) -> List[CatalogEntry]:
+def search_plugins(query: str, limit: int = 10, source_filter: str = SOURCE_ALL) -> List[CatalogEntry]:
     normalized = query.strip().lower()
-    entries = _get_published_plugins()
+    entries = _filter_plugins_by_source(_get_published_plugins(), source_filter)
     
     if not normalized:
         result = entries.copy()
@@ -124,6 +228,13 @@ def search_plugins(query: str, limit: int = 10) -> List[CatalogEntry]:
             ])
         haystack_parts.append(plugin.get("slug"))
         haystack_parts.append(plugin.get("category"))
+        source = plugin.get("source")
+        if isinstance(source, dict):
+            haystack_parts.extend([
+                source.get("title"),
+                source.get("username"),
+                source.get("id"),
+            ])
         haystack = " ".join(filter(None, haystack_parts)).lower()
         return normalized in haystack
 
@@ -195,6 +306,8 @@ def find_user_plugins(user_id: int, username: str = "") -> List[CatalogEntry]:
     handle = f"@{username.lower()}" if username else ""
     
     for plugin in _get_published_plugins():
+        if is_external_plugin(plugin):
+            continue
         submitters = plugin.get("submitters", [])
         
         for sub in submitters:

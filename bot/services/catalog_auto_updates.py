@@ -189,7 +189,8 @@ async def _create_or_update_request(bot: Bot, catalog_entry: Dict[str, Any], met
     category_key = str(catalog_entry.get("category") or "").strip()
     payload: Dict[str, Any] = {
         "user_id": 0,
-        "username": "auto_updates",
+        "username": "",
+        "is_auto_update": True,
         "plugin": plugin_payload,
         "changelog": f"Автообновление из GitHub store.json: {old_version or '—'} → {store_version or meta.version}",
         "update_slug": slug,
@@ -248,7 +249,7 @@ async def run_catalog_auto_updates_once(bot: Bot, store_urls: Optional[list[str]
     if not store:
         return
 
-    for plugin in list_published_plugins():
+    for plugin in list_published_plugins(source_filter="official"):
         try:
             item: StoreItem | None = None
             matched_key = ""

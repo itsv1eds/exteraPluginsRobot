@@ -1,7 +1,7 @@
 from typing import Any, Dict, Optional, Tuple
 from packaging import version as pkg_version
 
-from catalog import find_icon_by_slug, find_plugin_by_slug, list_published_plugins
+from catalog import find_icon_by_slug, find_plugin_by_slug, is_external_plugin, list_published_plugins
 from bot.services.publish import make_slug
 
 
@@ -16,10 +16,10 @@ def validate_new_submission(plugin: Dict[str, Any]) -> Tuple[bool, Optional[str]
     slug = make_slug(plugin_name)
     existing = find_plugin_by_slug(slug)
     
-    if existing:
+    if existing and not is_external_plugin(existing):
         return False, "plugin_already_exists"
     
-    all_plugins = list_published_plugins()
+    all_plugins = list_published_plugins(source_filter="official")
     for p in all_plugins:
         p_id = p.get("ru", {}).get("id") or p.get("slug", "")
         if p_id.lower() == plugin_id.lower():

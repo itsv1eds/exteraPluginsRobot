@@ -79,6 +79,10 @@ def _is_too_long_error(exc: Exception) -> bool:
     )
 
 
+def _is_not_modified_error(exc: Exception) -> bool:
+    return "message is not modified" in str(exc).lower()
+
+
 def _link_preview_url(image: Optional[str]) -> Optional[str]:
     if not image:
         return None
@@ -265,6 +269,13 @@ async def answer(
                 return None
                 
         except Exception as exc:
+            if isinstance(exc, TelegramBadRequest) and _is_not_modified_error(exc):
+                try:
+                    await target.answer()
+                except Exception:
+                    pass
+                return msg
+
             logger.exception(
                 "event=answer.callback_edit_failed chat_id=%s message_id=%s image=%s has_photo=%s text_len=%s error=%s",
                 chat_id,

@@ -61,7 +61,7 @@ from bot.services.validation import (
 )
 from bot.states import UserFlow
 from bot.texts import TEXTS, t
-from catalog import find_plugin_by_slug, find_user_plugins
+from catalog import find_plugin_by_slug, find_user_plugins, is_external_plugin
 from bot.routers.catalog_flow import build_plugin_preview
 from bot.routers.catalog_flow import BOT_USERNAME
 from bot.keyboards import plugin_detail_kb
@@ -571,7 +571,8 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             if plugin:
                 text = build_plugin_preview(plugin, lang)
                 link = plugin.get("channel_message", {}).get("link")
-                notify_all_enabled = is_subscribed(user_id, ALL_SUBSCRIPTION_KEY)
+                external = is_external_plugin(plugin)
+                notify_all_enabled = False if external else is_subscribed(user_id, ALL_SUBSCRIPTION_KEY)
                 sent = await answer(
                     message,
                     text,
@@ -579,7 +580,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                         link,
                         back="catalog",
                         lang=lang,
-                        subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(payload)}:catalog"),
+                        subscribe_callback=(None if external or notify_all_enabled else f"sub:toggle:{encode_slug(payload)}:catalog"),
                     ),
                     "catalog",
                 )
@@ -728,7 +729,8 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
         if plugin:
             text = build_plugin_preview(plugin, lang)
             link = plugin.get("channel_message", {}).get("link")
-            notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False
+            external = is_external_plugin(plugin)
+            notify_all_enabled = False if external else (is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False)
             await answer(
                 cb,
                 text,
@@ -736,7 +738,7 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
                     link,
                     back="catalog",
                     lang=lang,
-                    subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(start_payload)}:catalog"),
+                    subscribe_callback=(None if external or notify_all_enabled else f"sub:toggle:{encode_slug(start_payload)}:catalog"),
                 ),
                 "catalog",
             )
@@ -2293,6 +2295,7 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
     icon = payload.get("icon", {})
     user_id = payload.get("user_id", 0)
     username = payload.get("username", "")
+    is_auto_update = bool(payload.get("is_auto_update")) or (str(username).strip() == "auto_updates" and str(user_id) == "0")
     request_type = entry.get("type", "new")
     admin_comment = payload.get("admin_comment")
     submission_type = _submission_type(payload)
@@ -2324,6 +2327,8 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
             changelog=changelog,
             user=user_link,
         )
+        if is_auto_update:
+            text = text.rsplit("\n\n<b>От:</b>", 1)[0]
     elif request_type == "delete":
         delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
         text = t(

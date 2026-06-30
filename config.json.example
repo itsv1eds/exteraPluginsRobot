@@ -1,9 +1,14 @@
 {
-  "admins_super": [
-    1282540315
+  "owners": [
+    123456789
   ],
-  "admins_plugins": [],
-  "admins_icons": [],
+  "admins_super": [],
+  "admins": [],
+  "backup": {
+    "auto_enabled": false,
+    "interval_hours": 24,
+    "last_run": null
+  },
   "bot_token": "",
   "publish_channel": "",
   "userbot": {

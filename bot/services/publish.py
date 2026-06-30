@@ -5,11 +5,65 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from aiogram import Bot
+from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import FSInputFile
+
 from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html
 from storage import flush_all, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
 from request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
-from catalog import invalidate_catalog_cache
+from catalog import invalidate_catalog_cache, plugin_deeplink_token
+
+_CAPTION_LIMIT = 1024
+
+
+def _channel_links_line(bot_username: str, slug: str) -> str:
+    bot_username = (bot_username or "").lstrip("@").strip()
+    if not bot_username:
+        return ""
+    token = plugin_deeplink_token(slug)
+    open_url = f"https://t.me/{bot_username}?start={token}"
+    suggest_url = f"https://t.me/{bot_username}?start=submit"
+    return (
+        f'<a href="{open_url}">Открыть в боте</a>'
+        f' | <a href="{suggest_url}">Предложить плагин</a>'
+    )
+
+
+async def _send_channel_post(
+    bot: Bot,
+    channel_id: int,
+    post_text: str,
+    file_path: Optional[str],
+):
+    has_file = bool(file_path and Path(file_path).exists())
+    if not has_file:
+        return await bot.send_message(
+            channel_id, post_text, parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+    document = FSInputFile(file_path)
+    try:
+        return await bot.send_document(
+            channel_id, document, caption=post_text,
+            parse_mode=ParseMode.HTML,
+        )
+    except TelegramBadRequest as exc:
+        if "caption is too long" not in str(exc).lower():
+            raise
+        logger.warning("event=publish.caption_overflow channel_id=%s len=%s", channel_id, len(post_text))
+        message = await bot.send_document(channel_id, FSInputFile(file_path))
+        try:
+            await bot.send_message(
+                channel_id, post_text, parse_mode=ParseMode.HTML,
+                reply_to_message_id=message.message_id, disable_web_page_preview=True,
+            )
+        except Exception:
+            logger.exception("event=publish.caption_overflow_text_failed channel_id=%s", channel_id)
+        return message
 
 logger = logging.getLogger(__name__)
 
@@ -139,48 +193,52 @@ def build_icon_channel_post(entry: Dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
-async def publish_plugin(entry: Dict[str, Any]) -> Dict[str, Any]:
-    from userbot.client import get_userbot
-    
-    userbot = await get_userbot()
-    if not userbot:
-        raise ValueError("Userbot not available")
-    
+async def publish_plugin(entry: Dict[str, Any], bot: Bot) -> Dict[str, Any]:
     payload = entry.get("payload", {})
     plugin = payload.get("plugin", {})
     submitter_id = payload.get("user_id")
     submitter_username = payload.get("username", "")
-    checked_on = payload.get("checked_on")
-    
+
+    config = get_config()
+    channel_cfg = config.get("channel", {}) or {}
+    channel_id = channel_cfg.get("id")
+    if not channel_id:
+        raise ValueError("channel.id is not configured")
+    channel_username = channel_cfg.get("username") or config.get("publish_channel") or ""
+
     post_text = build_channel_post(entry)
     file_path = plugin.get("file_path")
-    
-    result = await userbot.publish_plugin(post_text, file_path)
-    
+    slug = make_slug(plugin.get("name") or plugin.get("id"))
+
+    try:
+        me = await bot.me()
+        bot_username = me.username or ""
+    except Exception:
+        bot_username = channel_username
+    links_line = _channel_links_line(bot_username, slug)
+    if links_line:
+        post_text = f"{post_text}\n\n{links_line}"
+
+    message = await _send_channel_post(bot, channel_id, post_text, file_path)
+
     update_request_status(entry.get("id"), "published")
-    
-    config = get_config()
-    channel_username = (
-        (config.get("channel", {}) or {}).get("username")
-        or config.get("publish_channel")
-        or "xzcvzxa"
-    )
-    
+
     add_to_catalog(
         entry,
-        result["message_id"],
-        result["chat_id"],
+        message.message_id,
+        channel_id,
         channel_username,
         submitter_id,
         submitter_username,
     )
 
     await flush_all()
-    
+
     if file_path:
         Path(file_path).unlink(missing_ok=True)
-    
-    return result
+
+    link = f"https://t.me/{channel_username}/{message.message_id}" if channel_username else ""
+    return {"message_id": message.message_id, "chat_id": channel_id, "link": link}
 
 
 async def publish_icon(entry: Dict[str, Any]) -> Dict[str, Any]:
@@ -356,7 +414,6 @@ def add_updated_plugin(name: str, link: str) -> None:
         items = []
         updated["items"] = items
 
-    # Prevent unbounded growth of the storage.
     max_items = 200
     max_age_days = 30
     cutoff = datetime.utcnow() - timedelta(days=max_age_days)
@@ -700,7 +757,6 @@ def remove_icon_entry(slug: str) -> bool:
 
 
 async def remove_user_content(user_id: int, username: str = "") -> dict:
-    """Remove all plugins and iconpacks submitted by the given user from the catalog and channel."""
     from userbot.client import get_userbot
     from catalog import find_user_plugins, find_user_icons
 

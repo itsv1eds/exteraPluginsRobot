@@ -76,11 +76,21 @@ def _is_too_long_error(exc: Exception) -> bool:
         or "message text is too long" in text
         or "caption is too long" in text
         or "message caption is too long" in text
+        or "caption_too_long" in text
+        or "media_caption_too_long" in text
+        or "message_too_long" in text
     )
 
 
 def _is_not_modified_error(exc: Exception) -> bool:
     return "message is not modified" in str(exc).lower()
+
+
+def _is_entities_error(exc: Exception) -> bool:
+    if not isinstance(exc, TelegramBadRequest):
+        return False
+    text = str(exc).lower()
+    return "can't parse entities" in text or "unsupported start tag" in text
 
 
 def _link_preview_url(image: Optional[str]) -> Optional[str]:
@@ -176,6 +186,9 @@ async def answer(
         image = None
     disable_web_page_preview = not bool(preview_options)
 
+    if image and len(strip_html(text or "")) > 1024:
+        image = None
+
     if isinstance(target, CallbackQuery):
         msg = target.message
         if not msg:
@@ -184,8 +197,23 @@ async def answer(
         bot = msg.bot
         chat_id = msg.chat.id
         thread_kwargs = _topic_kwargs(msg)
-        
+
         try:
+            if msg.photo and len(strip_html(text or "")) > 1024:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                return await bot.send_message(
+                    chat_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                    disable_web_page_preview=disable_web_page_preview,
+                    link_preview_options=preview_options,
+                    **thread_kwargs,
+                )
+
             if preview_options and msg.photo:
                 try:
                     await msg.delete()
@@ -285,6 +313,30 @@ async def answer(
                 len(text or ""),
                 _short_error(exc, 500),
             )
+            if _is_entities_error(exc):
+                repaired = telegram_html(text)
+                logger.warning(
+                    "event=answer.callback_entities_repair chat_id=%s text_len=%s error=%s",
+                    chat_id, len(text or ""), _short_error(exc),
+                )
+                try:
+                    if getattr(msg, "photo", None):
+                        return await msg.edit_caption(
+                            caption=repaired, parse_mode=ParseMode.HTML, reply_markup=kb,
+                        )
+                    return await msg.edit_text(
+                        text=repaired,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=kb,
+                        disable_web_page_preview=disable_web_page_preview,
+                        link_preview_options=preview_options,
+                    )
+                except Exception as repair_exc:
+                    logger.exception(
+                        "event=answer.callback_entities_repair_failed chat_id=%s error=%s",
+                        chat_id, _short_error(repair_exc, 300),
+                    )
+
             if isinstance(exc, TelegramBadRequest) and _is_too_long_error(exc):
                 try:
                     sent = await bot.send_message(
@@ -315,26 +367,25 @@ async def answer(
         chat_id = target.chat.id
         bot = target.bot
         thread_kwargs = _topic_kwargs(target)
-    
-    if image:
-        file_id = _image_file_ids.get(image)
-        
-        if file_id:
-            return await bot.send_photo(
-                chat_id,
-                photo=file_id,
-                caption=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=kb,
-                **thread_kwargs,
-            )
-        else:
+
+    async def _message_send(send_text: str) -> Optional[Message]:
+        if image:
+            file_id = _image_file_ids.get(image)
+            if file_id:
+                return await bot.send_photo(
+                    chat_id,
+                    photo=file_id,
+                    caption=send_text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=kb,
+                    **thread_kwargs,
+                )
             path = IMAGES_DIR / f"{image}.png"
             if path.exists():
                 msg = await bot.send_photo(
                     chat_id,
                     photo=FSInputFile(path),
-                    caption=text,
+                    caption=send_text,
                     parse_mode=ParseMode.HTML,
                     reply_markup=kb,
                     **thread_kwargs,
@@ -342,20 +393,9 @@ async def answer(
                 if msg.photo:
                     _image_file_ids[image] = msg.photo[-1].file_id
                 return msg
-            else:
-                return await bot.send_message(
-                    chat_id,
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    disable_web_page_preview=disable_web_page_preview,
-                    link_preview_options=preview_options,
-                    **thread_kwargs,
-                )
-    else:
         return await bot.send_message(
             chat_id,
-            text=text,
+            text=send_text,
             parse_mode=ParseMode.HTML,
             reply_markup=kb,
             disable_web_page_preview=disable_web_page_preview,
@@ -363,7 +403,24 @@ async def answer(
             **thread_kwargs,
         )
 
-    return None
+    try:
+        return await _message_send(text)
+    except TelegramBadRequest as exc:
+        if not _is_entities_error(exc):
+            raise
+        repaired = telegram_html(text)
+        logger.warning(
+            "event=answer.entities_repair chat_id=%s text_len=%s error=%s",
+            chat_id, len(text or ""), _short_error(exc),
+        )
+        try:
+            return await _message_send(repaired)
+        except Exception as repair_exc:
+            logger.exception(
+                "event=answer.entities_repair_failed chat_id=%s error=%s",
+                chat_id, _short_error(repair_exc, 300),
+            )
+            return None
 
 
 def strip_html(text: str) -> str:

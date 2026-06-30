@@ -186,16 +186,3 @@ def build_submission_payload(
         "category_label": category_label,
         "submission_type": "plugin",
     }
-
-
-def build_icon_submission_payload(
-    user_id: int,
-    username: str,
-    icon: IconPackData,
-) -> Dict[str, Any]:
-    return {
-        "user_id": user_id,
-        "username": username,
-        "icon": icon.to_dict(),
-        "submission_type": "icon",
-    }

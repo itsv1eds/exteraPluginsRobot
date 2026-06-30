@@ -1,12 +1,21 @@
 from aiogram.fsm.state import State, StatesGroup
 
 
+class PosterFlow(StatesGroup):
+    entering_channel_ref = State()
+    composing_text = State()
+    composing_media = State()
+    composing_buttons = State()
+    previewing = State()
+    composing_time = State()
+
+
 class UserFlow(StatesGroup):
     idle = State()
     choosing_language = State()
     choosing_submission_type = State()
     uploading_file = State()
-    uploading_icon_file = State()
+    entering_min_version = State()
     uploading_pending_file = State()
     choosing_description_language = State()
     editing_description_translation = State()
@@ -55,3 +64,12 @@ class AdminFlow(StatesGroup):
     linking_author_icon_user = State()
     editing_catalog_icon = State()
     editing_catalog_icon_field = State()
+
+    entering_sync_version = State()
+    entering_sync_catalog = State()
+    entering_erase_id = State()
+
+    entering_source_username = State()
+    entering_source_title = State()
+    entering_source_link = State()
+    attaching_source_plugin = State()

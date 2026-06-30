@@ -86,37 +86,66 @@ def get_categories() -> List[Dict[str, Any]]:
 
 
 def _get_admin_list(key: str) -> set:
-    return set(get_config().get(key, []))
+    out: set = set()
+    for raw in get_config().get(key, []) or []:
+        try:
+            out.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+ROLE_OWNER = "owner"
+ROLE_SUPER = "super"
+ROLE_ADMIN = "admin"
+
+
+def get_owners() -> set:
+    return _get_admin_list("owners")
 
 
 def get_admins_super() -> set:
-    return _get_admin_list("admins_super")
+    return _get_admin_list("admins_super") | get_owners()
 
 
-def get_admins_plugins() -> set:
-    fallback = set(get_config().get("admins", []))
-    return get_admins_super() | _get_admin_list("admins_plugins") | fallback
-
-
-def get_admins_icons() -> set:
-    fallback = set(get_config().get("admins", []))
-    return get_admins_super() | _get_admin_list("admins_icons") | fallback
+def get_admins_regular() -> set:
+    return (
+        _get_admin_list("admins")
+        | _get_admin_list("admins_plugins")
+        | _get_admin_list("admins_icons")
+    )
 
 
 def get_admins() -> set:
-    fallback = set(get_config().get("admins", []))
-    return get_admins_super() | _get_admin_list("admins_plugins") | _get_admin_list("admins_icons") | fallback
+    return get_admins_super() | get_admins_regular()
+
+
+def get_admins_plugins() -> set:
+    return get_admins()
+
+
+def get_admins_icons() -> set:
+    return get_admins()
+
+
+def is_owner(user_id: int) -> bool:
+    try:
+        return int(user_id) in get_owners()
+    except (TypeError, ValueError):
+        return False
 
 
 def get_admin_role(user_id: int) -> Optional[str]:
-    if user_id in get_admins_super():
-        return "super"
-    if user_id in _get_admin_list("admins_plugins"):
-        return "plugins"
-    if user_id in _get_admin_list("admins_icons"):
-        return "icons"
-    if user_id in get_admins():
-        return "super"
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    if uid in get_owners():
+        return ROLE_OWNER
+    if uid in _get_admin_list("admins_super"):
+        return ROLE_SUPER
+    if uid in get_admins_regular():
+        return ROLE_ADMIN
     return None
 
 

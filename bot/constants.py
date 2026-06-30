@@ -12,5 +12,4 @@ CUSTOM_EMOJI_ID = "5319016550248751722"
 
 
 def utf16_length(text: str) -> int:
-    """Return the UTF-16 code unit length for Telegram entity offsets."""
     return len(text.encode("utf-16-le")) // 2

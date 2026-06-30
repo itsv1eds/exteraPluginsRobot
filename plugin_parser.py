@@ -21,7 +21,6 @@ OPTIONAL_FIELDS = {
 
 @dataclass
 class PluginMetadata:
-    """Structured representation of the dunder metadata in plugin files."""
 
     id: str
     name: str
@@ -34,7 +33,6 @@ class PluginMetadata:
     optional: Dict[str, Optional[str]] = field(default_factory=dict)
 
     def as_post_template(self) -> Dict[str, Optional[str]]:
-        """Return core fields handy for template rendering."""
 
         return {
             "Название": self.name,
@@ -46,11 +44,10 @@ class PluginMetadata:
 
 
 class PluginParseError(RuntimeError):
-    """Raised when a plugin file lacks mandatory metadata."""
+    pass
 
 
 def parse_plugin_file(path: Path | str, fallback_version: str | None = None) -> PluginMetadata:
-    """Read the provided plugin file and parse the metadata section."""
 
     plugin_path = Path(path)
     if not plugin_path.exists():
@@ -60,7 +57,6 @@ def parse_plugin_file(path: Path | str, fallback_version: str | None = None) -> 
 
 
 def parse_plugin_text(text: str, fallback_version: str | None = None) -> PluginMetadata:
-    """Parse metadata directly from a plugin file as text."""
 
     normalized = text.replace("\r\n", "\n")
     fields: Dict[str, Optional[str]] = {}
@@ -117,9 +113,8 @@ def _strip_literal(raw_value: str) -> Optional[str]:
         if len(parts) >= 3:
             return parts[1]
     if raw_value.startswith("("):
-        # support triple-quoted strings split via parentheses.
         try:
-            return eval(raw_value, {})  # noqa: S307 - controlled metadata parsing
+            return eval(raw_value, {})
         except Exception:
             return raw_value
     try:

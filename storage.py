@@ -97,6 +97,7 @@ _DOC_UPDATED = "updated"
 _DOC_JOINLY = "joinly"
 _DOC_STENKA = "stenka"
 _DOC_AUDIT = "audit"
+_DOC_POSTER = "poster"
 
 _cache: Dict[str, Dict[str, Any]] = {}
 _cache_time: Dict[str, float] = {}
@@ -127,6 +128,34 @@ _db_ready = False
 
 class StorageError(RuntimeError):
     pass
+
+
+class StorageCorruptError(StorageError):
+    pass
+
+
+def verify_integrity() -> None:
+    if not SQLITE_PATH.exists():
+        return
+    try:
+        conn = sqlite3.connect(SQLITE_PATH, timeout=30)
+        try:
+            row = conn.execute("PRAGMA quick_check").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise StorageCorruptError(
+            f"SQLite database at {SQLITE_PATH} is unreadable/corrupt: {exc}. "
+            "Restore from a known-good backup (e.g. a backups/storage_deploy_*.zip "
+            "snapshot) before starting the bot."
+        ) from exc
+
+    status = str(row[0]).lower() if row and row[0] is not None else ""
+    if status != "ok":
+        raise StorageCorruptError(
+            f"SQLite integrity check failed for {SQLITE_PATH}: {status!r}. "
+            "Restore from a known-good backup before starting the bot."
+        )
 
 
 def _now_iso() -> str:
@@ -215,6 +244,8 @@ def _is_doc_empty(doc_key: str, data: Dict[str, Any]) -> bool:
         return len(data) == 0
     if doc_key == _DOC_STENKA:
         return len(data) == 0
+    if doc_key == _DOC_POSTER:
+        return not (data.get("channels") or data.get("posts"))
     if doc_key == _DOC_AUDIT:
         return not bool(data.get("events"))
     return len(data) == 0
@@ -344,7 +375,6 @@ def _ensure_db() -> None:
                 """
             )
 
-            # Remove legacy storage completely.
             legacy_doc = "".join(
                 [
                     chr(115),
@@ -713,6 +743,25 @@ def _write_stenka_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     _mark_initialized(conn, _DOC_STENKA)
 
 
+def _read_poster_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
+    data = _get_meta_json(conn, _meta_key(_DOC_POSTER), {})
+    if not isinstance(data.get("channels"), list):
+        data["channels"] = []
+    if not isinstance(data.get("posts"), list):
+        data["posts"] = []
+    return data
+
+
+def _write_poster_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+    payload = dict(data) if isinstance(data, dict) else {}
+    if not isinstance(payload.get("channels"), list):
+        payload["channels"] = []
+    if not isinstance(payload.get("posts"), list):
+        payload["posts"] = []
+    _set_meta_json(conn, _meta_key(_DOC_POSTER), payload)
+    _mark_initialized(conn, _DOC_POSTER)
+
+
 def _read_audit_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
     data = _get_meta_json(conn, _meta_key(_DOC_AUDIT), {})
     if not isinstance(data.get("events"), list):
@@ -738,6 +787,7 @@ _READERS = {
     _DOC_JOINLY: _read_joinly_doc,
     _DOC_STENKA: _read_stenka_doc,
     _DOC_AUDIT: _read_audit_doc,
+    _DOC_POSTER: _read_poster_doc,
 }
 
 _WRITERS = {
@@ -750,6 +800,7 @@ _WRITERS = {
     _DOC_JOINLY: _write_joinly_doc,
     _DOC_STENKA: _write_stenka_doc,
     _DOC_AUDIT: _write_audit_doc,
+    _DOC_POSTER: _write_poster_doc,
 }
 
 
@@ -989,6 +1040,19 @@ def load_audit() -> Dict[str, Any]:
 
 def save_audit(data: Dict[str, Any]) -> None:
     _save_sync(_DOC_AUDIT, data)
+
+
+def load_poster() -> Dict[str, Any]:
+    data = _normalize_dict(_get_cached(_DOC_POSTER), {"channels": [], "posts": []})
+    if not isinstance(data.get("channels"), list):
+        data["channels"] = []
+    if not isinstance(data.get("posts"), list):
+        data["posts"] = []
+    return data
+
+
+def save_poster(data: Dict[str, Any]) -> None:
+    _save_sync(_DOC_POSTER, data)
 
 
 async def flush_all() -> None:

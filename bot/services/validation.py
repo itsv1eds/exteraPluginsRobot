@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional, Tuple
-from packaging import version as pkg_version
 
-from catalog import find_icon_by_slug, find_plugin_by_slug, is_external_plugin, list_published_plugins
+from catalog import find_plugin_by_slug, is_external_plugin, list_published_plugins
 from bot.services.publish import make_slug
+from bot.services.versioning import compare_versions
 
 
 def validate_new_submission(plugin: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
@@ -37,80 +37,52 @@ def validate_update_submission(
     
     if not new_version:
         return False, "missing_version"
-    
+
     if not old_version:
         return True, None
-    
-    try:
-        new_v = pkg_version.parse(new_version)
-        old_v = pkg_version.parse(old_version)
-        
-        if new_v == old_v:
-            return False, "version_same"
-        if new_v < old_v:
-            return False, "version_lower"
-    except Exception:
-        if new_version == old_version:
-            return False, "version_same"
-        return False, "version_not_higher"
-    
+
+    cmp = compare_versions(new_version, old_version)
+    if cmp == 0:
+        return False, "version_same"
+    if cmp < 0:
+        return False, "version_lower"
+
     return True, None
 
 
-def check_duplicate_pending(plugin_id: str, plugin_name: str) -> Tuple[bool, Optional[str]]:
+def check_duplicate_pending(
+    plugin_id: str,
+    plugin_name: str,
+    exclude_user_id: Optional[int] = None,
+) -> Tuple[bool, Optional[str]]:
     from request_store import get_requests
-    
+
     pending = get_requests(status="pending") + get_requests(status="draft")
-    
+
     slug = make_slug(plugin_name)
-    
+    target_id = (plugin_id or "").lower()
+
     for req in pending:
         payload = req.get("payload", {})
+
+        if (
+            req.get("status") == "draft"
+            and exclude_user_id is not None
+            and payload.get("user_id") == exclude_user_id
+        ):
+            continue
+
         req_plugin = payload.get("plugin", {})
-        
         req_id = req_plugin.get("id", "")
         req_name = req_plugin.get("name", "")
         req_slug = make_slug(req_name)
-        
-        if req_id.lower() == plugin_id.lower():
+
+        if req_id and req_id.lower() == target_id:
             return True, req.get("id")
-        
-        if req_slug == slug:
-            return True, req.get("id")
-    
-    return False, None
 
-
-def validate_icon_submission(icon: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-    icon_id = icon.get("id", "")
-    icon_name = icon.get("name", "")
-    if not icon_id or not icon_name:
-        return False, "missing_icon_info"
-
-    slug = make_slug(icon_name)
-    existing = find_icon_by_slug(slug)
-    if existing:
-        return False, "icon_already_exists"
-
-    return True, None
-
-
-def check_duplicate_icon_pending(icon_id: str, icon_name: str) -> Tuple[bool, Optional[str]]:
-    from request_store import get_requests
-
-    pending = get_requests(status="pending") + get_requests(status="draft")
-    slug = make_slug(icon_name)
-
-    for req in pending:
-        payload = req.get("payload", {})
-        req_icon = payload.get("icon", {})
-        req_id = req_icon.get("id", "")
-        req_name = req_icon.get("name", "")
-        req_slug = make_slug(req_name)
-
-        if req_id and icon_id and req_id.lower() == icon_id.lower():
-            return True, req.get("id")
         if req_slug == slug:
             return True, req.get("id")
 
     return False, None
+
+

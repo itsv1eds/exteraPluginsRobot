@@ -6,7 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from bot.cache import get_config, preload_cache
-from bot.routers import admin_flow, catalog_flow, user_flow, joinly_flow, moderation_flow
+from bot.routers import admin_flow, catalog_flow, user_flow, joinly_flow, moderation_flow, poster_flow
 from bot.middlewares import (
     UserActionLoggingMiddleware,
     start_log_worker,
@@ -63,8 +63,15 @@ async def start_userbot() -> None:
 
 
 async def on_startup(bot: Bot) -> None:
+    from storage import verify_integrity, StorageCorruptError
+    try:
+        verify_integrity()
+    except StorageCorruptError as exc:
+        logger.critical("DATABASE CORRUPT — refusing to start. %s", exc)
+        raise
+
     await preload_cache()
-    
+
     from storage import preload_storage
     await preload_storage()
 
@@ -85,10 +92,14 @@ async def on_startup(bot: Bot) -> None:
     start_scheduled_publish_worker(bot)
     cleanup_orphan_plugin_files()
 
-    from bot.services.catalog_auto_updates import start_catalog_auto_updates_worker
-    start_catalog_auto_updates_worker(bot)
-
     admin_flow.start_scheduled_posts_cleanup_worker()
+
+    from bot.services.poster import start_poster_worker
+    start_poster_worker(bot)
+
+    from bot.services.backup import start_backup_worker
+    start_backup_worker(bot)
+
     await joinly_flow.schedule_pending_post_guard_unlocks(bot)
     
     await start_log_worker()
@@ -112,9 +123,13 @@ async def on_shutdown(bot: Bot) -> None:
     stop_draft_reminder_worker()
     stop_scheduled_publish_worker()
 
-    from bot.services.catalog_auto_updates import stop_catalog_auto_updates_worker
-    stop_catalog_auto_updates_worker()
     admin_flow.stop_scheduled_posts_cleanup_worker()
+
+    from bot.services.poster import stop_poster_worker
+    stop_poster_worker()
+
+    from bot.services.backup import stop_backup_worker
+    stop_backup_worker()
     
     from storage import flush_all
     await flush_all()
@@ -146,6 +161,7 @@ async def main() -> None:
     
     dp.include_router(admin_flow.router)
     dp.include_router(moderation_flow.router)
+    dp.include_router(poster_flow.router)
     dp.include_router(user_flow.router)
     dp.include_router(catalog_flow.router)
     dp.include_router(joinly_flow.router)

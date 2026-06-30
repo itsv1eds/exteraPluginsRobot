@@ -272,6 +272,24 @@ def cleanup_expired_drafts() -> int:
     return removed
 
 
+def discard_user_drafts(user_id: int, plugin_id: Optional[str] = None) -> int:
+    target = str(plugin_id).strip() if plugin_id else None
+    removed = 0
+    for entry in list(_get_requests_list()):
+        if entry.get("status") != "draft":
+            continue
+        payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+        if not isinstance(payload, dict) or payload.get("user_id") != user_id:
+            continue
+        if target and target not in _request_plugin_ids(entry):
+            continue
+        if delete_request_and_file(entry.get("id", "")):
+            removed += 1
+    if removed:
+        logger.info("Discarded %s stale draft(s) for user %s", removed, user_id)
+    return removed
+
+
 def cleanup_orphan_plugin_files() -> int:
     from bot.helpers import get_uploads_dir
 
@@ -404,7 +422,7 @@ async def _scheduled_publish_loop(bot) -> None:
                     name = (payload.get("icon") or {}).get("name", "")
                     version = (payload.get("icon") or {}).get("version")
                 else:
-                    result = await publish_plugin(entry)
+                    result = await publish_plugin(entry, bot)
                     notify_key = "notify_published"
                     name = (payload.get("plugin") or {}).get("name", "")
                     version = (payload.get("plugin") or {}).get("version")

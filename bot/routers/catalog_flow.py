@@ -450,7 +450,7 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
     if kind == "plugin":
         category = str(entry.get("category") or "").strip()
         icon_id = CATEGORY_ICONS.get(category) or ICONS["plugin"]
-        fallback = CATEGORY_FALLBACKS.get(category, "🧩")
+        fallback = CATEGORY_FALLBACKS.get(category, "")
         lines = [f'<tg-emoji emoji-id="{icon_id}">{fallback}</tg-emoji> <b>{name}</b> by <code>{author}</code>']
     else:
         lines = [t("catalog_inline_header", lang, name=name, author=author)]
@@ -594,7 +594,6 @@ async def on_profile_broadcast_pay(cb: CallbackQuery, state: FSMContext) -> None
         await cb.answer()
         return
 
-    # Telegram Stars payments use currency XTR and provider_token can be empty.
     from aiogram.types import LabeledPrice
 
     await cb.bot.send_invoice(
@@ -1313,7 +1312,6 @@ async def on_profile_joinly_toggle(cb: CallbackQuery, state: FSMContext) -> None
         await cb.answer("Not found", show_alert=True)
         return
 
-    # Verify user is admin/creator in that chat before allowing edits.
     try:
         member = await cb.bot.get_chat_member(chat_id, user.id)
         status = getattr(member, "status", None)
@@ -1388,7 +1386,7 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
             name = str(plugin.get("name") or req_id).strip() or req_id
             req_type = req.get("type") if isinstance(req, dict) else "new"
             cb_data = f"pendupd:{req_id}" if req_type == "update" else f"pendreq:{req_id}"
-            all_items.append((f"{name} ✍", cb_data))
+            all_items.append((f"{name} ", cb_data))
 
     total = len(all_items)
     total_pages = math.ceil(total / PAGE_SIZE)
@@ -1459,7 +1457,7 @@ async def on_inline(query: InlineQuery) -> None:
             results.append(
                 InlineQueryResultArticle(
                     id=f"request:{encode_slug(request_id)}",
-                    title=f"🗂 Заявка {request_id}",
+                    title=f"Заявка {request_id}",
                     description=strip_html(message_text)[:100],
                     input_message_content=InputTextMessageContent(
                         message_text=message_text,
@@ -1475,7 +1473,7 @@ async def on_inline(query: InlineQuery) -> None:
                 results.append(
                     InlineQueryResultCachedDocument(
                         id=f"request-file:{encode_slug(request_id)}",
-                        title=f"📎 Файл {file_name}",
+                        title=f"Файл {file_name}",
                         document_file_id=file_id,
                         description=f"Файл заявки {request_id}",
                         caption=_request_inline_file_caption(request_id, file_kind, message_text),
@@ -1499,7 +1497,7 @@ async def on_inline(query: InlineQuery) -> None:
         locale = plugin.get(lang) or plugin.get("ru") or {}
         name = locale.get("name") or slug
         category_key = str(plugin.get("category") or "").strip()
-        category_fallback = CATEGORY_FALLBACKS.get(category_key, "🧩")
+        category_fallback = CATEGORY_FALLBACKS.get(category_key, "")
         title = f"{category_fallback} {name}"
         preview_url = _plugin_category_preview_url(category_key)
         preview = _with_hidden_preview_link(build_inline_preview(plugin, lang, "plugin"), preview_url)

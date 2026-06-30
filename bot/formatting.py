@@ -126,5 +126,14 @@ def code_html(value: object) -> str:
     return f"<code>{plain_html(value)}</code>"
 
 
+def user_mention(user_id: object, username: object = None) -> str:
+    uid = str(user_id or "").strip()
+    handle = str(username or "").strip().lstrip("@")
+    label = f"@{plain_html(handle)}" if handle else (plain_html(uid) or "—")
+    if uid.lstrip("-").isdigit():
+        return f'<a href="tg://user?id={uid}">{label}</a>'
+    return label
+
+
 def join_plain(values: Iterable[object], sep: str = " | ") -> str:
     return sep.join(plain_html(value) for value in values if str(value or "").strip())

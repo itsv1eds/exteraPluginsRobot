@@ -62,6 +62,161 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_btn_banned": {"ru": "Баны", "en": "Bans"},
     "admin_btn_broadcast": {"ru": "Рассылка", "en": "Broadcast"},
     "admin_btn_config": {"ru": "Настройки", "en": "Settings"},
+    "admin_btn_sources": {"ru": "Источники", "en": "Sources"},
+    "admin_btn_maintenance": {"ru": "Обслуживание", "en": "Maintenance"},
+    "admin_btn_backup": {"ru": "Бэкап БД", "en": "DB backup"},
+    "admin_backup_title": {
+        "ru": "<b>Бэкап базы данных</b>\n\nДоступно только владельцу. Бот пришлёт архив с БД.\n\n<b>Автобэкап:</b> {state}",
+        "en": "<b>Database backup</b>\n\nOwner-only. The bot sends the DB as an archive.\n\n<b>Auto-backup:</b> {state}",
+    },
+    "admin_backup_now": {"ru": "Сделать бэкап сейчас", "en": "Back up now"},
+    "admin_backup_auto_on": {"ru": "Автобэкап: включён", "en": "Auto-backup: on"},
+    "admin_backup_auto_off": {"ru": "Автобэкап: выключен", "en": "Auto-backup: off"},
+    "admin_backup_auto_state": {"ru": "включён, раз в {hours} ч", "en": "on, every {hours}h"},
+    "admin_backup_interval": {"ru": "Интервал: {hours} ч", "en": "Interval: {hours}h"},
+    "admin_backup_started": {"ru": "Создаю бэкап…", "en": "Creating backup…"},
+    "admin_backup_sent": {"ru": "✅ Бэкап отправлен.", "en": "✅ Backup sent."},
+    "admin_backup_failed": {"ru": "Не удалось создать/отправить бэкап.", "en": "Failed to create/send the backup."},
+    "admin_maint_title": {
+        "ru": "<b>Обслуживание</b>\n\nДиагностика и ручные операции с каталогом и заявками.",
+        "en": "<b>Maintenance</b>\n\nDiagnostics and manual catalog/request operations.",
+    },
+    "admin_maint_health": {"ru": "Health / диагностика", "en": "Health / diagnostics"},
+    "admin_maint_sync_version": {"ru": "Обновить версию плагина", "en": "Sync plugin version"},
+    "admin_maint_sync_catalog": {"ru": "Привязать пост к заявке", "en": "Link post to request"},
+    "admin_maint_erase_id": {"ru": "Удалить заявки по ID", "en": "Delete requests by ID"},
+    "admin_maint_erase_hidden": {"ru": "Очистить скрытые заявки", "en": "Clear hidden requests"},
+    "admin_maint_prompt_sync_version": {
+        "ru": "Введите <code>id_или_slug версия</code>\n\nНапример: <code>voicetiming 1.2.3</code>",
+        "en": "Send <code>id_or_slug version</code>\n\nExample: <code>voicetiming 1.2.3</code>",
+    },
+    "admin_maint_prompt_sync_catalog": {
+        "ru": "Введите <code>ссылка_на_пост request_id</code>\n\nНапример: <code>https://t.me/channel/123 abc-123</code>",
+        "en": "Send <code>post_link request_id</code>\n\nExample: <code>https://t.me/channel/123 abc-123</code>",
+    },
+    "admin_maint_prompt_erase_id": {
+        "ru": "Введите <code>id_или_slug</code> плагина — будут удалены все связанные заявки.",
+        "en": "Send a plugin <code>id_or_slug</code> — all its requests will be deleted.",
+    },
+    "admin_maint_erase_confirm": {
+        "ru": "Очистить все <b>скрытые</b> заявки (не draft/pending/scheduled/error)?",
+        "en": "Clear all <b>hidden</b> requests (not draft/pending/scheduled/error)?",
+    },
+    "admin_maint_done": {"ru": "✅ Готово: {result}", "en": "✅ Done: {result}"},
+    "admin_maint_bad_format": {"ru": "Неверный формат, попробуйте ещё раз.", "en": "Invalid format, try again."},
+    "admin_sources_title": {
+        "ru": "<b>Кастомные источники</b>\n\nВыберите источник или добавьте новый.",
+        "en": "<b>Custom sources</b>\n\nPick a source or add a new one.",
+    },
+    "admin_sources_empty": {
+        "ru": "<b>Кастомные источники</b>\n\nПока нет ни одного источника.",
+        "en": "<b>Custom sources</b>\n\nNo sources yet.",
+    },
+    "admin_source_add": {"ru": "Добавить источник", "en": "Add source"},
+    "admin_source_attach": {"ru": "Привязать плагин", "en": "Attach a plugin"},
+    "admin_source_delete": {"ru": "Удалить источник", "en": "Delete source"},
+    "admin_source_detail": {
+        "ru": "<b>{title}</b>\n\n<b>Username:</b> @{username}\n<b>Ссылка:</b> {link}\n<b>Плагинов привязано:</b> {count}",
+        "en": "<b>{title}</b>\n\n<b>Username:</b> @{username}\n<b>Link:</b> {link}\n<b>Plugins attached:</b> {count}",
+    },
+    "admin_source_prompt_username": {
+        "ru": "Введите <b>username</b> источника (например, <code>@meeowPlugins</code> или <code>meeowPlugins</code>):",
+        "en": "Send the source <b>username</b> (e.g. <code>@meeowPlugins</code> or <code>meeowPlugins</code>):",
+    },
+    "admin_source_prompt_title": {
+        "ru": "Введите <b>заголовок</b> источника (отображаемое имя). Отправьте <code>-</code>, чтобы пропустить.",
+        "en": "Send a <b>title</b> (display name). Send <code>-</code> to skip.",
+    },
+    "admin_source_prompt_link": {
+        "ru": "Введите <b>ссылку</b> источника. Отправьте <code>-</code>, чтобы использовать t.me/username.",
+        "en": "Send a <b>link</b>. Send <code>-</code> to use t.me/username.",
+    },
+    "admin_source_prompt_attach": {
+        "ru": "Введите <code>slug</code> или <code>id</code> плагина, который привязать к этому источнику:",
+        "en": "Send a plugin <code>slug</code> or <code>id</code> to attach to this source:",
+    },
+    "admin_source_added": {"ru": "✅ Источник <b>{title}</b> сохранён.", "en": "✅ Source <b>{title}</b> saved."},
+    "admin_source_deleted": {"ru": "✅ Источник удалён.", "en": "✅ Source deleted."},
+    "admin_source_del_confirm": {
+        "ru": "Удалить источник <b>{title}</b>? Привязанные плагины сохранятся, но потеряют этот источник в фильтре.",
+        "en": "Delete source <b>{title}</b>? Attached plugins remain but lose this source in the filter.",
+    },
+    "admin_source_attached": {"ru": "✅ Плагин <code>{slug}</code> привязан.", "en": "✅ Plugin <code>{slug}</code> attached."},
+    "admin_source_attach_notfound": {"ru": "Плагин не найден.", "en": "Plugin not found."},
+    "admin_source_not_found": {"ru": "Источник не найден.", "en": "Source not found."},
+    "poster_btn": {"ru": "Отложенные посты", "en": "Scheduled posts"},
+    "poster_home": {
+        "ru": "<b>Poster</b>\n\nВыберите канал или добавьте новый. Бот должен быть админом канала с правом публикации.",
+        "en": "<b>Poster</b>\n\nPick a channel or add a new one. The bot must be a channel admin with post rights.",
+    },
+    "poster_home_empty": {
+        "ru": "<b>Poster</b>\n\nУ вас пока нет каналов. Добавьте бота админом в свой канал и нажмите «Добавить канал».",
+        "en": "<b>Poster</b>\n\nNo channels yet. Add the bot as an admin to your channel, then tap “Add channel”.",
+    },
+    "poster_btn_add_channel": {"ru": "Добавить канал", "en": "Add channel"},
+    "poster_btn_my_posts": {"ru": "Мои отложенные", "en": "My scheduled"},
+    "poster_btn_new_post": {"ru": "Новый пост", "en": "New post"},
+    "poster_btn_updated_plugins": {"ru": "Пост: обновлённые плагины", "en": "Post: updated plugins"},
+    "poster_updated_empty": {"ru": "Список обновлённых плагинов пуст.", "en": "The updated-plugins list is empty."},
+    "poster_btn_remove_channel": {"ru": "Отвязать канал", "en": "Remove channel"},
+    "poster_btn_skip": {"ru": "⏭ Пропустить", "en": "⏭ Skip"},
+    "poster_time_1h": {"ru": "+1ч", "en": "+1h"},
+    "poster_time_3h": {"ru": "+3ч", "en": "+3h"},
+    "poster_time_24h": {"ru": "+24ч", "en": "+24h"},
+    "poster_add_channel_prompt": {
+        "ru": "Перешлите любой пост из вашего канала, или отправьте его <code>@username</code> / <code>-100…</code> ID.\n\nБот должен быть в нём админом, и вы тоже.",
+        "en": "Forward any post from your channel, or send its <code>@username</code> / <code>-100…</code> ID.\n\nThe bot must be an admin there, and so must you.",
+    },
+    "poster_channel_added": {"ru": "✅ Канал <b>{title}</b> добавлен.", "en": "✅ Channel <b>{title}</b> added."},
+    "poster_channel_access": {
+        "ru": "Доступ к публикации есть у админов канала: {admins}",
+        "en": "Posting access belongs to the channel admins: {admins}",
+    },
+    "poster_btn_edit_text": {"ru": "Изменить текст", "en": "Edit text"},
+    "poster_btn_edit_media": {"ru": "Медиа", "en": "Media"},
+    "poster_btn_edit_buttons": {"ru": "Кнопки", "en": "Buttons"},
+    "poster_btn_schedule": {"ru": "Запланировать", "en": "Schedule"},
+    "poster_preview_header": {"ru": "<b>Предпросмотр поста</b>", "en": "<b>Post preview</b>"},
+    "poster_preview_meta": {
+        "ru": "<b>Медиа:</b> {media}\n<b>Кнопки:</b> {buttons}",
+        "en": "<b>Media:</b> {media}\n<b>Buttons:</b> {buttons}",
+    },
+    "poster_preview_media_photo": {"ru": "фото", "en": "photo"},
+    "poster_preview_media_video": {"ru": "видео", "en": "video"},
+    "poster_preview_media_none": {"ru": "нет", "en": "none"},
+    "poster_channel_detail": {
+        "ru": "<b>{title}</b>\n@{username}\n\nЧто делаем?",
+        "en": "<b>{title}</b>\n@{username}\n\nWhat next?",
+    },
+    "poster_channel_removed": {"ru": "Канал отвязан", "en": "Channel removed"},
+    "poster_compose_text": {
+        "ru": "Отправьте <b>текст</b> поста (с форматированием и кастом-эмодзи поддерживается):",
+        "en": "Send the post <b>text</b> (formatting and custom emoji supported):",
+    },
+    "poster_compose_media": {
+        "ru": "Прикрепите <b>фото</b> или <b>видео</b>, либо пропустите.",
+        "en": "Attach a <b>photo</b> or <b>video</b>, or skip.",
+    },
+    "poster_compose_buttons": {
+        "ru": "Отправьте кнопки — по одной на строку в формате <code>Текст | https://ссылка</code>.\n\nЦвет кнопки — добавьте в конце <code>::red</code> или <code>::green</code>, например <code>Текст | https://ссылка::red</code>. Или пропустите.",
+        "en": "Send buttons — one per line as <code>Text | https://link</code>.\n\nColor a button by appending <code>::red</code> or <code>::green</code>, e.g. <code>Text | https://link::red</code>. Or skip.",
+    },
+    "poster_compose_time": {
+        "ru": "Когда опубликовать? Выберите быстрый вариант или отправьте дату <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5).",
+        "en": "When to publish? Pick a quick option or send a date <code>DD.MM.YYYY HH:MM</code> (UTC+5).",
+    },
+    "poster_scheduled": {"ru": "✅ Пост запланирован на <b>{datetime}</b>.", "en": "✅ Post scheduled for <b>{datetime}</b>."},
+    "poster_my_posts": {"ru": "<b>Запланированные посты</b>\n\nНажмите, чтобы отменить:", "en": "<b>Scheduled posts</b>\n\nTap to cancel:"},
+    "poster_my_posts_empty": {"ru": "Запланированных постов нет.", "en": "No scheduled posts."},
+    "poster_post_canceled": {"ru": "Пост отменён", "en": "Post canceled"},
+    "poster_err_not_found": {"ru": "Канал не найден.", "en": "Channel not found."},
+    "poster_err_not_channel": {"ru": "Это не канал.", "en": "That's not a channel."},
+    "poster_err_bot_not_admin": {"ru": "Бот не админ канала (нужно право публикации).", "en": "The bot is not a channel admin (post rights required)."},
+    "poster_err_user_not_admin": {"ru": "Вы не админ этого канала.", "en": "You are not an admin of this channel."},
+    "poster_err_not_media": {"ru": "Пришлите фото или видео, либо пропустите.", "en": "Send a photo or video, or skip."},
+    "poster_err_bad_buttons": {"ru": "Не распознал кнопки. Формат: <code>Текст | https://ссылка</code>.", "en": "Couldn't parse buttons. Format: <code>Text | https://link</code>."},
+    "poster_err_bad_time": {"ru": "Неверная дата. Формат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>.", "en": "Invalid date. Format: <code>DD.MM.YYYY HH:MM</code>."},
+    "poster_err_past_time": {"ru": "Время уже прошло, укажите будущее.", "en": "That time is in the past."},
     "admin_btn_my_notifications": {"ru": "Мои уведомления", "en": "My notifications"},
     "admin_btn_check_updates": {"ru": "Проверить обновления", "en": "Check updates"},
     "admin_btn_scheduled": {"ru": "Отложенные", "en": "Scheduled"},
@@ -76,8 +231,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_btn_link_author_search": {"ru": "Авторы", "en": "Authors"},
     "admin_btn_edit_icons": {"ru": "Каталог", "en": "Catalog"},
     "admin_btn_link_author_icons": {"ru": "Авторы", "en": "Authors"},
-    "admin_section_plugins": {"ru": "<b>🧩 Плагины</b>", "en": "<b>🧩 Plugins</b>"},
-    "admin_section_icons": {"ru": "<b>🎨 Иконки</b>", "en": "<b>🎨 Icons</b>"},
+    "admin_section_plugins": {"ru": "<b>Плагины</b>", "en": "<b>Plugins</b>"},
+    "admin_section_icons": {"ru": "<b>Иконки</b>", "en": "<b>Icons</b>"},
     "admin_btn_queue_icons": {"ru": "Заявки иконок", "en": "Icon requests"},
     "admin_btn_queue_plugins": {"ru": "Заявки плагинов", "en": "Plugin requests"},
     "admin_btn_stats": {"ru": "Статистика", "en": "Stats"},
@@ -126,6 +281,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_denied": {
         "ru": "Иди нахуй.",
         "en": "Access denied",
+    },
+    "admin_request_processing": {
+        "ru": "Заявка уже обрабатывается, подождите…",
+        "en": "This request is already being processed, please wait…",
     },
     "menu_owner_mismatch": {
         "ru": "Это меню открыто другим пользователем.",
@@ -367,8 +526,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
     "admin_enter_user_id": {"ru": "Введите user_id пользователя:", "en": "Enter user ID:"},
     "admin_enter_reject_reason": {
-        "ru": "📝 Введите причину:",
-        "en": "📝 Enter reason:",
+        "ru": "Введите причину:",
+        "en": "Enter reason:",
     },
     "admin_queue_empty": {
         "ru": "Пусто",
@@ -498,19 +657,19 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "catalog_field_link": {"ru": "Ссылка", "en": "Link"},
     "catalog_field_min_version": {"ru": "Минимальная версия", "en": "Min version"},
     "catalog_inline_header": {
-        "ru": f'<a href="tg://emoji?id={ICONS["plugin"]}">🧩</a> <b>{{name}}</b> by <code>{{author}}</code>',
-        "en": f'<a href="tg://emoji?id={ICONS["plugin"]}">🧩</a> <b>{{name}}</b> by <code>{{author}}</code>',
+        "ru": f'<a href="tg://emoji?id={ICONS["plugin"]}"></a> <b>{{name}}</b> by <code>{{author}}</code>',
+        "en": f'<a href="tg://emoji?id={ICONS["plugin"]}"></a> <b>{{name}}</b> by <code>{{author}}</code>',
     },
     "catalog_inline_download": {"ru": "Скачать", "en": "Download"},
     "catalog_inline_open_in_bot": {"ru": "Открыть в боте", "en": "Open in bot"},
     "catalog_inline_no_description": {"ru": "—", "en": "—"},
     "catalog_inline_quick_donate": {
-        "ru": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Поддержать канал:</b> {url}',
-        "en": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Support the channel:</b> {url}',
+        "ru": '<a href="tg://emoji?id=5222374383019920631"></a> <b>Поддержать канал:</b> {url}',
+        "en": '<a href="tg://emoji?id=5222374383019920631"></a> <b>Support the channel:</b> {url}',
     },
     "catalog_inline_quick_inform": {
-        "ru": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Прочитай этот пост:</b> {url}',
-        "en": '<a href="tg://emoji?id=5222374383019920631">🤖</a> <b>Read this post:</b> {url}',
+        "ru": '<a href="tg://emoji?id=5222374383019920631"></a> <b>Прочитай этот пост:</b> {url}',
+        "en": '<a href="tg://emoji?id=5222374383019920631"></a> <b>Read this post:</b> {url}',
     },
 
     "broadcast_title": {"ru": "<b>Рассылка</b>", "en": "<b>Broadcast</b>"},
@@ -525,8 +684,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "broadcast_payment_thanks": {"ru": "Готово. Теперь рассылка выключена.", "en": "Done. Broadcast is now disabled."},
 
     "admin_broadcast_paid_disable": {
-        "ru": "⭐️ Купили выключение рассылки\n\nПользователь: {name} ({user})\nСумма: {amount}",
-        "en": "⭐️ Paid broadcast disable purchased\n\nUser: {name} ({user})\nAmount: {amount}",
+        "ru": "Купили выключение рассылки\n\nПользователь: {name} ({user})\nСумма: {amount}",
+        "en": "Paid broadcast disable purchased\n\nUser: {name} ({user})\nAmount: {amount}",
     },
 
     "join_settings_title": {"ru": "Настройки входа:", "en": "Join settings:"},
@@ -671,8 +830,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "admin_request_updated": {
-        "ru": "✍ Обновили заявку\n\nID: <code>{id}</code>\nПлагин: <b>{name}</b>\nПользователь: {user}",
-        "en": "✍ Request updated\n\nID: <code>{id}</code>\nPlugin: <b>{name}</b>\nUser: {user}",
+        "ru": "Обновили заявку\n\nID: <code>{id}</code>\nПлагин: <b>{name}</b>\nПользователь: {user}",
+        "en": "Request updated\n\nID: <code>{id}</code>\nPlugin: <b>{name}</b>\nUser: {user}",
     },
 
     "choose_category": {
@@ -794,6 +953,14 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Не удалось распознать версию",
         "en": "Version is missing",
     },
+    "require_min_version": {
+        "ru": "В файле плагина не указана <b>минимальная версия</b> (<code>__min_version__</code>).\n\nВведите её вручную (например, <code>11.12.0</code>):",
+        "en": "The plugin file has no <b>minimum version</b> (<code>__min_version__</code>).\n\nPlease enter it manually (e.g. <code>11.12.0</code>):",
+    },
+    "invalid_min_version": {
+        "ru": "Это не похоже на версию. Введите номер версии, например <code>11.12.0</code>.",
+        "en": "That doesn't look like a version. Enter a version number, e.g. <code>11.12.0</code>.",
+    },
     "need_text": {
         "ru": "Введите текст",
         "en": "Enter text",
@@ -811,6 +978,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Плагин <b>{name}</b> удалён",
         "en": "Plugin <b>{name}</b> was deleted",
     },
+    "notify_plugin_removed_author": {
+        "ru": f'{emoji_html("delete", "🗑")} <b>Ваш плагин удалён</b>\n\n<b>Плагин:</b> {{name}}\n\nПлагин был удалён из каталога администратором.',
+        "en": f'{emoji_html("delete", "🗑")} <b>Your plugin was removed</b>\n\n<b>Plugin:</b> {{name}}\n\nThe plugin has been removed from the catalog by an administrator.',
+    },
     "notify_icon_published": {
         "ru": "Пак иконок <b>{name}</b> опубликован",
         "en": "Icon pack <b>{name}</b> published",
@@ -820,8 +991,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Plugin <b>{name}</b> published",
     },
     "notify_rejected": {
-        "ru": f'{emoji_html("no", "❌")} <b>Заявка отклонена</b>\n\n{{comment}}',
-        "en": f'{emoji_html("no", "❌")} <b>Submission rejected</b>\n\n{{comment}}',
+        "ru": f'{emoji_html("no", "❌")} <b>Заявка отклонена</b>\n\n<b>Плагин:</b> {{name}}\n\n<b>Причина отказа:</b>\n<blockquote expandable>{{comment}}</blockquote>',
+        "en": f'{emoji_html("no", "❌")} <b>Submission rejected</b>\n\n<b>Plugin:</b> {{name}}\n\n<b>Reason:</b>\n<blockquote expandable>{{comment}}</blockquote>',
     },
     "notify_subscription_update": {
         "ru": "Плагин {name} обновился до версии <b>{version}</b>\n\n<b>Что нового:</b>\n<blockquote expandable>{changelog}</blockquote>",
@@ -1078,8 +1249,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
 
     "welcome": {
-        "ru": f'{emoji_html("bot", "🤖")} <b>Добро пожаловать в {{bot_name}}, {{user_name}}!</b>\n\n{{bot_name}} — это твой помощник для:\n• <a href="https://t.me/{{bot}}?start=catalog">Поиска и просмотра</a> плагинов (есть и inline поиск), а также <a href="https://t.me/{{bot}}?start=submit">предложить</a> свой плагин\n• <a href="https://t.me/{{bot}}?start=notifications">Уведомлений</a>, когда плагин был обновлён\n• <a href="https://t.me/{{bot}}?start=joinly">Управление</a> входами в вашем чате с помощью Joinly\n\nВыбери действие:',
-        "en": f'{emoji_html("bot", "🤖")} <b>Welcome to {{bot_name}}, {{user_name}}!</b>\n\n{{bot_name}} is your assistant for:\n• <a href="https://t.me/{{bot}}?start=catalog">Browsing</a> plugins (inline search included) and <a href="https://t.me/{{bot}}?start=submit">submitting</a> your own\n• <a href="https://t.me/{{bot}}?start=notifications">Notifications</a> when a plugin is updated\n• <a href="https://t.me/{{bot}}?start=joinly">Managing</a> chat joins with Joinly\n\nChoose an action:',
+        "ru": f'{emoji_html("bot", "🤖")} <b>Добро пожаловать в {{bot_name}}, {{user_name}}!</b>\n\n{{bot_name}} — это твой помощник для:\n• <a href="https://t.me/{{bot}}?start=catalog">Поиска и просмотра</a> плагинов (есть и inline поиск), а также <a href="https://t.me/{{bot}}?start=submit">предложить</a> свой плагин\n• <a href="https://t.me/{{bot}}?start=notifications">Уведомлений</a>, когда плагин был обновлён\n• <a href="https://t.me/{{bot}}?start=joinly">Управление</a> входами в вашем чате с помощью Joinly\n• <a href="https://t.me/{{bot}}?start=poster">Отложенного постинга</a> в ваши каналы (Poster) — в разделе «Профиль»\n\nВыбери действие:',
+        "en": f'{emoji_html("bot", "🤖")} <b>Welcome to {{bot_name}}, {{user_name}}!</b>\n\n{{bot_name}} is your assistant for:\n• <a href="https://t.me/{{bot}}?start=catalog">Browsing</a> plugins (inline search included) and <a href="https://t.me/{{bot}}?start=submit">submitting</a> your own\n• <a href="https://t.me/{{bot}}?start=notifications">Notifications</a> when a plugin is updated\n• <a href="https://t.me/{{bot}}?start=joinly">Managing</a> chat joins with Joinly\n• <a href="https://t.me/{{bot}}?start=poster">Scheduled posting</a> to your channels (Poster) — in the “Profile” tab\n\nChoose an action:',
     },
 }
 

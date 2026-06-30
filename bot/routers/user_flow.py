@@ -23,7 +23,7 @@ from aiogram.exceptions import TelegramBadRequest
 
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
-from bot.formatting import plain_html, strip_blockquote_tags, telegram_html
+from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import answer, extract_html_text, try_react_pray
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
 from bot.keyboards import (
@@ -44,24 +44,21 @@ from storage import load_stenka, save_stenka
 from bot.cache import get_admins, get_admins_icons, get_admins_plugins, get_admins_super, get_categories, get_config
 from bot.services.submission import (
     PluginData,
-    build_icon_submission_payload,
     build_submission_payload,
-    process_icon_file,
     process_plugin_file,
 )
 from bot.services.publish import build_channel_post, update_plugin
 from bot.services.admin_notifications import refresh_admin_notify_messages, send_review_notifications
 from bot.services.moderation import can_vote_in_context, send_request_to_forum, set_vote
+from bot.services.versioning import is_valid_version, normalize_version
 from bot.services.validation import (
-    check_duplicate_icon_pending,
     check_duplicate_pending,
-    validate_icon_submission,
     validate_new_submission,
     validate_update_submission,
 )
 from bot.states import UserFlow
 from bot.texts import TEXTS, t
-from catalog import find_plugin_by_slug, find_user_plugins, is_external_plugin
+from catalog import find_plugin_by_slug, find_plugin_by_deeplink_token, find_user_plugins, is_external_plugin
 from bot.routers.catalog_flow import build_plugin_preview
 from bot.routers.catalog_flow import BOT_USERNAME
 from bot.keyboards import plugin_detail_kb
@@ -73,6 +70,7 @@ from request_store import (
     add_draft_request,
     add_request,
     delete_request_and_file,
+    discard_user_drafts,
     get_user_requests,
     get_request_by_id,
     promote_draft_request,
@@ -120,7 +118,7 @@ async def notify_admins_broadcast_paid_disable(bot, user, payment: SuccessfulPay
         username = (getattr(user, "username", None) or "").strip()
         full_name = (getattr(user, "full_name", None) or getattr(user, "first_name", None) or "").strip() or "—"
 
-        user_link = f"@{username}" if username else f"<code>{user_id}</code>"
+        user_link = user_mention(user_id, username)
         amount = getattr(payment, "total_amount", None)
         currency = getattr(payment, "currency", None) or ""
         amount_str = f"{amount} {currency}" if amount is not None else currency
@@ -404,6 +402,15 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
             await answer(message, t("joinly_deeplink_intro", lang), main_menu_kb(lang), "profile")
         return True
 
+    if value == "poster":
+        try:
+            from bot.routers.poster_flow import render_home
+
+            await render_home(message, state)
+        except Exception:
+            logger.exception("event=start.poster_deeplink_failed")
+        return True
+
     if value == "admin":
         user_id = message.from_user.id if message.from_user else None
         if user_id and user_id in get_admins():
@@ -441,33 +448,22 @@ async def _sync_submission_draft(
     data = await state.get_data()
     draft_id = data.get("draft_request_id")
 
-    if submission_type == "icon":
-        icon = data.get("icon", {})
-        if not icon:
-            return
-        payload = {
-            "user_id": user_id,
-            "username": username,
-            "icon": icon,
-            "submission_type": "icon",
-        }
-    else:
-        plugin = data.get("plugin", {})
-        if not plugin:
-            return
-        payload = {
-            "user_id": user_id,
-            "username": username,
-            "plugin": plugin,
-            "description_ru": data.get("description_ru"),
-            "description_en": data.get("description_en"),
-            "usage_ru": data.get("usage_ru"),
-            "usage_en": data.get("usage_en"),
-            "category_key": data.get("category_key"),
-            "category_label": data.get("category_label"),
-            "publish_not_before": data.get("publish_not_before"),
-            "submission_type": "plugin",
-        }
+    plugin = data.get("plugin", {})
+    if not plugin:
+        return
+    payload = {
+        "user_id": user_id,
+        "username": username,
+        "plugin": plugin,
+        "description_ru": data.get("description_ru"),
+        "description_en": data.get("description_en"),
+        "usage_ru": data.get("usage_ru"),
+        "usage_en": data.get("usage_en"),
+        "category_key": data.get("category_key"),
+        "category_label": data.get("category_label"),
+        "publish_not_before": data.get("publish_not_before"),
+        "submission_type": "plugin",
+    }
 
     if draft_id:
         update_request_payload(draft_id, payload)
@@ -522,7 +518,7 @@ async def _notify_admins_request_updated(bot, entry: Dict[str, Any]) -> None:
     user_id = payload.get("user_id", 0)
     username = payload.get("username", "")
     request_id = entry.get("id", "?")
-    user_link = f"@{plain_html(username)}" if username else f"<code>{plain_html(user_id)}</code>"
+    user_link = user_mention(user_id, username)
     name = plugin.get("name") or plugin.get("id") or "—"
     text = t("admin_request_updated", "ru", id=request_id, name=name, user=user_link)
     try:
@@ -536,6 +532,12 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await remember_menu_owner(message, state)
     user_id = message.from_user.id if message.from_user else None
+
+    if user_id is not None:
+        try:
+            discard_user_drafts(user_id)
+        except Exception:
+            logger.exception("event=cmd_start.discard_drafts_failed user_id=%s", user_id)
 
     payload = ""
     if message.text:
@@ -567,8 +569,9 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         if payload:
             if await _route_start_payload_message(message, state, lang, payload):
                 return
-            plugin = find_plugin_by_slug(payload)
+            plugin = find_plugin_by_slug(payload) or find_plugin_by_deeplink_token(payload)
             if plugin:
+                plugin_slug = plugin.get("slug") or payload
                 text = build_plugin_preview(plugin, lang)
                 link = plugin.get("channel_message", {}).get("link")
                 external = is_external_plugin(plugin)
@@ -580,7 +583,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                         link,
                         back="catalog",
                         lang=lang,
-                        subscribe_callback=(None if external or notify_all_enabled else f"sub:toggle:{encode_slug(payload)}:catalog"),
+                        subscribe_callback=(None if external or notify_all_enabled else f"sub:toggle:{encode_slug(plugin_slug)}:catalog"),
                     ),
                     "catalog",
                 )
@@ -855,8 +858,8 @@ async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
 
     if state_name in {
         "uploading_file",
+        "entering_min_version",
         "uploading_update_file",
-        "uploading_icon_file",
         "choosing_description_language",
         "editing_description_translation",
         "editing_usage_ru",
@@ -905,6 +908,9 @@ async def on_submit_plugin(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
     lang = await get_language(cb, state)
+    if cb.from_user:
+        discard_user_drafts(cb.from_user.id)
+    await state.update_data(draft_request_id=None)
     await state.set_state(UserFlow.uploading_file)
     await answer(cb, t("upload_plugin", lang), cancel_kb(lang), "plugins")
     await cb.answer()
@@ -1489,76 +1495,6 @@ async def on_pending_update_file_invalid(message: Message, state: FSMContext) ->
     await message.answer(t("invalid_file", lang))
 
 
-@router.callback_query(UserFlow.choosing_submission_type, F.data == "submit:icons")
-async def on_submit_icons(cb: CallbackQuery, state: FSMContext) -> None:
-    if not await _ensure_not_banned(cb, state):
-        return
-    lang = await get_language(cb, state)
-    await state.set_state(UserFlow.uploading_icon_file)
-    await answer(cb, t("upload_icon", lang), cancel_kb(lang), "iconpacks")
-    await cb.answer()
-
-
-@router.message(UserFlow.uploading_icon_file, F.document)
-async def on_icon_file(message: Message, state: FSMContext) -> None:
-    if not await _ensure_not_banned(message, state):
-        return
-    lang = await get_language(message, state)
-
-    if message.document and message.document.file_size:
-        if message.document.file_size > 8 * 1024 * 1024:
-            await message.answer(t("file_too_large", lang))
-            return
-
-    try:
-        icon = await process_icon_file(message.bot, message.document)
-    except ValueError as e:
-        key, _, details = str(e).partition(":")
-        if key == "parse_error" and details:
-            await message.answer(t("parse_error", lang, error=details))
-        else:
-            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
-        return
-
-    await state.update_data(icon=icon.to_dict())
-
-    is_valid, error = validate_icon_submission(icon.to_dict())
-    if not is_valid:
-        await message.answer(t(error, lang))
-        return
-
-    is_duplicate, _ = check_duplicate_icon_pending(icon.id, icon.name)
-    if is_duplicate:
-        await message.answer(t("icon_pending", lang))
-        return
-    await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "icon")
-
-    preview = t(
-        "icon_parsed",
-        lang,
-        name=icon.name or "—",
-        author=icon.author or "—",
-        version=icon.version or "—",
-        count=icon.count or 0,
-    )
-    await answer(message, preview, None, None)
-
-    payload = build_icon_submission_payload(message.from_user.id, message.from_user.username or "", icon)
-    await state.update_data(
-        pending_payload=payload,
-        pending_request_type="new",
-        pending_reply_key="submission_sent",
-    )
-    await state.set_state(UserFlow.entering_admin_comment)
-    await answer(message, t("ask_admin_comment", lang), comment_skip_kb(lang), "iconpacks")
-
-
-@router.message(UserFlow.uploading_icon_file)
-async def on_icon_file_invalid(message: Message, state: FSMContext) -> None:
-    lang = await get_language(message, state)
-    await message.answer(t("invalid_icon_file", lang))
-
-
 @router.message(UserFlow.uploading_file, F.document)
 async def on_file(message: Message, state: FSMContext) -> None:
     if not await _ensure_not_banned(message, state):
@@ -1587,21 +1523,54 @@ async def on_file(message: Message, state: FSMContext) -> None:
         await message.answer(t(error, lang))
         return
 
-    is_duplicate, _ = check_duplicate_pending(plugin.id, plugin.name)
+    is_duplicate, _ = check_duplicate_pending(
+        plugin.id, plugin.name, exclude_user_id=message.from_user.id
+    )
     if is_duplicate:
         await message.answer(t("plugin_pending", lang))
         return
 
+    plugin_dict = plugin.to_dict()
     await state.update_data(
-        plugin=plugin.to_dict(),
+        plugin=plugin_dict,
         description_raw=plugin.description,
     )
+
+    if not is_valid_version(plugin_dict.get("min_version")):
+        await state.set_state(UserFlow.entering_min_version)
+        await message.answer(
+            t("require_min_version", lang),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+            reply_markup=cancel_kb(lang),
+        )
+        return
+
+    await _continue_after_plugin_parsed(message, state, lang)
+
+
+async def _continue_after_plugin_parsed(message: Message, state: FSMContext, lang: str) -> None:
     await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
     await state.set_state(UserFlow.choosing_description_language)
 
     draft_text = _render_draft_text(await state.get_data())
     await answer(message, draft_text, image=None)
     await answer(message, t("choose_description_language", lang), description_lang_kb(), None)
+
+
+@router.message(UserFlow.entering_min_version)
+async def on_min_version_input(message: Message, state: FSMContext) -> None:
+    lang = await get_language(message, state)
+    raw = (message.text or "").strip()
+    if not is_valid_version(raw):
+        await message.answer(t("invalid_min_version", lang), reply_markup=cancel_kb(lang))
+        return
+
+    data = await state.get_data()
+    plugin = dict(data.get("plugin") or {})
+    plugin["min_version"] = normalize_version(raw)
+    await state.update_data(plugin=plugin)
+    await _continue_after_plugin_parsed(message, state, lang)
 
 
 @router.message(UserFlow.uploading_file)
@@ -2301,7 +2270,7 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
     submission_type = _submission_type(payload)
     request_id = entry.get("id", "?")
 
-    user_link = f"@{username}" if username else f"<code>{user_id}</code>"
+    user_link = user_mention(user_id, username)
     file_path = plugin.get("file_path") or icon.get("file_path")
     logger.info(
         "event=submission.notify_forum.start request_id=%s request_type=%s submission_type=%s item=%s",

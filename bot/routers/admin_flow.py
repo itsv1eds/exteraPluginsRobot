@@ -22,11 +22,12 @@ from bot.cache import (
     get_categories,
     get_config,
     invalidate,
+    is_owner,
 )
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
-from bot.formatting import plain_html, strip_blockquote_tags, telegram_html
+from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import answer
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
 from bot.services.audit import add_audit_event, recent_audit_events
@@ -45,6 +46,11 @@ from bot.keyboards import (
     admin_post_section_kb,
     admin_updates_list_kb,
     admin_manage_admins_kb,
+    admin_maintenance_kb,
+    admin_maint_confirm_kb,
+    admin_sources_kb,
+    admin_source_detail_kb,
+    admin_source_del_confirm_kb,
     admin_menu_kb,
     admin_notification_settings_kb,
     admin_plugins_list_kb,
@@ -114,6 +120,71 @@ from subscription_store import list_subscribers
 from catalog import invalidate_catalog_cache
 
 logger = logging.getLogger(__name__)
+
+_processing_requests: Dict[str, float] = {}
+_PROCESSING_TTL = 120.0
+
+
+def _acquire_request_lock(request_id: str) -> bool:
+    if not request_id:
+        return True
+    now = time.monotonic()
+    ts = _processing_requests.get(request_id)
+    if ts is not None and (now - ts) < _PROCESSING_TTL:
+        return False
+    _processing_requests[request_id] = now
+    return True
+
+
+def _release_request_lock(request_id: str) -> None:
+    if request_id:
+        _processing_requests.pop(request_id, None)
+
+
+def _plugin_display_name(plugin_entry: Dict[str, Any]) -> str:
+    if not isinstance(plugin_entry, dict):
+        return "—"
+    for key in ("ru", "en"):
+        block = plugin_entry.get(key)
+        if isinstance(block, dict) and block.get("name"):
+            return str(block["name"])
+    return str(plugin_entry.get("slug") or "—")
+
+
+async def notify_plugin_authors_removed(bot, plugin_entry: Dict[str, Any]) -> int:
+    if not isinstance(plugin_entry, dict):
+        return 0
+
+    name = plain_html(_plugin_display_name(plugin_entry))
+    submitters = plugin_entry.get("submitters") or []
+    seen: set[int] = set()
+    notified = 0
+    for sub in submitters:
+        if not isinstance(sub, dict):
+            continue
+        uid = sub.get("user_id")
+        try:
+            uid = int(uid)
+        except (TypeError, ValueError):
+            continue
+        if uid in seen or uid <= 0:
+            continue
+        seen.add(uid)
+        try:
+            await bot.send_message(
+                uid,
+                t("notify_plugin_removed_author", get_lang(uid), name=name),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            notified += 1
+        except Exception:
+            logger.exception(
+                "event=delete.notify_author_failed user_id=%s slug=%s",
+                uid, plugin_entry.get("slug"),
+            )
+    return notified
+
 
 TZ_UTC_PLUS_5 = timezone(timedelta(hours=5))
 router = Router(name="admin-flow")
@@ -251,7 +322,6 @@ async def _render_scheduled_list(target: CallbackQuery | Message, state: FSMCont
     lang = _lang_for(target)
     requests = list(get_requests(status="scheduled"))
 
-    # show only plugin requests
     filtered: list[dict] = []
     for r in requests:
         payload = (r.get("payload") or {}) if isinstance(r, dict) else {}
@@ -484,6 +554,7 @@ async def _nav_prev(state: FSMContext) -> Optional[str]:
 async def _render_menu(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
     await state.set_state(AdminFlow.menu)
+    await state.update_data(**{_NAV_STACK_KEY: ["adm:menu"]})
     await answer(cb, _admin_menu_text(lang), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
 
 
@@ -926,6 +997,24 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await _render_queue(cb, state, token)
     elif token.startswith("adm:review:"):
         await _render_review(cb, state, token)
+    elif token.startswith("adm:updates:"):
+        parts = token.split(":")
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _render_updates_list(cb, state, page)
+    elif token.startswith("adm:scheduled_posts:"):
+        parts = token.split(":")
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _render_scheduled_posts_list(cb, state, page)
+    elif token.startswith("adm:scheduled:"):
+        parts = token.split(":")
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _render_scheduled_list(cb, state, page)
+    elif token == "adm:sources":
+        await _render_sources_list(cb, state)
+    elif token == "adm:backup":
+        await _render_backup(cb, state)
+    elif token == "adm:maint":
+        await answer(cb, _tr(cb, "admin_maint_title"), admin_maintenance_kb(lang), "admin")
     else:
         await _render_menu(cb, state)
 
@@ -1012,7 +1101,7 @@ def _forum_request_text_and_file(entry: dict) -> tuple[str, str | None]:
     request_type = entry.get("type", "new")
     submission_type = payload.get("submission_type") or ("icon" if icon else "plugin")
     request_id = entry.get("id", "?")
-    user_link = f"@{plain_html(username)}" if username else f"<code>{plain_html(user_id or '—')}</code>"
+    user_link = user_mention(user_id, username)
     file_path = plugin.get("file_path") or icon.get("file_path")
 
     if request_type == "update":
@@ -1083,8 +1172,9 @@ async def _notify_subscribers(
     for user_id in list_subscribers(slug):
         lang = get_lang(user_id)
         locale = _localized_block(entry, lang)
-        raw_name = plugin.get("name") or locale.get("name") or slug
-        name = f'<a href="{plugin_link}"><b>{raw_name}</b></a>' if plugin_link else f"<b>{raw_name}</b>"
+        raw_name = plain_html(plugin.get("name") or locale.get("name") or slug)
+        link_safe = html.escape(plugin_link, quote=True) if plugin_link else ""
+        name = f'<a href="{link_safe}"><b>{raw_name}</b></a>' if plugin_link else f"<b>{raw_name}</b>"
         version = plugin.get("version") or locale.get("version") or "—"
         reply_markup = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -1148,6 +1238,15 @@ def _is_super_admin(target: CallbackQuery | Message | int | None) -> bool:
     return bool(user_id and int(user_id) in get_admins_super())
 
 
+def _is_owner(target: CallbackQuery | Message | int | None) -> bool:
+    if isinstance(target, int):
+        user_id = target
+    else:
+        user = target.from_user if target else None
+        user_id = user.id if user else None
+    return bool(user_id and is_owner(int(user_id)))
+
+
 def _ensure_request_role(cb: CallbackQuery | Message, entry: dict) -> bool:
     payload = entry.get("payload", {})
     if payload.get("submission_type") == "icon" or payload.get("icon"):
@@ -1159,19 +1258,15 @@ def _admin_actor_label(target: CallbackQuery | Message) -> str:
     user = target.from_user if isinstance(target, CallbackQuery) else target.from_user
     if not user:
         return "<code>?</code>"
-    if user.username:
-        return f"@{user.username}"
-    return f"<code>{user.id}</code>"
+    return user_mention(user.id, user.username)
 
 
 def _admin_notification_label_items(user_id: int | None, lang: str) -> list[tuple[str, str]]:
     role = get_admin_role(user_id) if user_id else None
-    if role == "icons":
-        keys = ["icons"]
-    elif role == "plugins":
-        keys = ["new_plugins", "updates", "deletions"]
-    else:
+    if role == "super":
         keys = ["new_plugins", "updates", "deletions", "icons", "threshold"]
+    else:
+        keys = ["new_plugins", "updates", "deletions", "icons"]
     return [(key, t(NOTIFICATION_PREF_LABEL_KEYS[key], lang)) for key in keys]
 
 
@@ -1286,39 +1381,7 @@ async def cmd_resend_forum_requests(message: Message) -> None:
     await answer_in_moderation_topic(message, f"Отправлено заявок: {sent}\nОшибок: {failed}")
 
 
-@router.message(Command("adminhelp"))
-async def cmd_admin_help(message: Message) -> None:
-    text = (
-        "<b>Команды бота</b>\n\n"
-        "<b>Пользовательские</b>\n"
-        "/start — открыть главное меню. Поддерживает deeplink-переходы: catalog, submit, profile, notifications, joinly, admin, plugin slug.\n"
-        "/lang — сменить язык интерфейса.\n\n"
-        "<b>Joinly</b>\n"
-        "/settings — настройки Joinly в группе. Работает только в группе и только для админов чата.\n\n"
-        "<b>Админка</b>\n"
-        "/admin — открыть админ-панель. Работает для админов и суперадминов.\n"
-        "/adminhelp — показать этот список команд.\n\n"
-        "<b>Суперадмины</b>\n"
-        "/new — переотправить в форум модерации все активные заявки: pending, error, scheduled. Работает только в настроенном форуме/топике.\n"
-        "/health — диагностика БД, очередей, форума и audit log.\n"
-        "/sync_catalog &lt;t.me link&gt; &lt;request_id&gt; — вручную привязать опубликованное сообщение к заявке и добавить в каталог.\n\n"
-        "<b>Админы плагинов</b>\n"
-        "/sync_version &lt;plugin_id_or_slug&gt; &lt;version&gt; — вручную обновить версию плагина в каталоге.\n"
-        "/erase — очистить скрытые заявки.\n"
-        "/erase &lt;plugin_id_or_slug&gt; — удалить заявки по ID/slug плагина."
-    )
-    await answer_in_moderation_topic(
-        message,
-        text,
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
-
-
-@router.message(Command("health"))
-async def cmd_admin_health(message: Message) -> None:
-    if not _ensure_admin_role(message, "super"):
-        return
+def _build_health_text() -> str:
     cfg = get_config()
     moderation = cfg.get("moderation", {}) if isinstance(cfg, dict) else {}
     forum_cfg = moderation_config()
@@ -1351,79 +1414,390 @@ async def cmd_admin_health(message: Message) -> None:
         f"Audit events: <code>{audit_count}</code>",
         f"Latest audit: <code>{latest_audit_line}</code>",
     ]
-    await answer_in_moderation_topic(
-        message,
-        "\n".join(lines),
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-    )
+    return "\n".join(lines)
 
 
-@router.message(Command("sync_catalog"))
-async def cmd_sync_catalog(message: Message) -> None:
-    lang = _lang_for(message)
-    if not _ensure_admin_role(message, "super"):
-        return
+def _do_sync_version(target_id: str, new_version: str) -> str:
+    db = load_plugins()
+    plugins = db.get("plugins", [])
+    for p in plugins:
+        if isinstance(p, dict) and _match_plugin_id(p, target_id):
+            p.setdefault("ru", {})["version"] = new_version
+            p.setdefault("en", {})["version"] = new_version
+            p["updated_at"] = datetime.utcnow().isoformat()
+            save_plugins(db)
+            invalidate_catalog_cache()
+            return f"версия «{plain_html(target_id)}» → {plain_html(new_version)}"
+    return "плагин не найден"
 
-    text = (message.text or "").strip()
-    parts = text.split()
-    if len(parts) < 3:
-        await message.answer(
-            "Использование: /sync_catalog <t.me link> <request_id>",
-            disable_web_page_preview=True,
-        )
-        return
 
-    link = parts[1].strip()
-    request_id = parts[2].strip()
-
+def _do_sync_catalog(link: str, request_id: str) -> str:
     entry = get_request_by_id(request_id)
     if not entry:
-        await message.answer(_tr(message, "not_found"))
-        return
-
+        return "заявка не найдена"
     try:
-        # link: https://t.me/<username>/<message_id>
         raw = link.split("?")[0].rstrip("/")
-        msg_id_str = raw.rsplit("/", 1)[-1]
-        msg_id = int(msg_id_str)
+        msg_id = int(raw.rsplit("/", 1)[-1])
         channel_username = raw.split("/")[-2]
     except Exception:
-        await message.answer("Неверная ссылка")
-        return
-
+        return "неверная ссылка"
     cfg = get_config()
     payload = entry.get("payload", {})
-
-    if payload.get("submission_type") == "icon" or payload.get("icon"):
-        chat_id = (cfg.get("icons_channel", {}) or {}).get("id")
-        if not chat_id:
-            await message.answer("icons_channel.id не задан в config")
-            return
-        add_icon_to_catalog(
-            entry,
-            msg_id,
-            chat_id,
-            channel_username,
-            payload.get("user_id"),
-            payload.get("username", ""),
-        )
-    else:
-        chat_id = (cfg.get("channel", {}) or {}).get("id")
-        if not chat_id:
-            await message.answer("channel.id не задан в config")
-            return
-        add_to_catalog(
-            entry,
-            msg_id,
-            chat_id,
-            channel_username,
-            payload.get("user_id"),
-            payload.get("username", ""),
-        )
-
+    is_icon = payload.get("submission_type") == "icon" or payload.get("icon")
+    chat_id = ((cfg.get("icons_channel") if is_icon else cfg.get("channel")) or {}).get("id")
+    if not chat_id:
+        return ("icons_channel.id" if is_icon else "channel.id") + " не задан в config"
+    adder = add_icon_to_catalog if is_icon else add_to_catalog
+    adder(entry, msg_id, chat_id, channel_username, payload.get("user_id"), payload.get("username", ""))
     update_request_status(request_id, "published")
-    await message.answer("Добавлено в каталог")
+    return f"пост {msg_id} привязан к заявке {plain_html(request_id)}"
+
+
+@router.callback_query(F.data == "adm:maint")
+async def on_admin_maintenance(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _nav_push(state, "adm:maint")
+    await state.set_state(AdminFlow.menu)
+    await answer(cb, _tr(cb, "admin_maint_title"), admin_maintenance_kb(_lang_for(cb)), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:maint:health")
+async def on_admin_maint_health(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await answer(cb, _build_health_text(), admin_maintenance_kb(_lang_for(cb)), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.in_({"adm:maint:sync_version", "adm:maint:sync_catalog", "adm:maint:erase_id"}))
+async def on_admin_maint_prompt(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    action = cb.data.split(":")[2]
+    prompt_key, target_state = {
+        "sync_version": ("admin_maint_prompt_sync_version", AdminFlow.entering_sync_version),
+        "sync_catalog": ("admin_maint_prompt_sync_catalog", AdminFlow.entering_sync_catalog),
+        "erase_id": ("admin_maint_prompt_erase_id", AdminFlow.entering_erase_id),
+    }[action]
+    await state.set_state(target_state)
+    await answer(cb, _tr(cb, prompt_key), None, "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(AdminFlow.entering_sync_version)
+async def on_admin_maint_sync_version_input(message: Message, state: FSMContext) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+    parts = (message.text or "").strip().split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer(_tr(message, "admin_maint_bad_format"))
+        return
+    result = _do_sync_version(parts[0].strip(), parts[1].strip())
+    await state.set_state(AdminFlow.menu)
+    await answer(message, _tr(message, "admin_maint_done", result=result), admin_maintenance_kb(_lang_for(message)), "admin")
+
+
+@router.message(AdminFlow.entering_sync_catalog)
+async def on_admin_maint_sync_catalog_input(message: Message, state: FSMContext) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+    parts = (message.text or "").strip().split()
+    if len(parts) < 2:
+        await message.answer(_tr(message, "admin_maint_bad_format"))
+        return
+    result = _do_sync_catalog(parts[0].strip(), parts[1].strip())
+    await state.set_state(AdminFlow.menu)
+    await answer(message, _tr(message, "admin_maint_done", result=result), admin_maintenance_kb(_lang_for(message)), "admin")
+
+
+@router.message(AdminFlow.entering_erase_id)
+async def on_admin_maint_erase_id_input(message: Message, state: FSMContext) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+    target_id = (message.text or "").strip()
+    if not target_id:
+        await message.answer(_tr(message, "admin_maint_bad_format"))
+        return
+    removed = delete_requests_by_plugin_id(target_id)
+    await state.set_state(AdminFlow.menu)
+    await answer(message, _tr(message, "admin_maint_done", result=f"удалено заявок: {removed}"),
+                 admin_maintenance_kb(_lang_for(message)), "admin")
+
+
+@router.callback_query(F.data == "adm:maint:erase")
+async def on_admin_maint_erase_confirm(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await answer(cb, _tr(cb, "admin_maint_erase_confirm"), admin_maint_confirm_kb("erase", _lang_for(cb)), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:maint:erase:confirm")
+async def on_admin_maint_erase_apply(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    removed = cleanup_hidden_requests()
+    await answer(cb, _tr(cb, "admin_maint_done", result=f"очищено скрытых заявок: {removed}"),
+                 admin_maintenance_kb(_lang_for(cb)), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+async def _render_backup(target: CallbackQuery | Message, state: FSMContext) -> None:
+    from bot.services.backup import get_backup_config
+    from bot.keyboards import admin_backup_kb
+
+    lang = _lang_for(target)
+    cfg = get_backup_config()
+    next_run = "—"
+    if cfg["auto_enabled"]:
+        next_run = _tr(target, "admin_backup_auto_state", hours=cfg["interval_hours"])
+    text = _tr(target, "admin_backup_title", state=next_run)
+    await state.set_state(AdminFlow.menu)
+    await _nav_push(state, "adm:backup")
+    await answer(target, text, admin_backup_kb(cfg, lang), "admin")
+
+
+@router.callback_query(F.data == "adm:backup")
+async def on_admin_backup(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_owner(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _render_backup(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:backup:now")
+async def on_admin_backup_now(cb: CallbackQuery, state: FSMContext) -> None:
+    from bot.services.backup import send_backup
+
+    if not _is_owner(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    try:
+        await cb.answer(_tr(cb, "admin_backup_started"))
+    except Exception:
+        pass
+    ok = await send_backup(cb.bot, cb.from_user.id)
+    add_audit_event(
+        "owner.backup_manual",
+        actor_id=cb.from_user.id if cb.from_user else None,
+        actor=_admin_actor_label(cb),
+        details={"ok": ok},
+    )
+    await answer(cb, _tr(cb, "admin_backup_sent" if ok else "admin_backup_failed"),
+                 None, "admin")
+    await _render_backup(cb, state)
+
+
+@router.callback_query(F.data == "adm:backup:toggle")
+async def on_admin_backup_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    from bot.services.backup import get_backup_config, set_backup_config
+
+    if not _is_owner(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    cfg = get_backup_config()
+    set_backup_config(auto_enabled=not cfg["auto_enabled"])
+    await _render_backup(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:backup:interval")
+async def on_admin_backup_interval(cb: CallbackQuery, state: FSMContext) -> None:
+    from bot.services.backup import get_backup_config, set_backup_config, cycle_interval
+
+    if not _is_owner(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    cfg = get_backup_config()
+    set_backup_config(interval_hours=cycle_interval(cfg["interval_hours"]))
+    await _render_backup(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+async def _render_sources_list(target: CallbackQuery | Message, state: FSMContext) -> None:
+    from bot.services.sources import load_custom_sources, count_source_plugins
+
+    lang = _lang_for(target)
+    sources = load_custom_sources()
+    for src in sources:
+        src["_count"] = count_source_plugins(src.get("id") or src.get("username"))
+    text = _tr(target, "admin_sources_title" if sources else "admin_sources_empty")
+    await answer(target, text, admin_sources_kb(sources, lang), "admin")
+
+
+async def _render_source_detail(target: CallbackQuery | Message, sid: str) -> bool:
+    from bot.services.sources import get_custom_source, count_source_plugins
+
+    source = get_custom_source(sid)
+    if not source:
+        return False
+    text = _tr(
+        target,
+        "admin_source_detail",
+        title=plain_html(source.get("title") or sid),
+        username=plain_html(source.get("username") or sid),
+        link=plain_html(source.get("link") or "—"),
+        count=count_source_plugins(sid),
+    )
+    await answer(target, text, admin_source_detail_kb(sid, _lang_for(target)), "admin")
+    return True
+
+
+@router.callback_query(F.data == "adm:sources")
+async def on_admin_sources(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await state.set_state(AdminFlow.menu)
+    await _render_sources_list(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:sources:add")
+async def on_admin_sources_add(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await state.set_state(AdminFlow.entering_source_username)
+    await answer(cb, _tr(cb, "admin_source_prompt_username"), None, "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(AdminFlow.entering_source_username)
+async def on_admin_source_username(message: Message, state: FSMContext) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+    username = (message.text or "").strip().lstrip("@")
+    if not username:
+        await message.answer(_tr(message, "admin_maint_bad_format"))
+        return
+    await state.update_data(new_source_username=username)
+    await state.set_state(AdminFlow.entering_source_title)
+    await answer(message, _tr(message, "admin_source_prompt_title"), None, "admin")
+
+
+@router.message(AdminFlow.entering_source_title)
+async def on_admin_source_title(message: Message, state: FSMContext) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+    title = (message.text or "").strip()
+    if title == "-":
+        title = ""
+    await state.update_data(new_source_title=title)
+    await state.set_state(AdminFlow.entering_source_link)
+    await answer(message, _tr(message, "admin_source_prompt_link"), None, "admin")
+
+
+@router.message(AdminFlow.entering_source_link)
+async def on_admin_source_link(message: Message, state: FSMContext) -> None:
+    from bot.services.sources import add_custom_source
+
+    if not _ensure_admin_role(message, "super"):
+        return
+    link = (message.text or "").strip()
+    if link == "-":
+        link = ""
+    data = await state.get_data()
+    entry = add_custom_source(data.get("new_source_username", ""), data.get("new_source_title", ""), link)
+    await state.set_state(AdminFlow.menu)
+    if entry:
+        await answer(message, _tr(message, "admin_source_added", title=plain_html(entry.get("title"))), None, "admin")
+    await _render_sources_list(message, state)
+
+
+@router.message(AdminFlow.attaching_source_plugin)
+async def on_admin_source_attach_input(message: Message, state: FSMContext) -> None:
+    from bot.services.sources import attach_plugin_to_source, get_custom_source
+
+    if not _ensure_admin_role(message, "super"):
+        return
+    data = await state.get_data()
+    sid = data.get("attach_source_id", "")
+    source = get_custom_source(sid)
+    await state.set_state(AdminFlow.menu)
+    if not source:
+        await answer(message, _tr(message, "admin_source_not_found"), None, "admin")
+        await _render_sources_list(message, state)
+        return
+    slug = attach_plugin_to_source((message.text or "").strip(), source)
+    if slug:
+        await answer(message, _tr(message, "admin_source_attached", slug=plain_html(slug)), None, "admin")
+    else:
+        await answer(message, _tr(message, "admin_source_attach_notfound"), None, "admin")
+    await _render_source_detail(message, sid)
+
+
+@router.callback_query(F.data.startswith("adm:source:"))
+async def on_admin_source(cb: CallbackQuery, state: FSMContext) -> None:
+    from bot.services.sources import get_custom_source, delete_custom_source
+
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    parts = cb.data.split(":")
+    sid = parts[2] if len(parts) > 2 else ""
+    op = parts[3] if len(parts) > 3 else None
+    sub = parts[4] if len(parts) > 4 else None
+
+    if op is None:
+        if not await _render_source_detail(cb, sid):
+            await cb.answer(_tr(cb, "admin_source_not_found"), show_alert=True)
+            return
+    elif op == "attach":
+        await state.update_data(attach_source_id=sid)
+        await state.set_state(AdminFlow.attaching_source_plugin)
+        await answer(cb, _tr(cb, "admin_source_prompt_attach"), None, "admin")
+    elif op == "del" and sub == "yes":
+        delete_custom_source(sid)
+        await answer(cb, _tr(cb, "admin_source_deleted"), None, "admin")
+        await _render_sources_list(cb, state)
+    elif op == "del":
+        source = get_custom_source(sid)
+        title = plain_html(source.get("title") if source else sid)
+        await answer(cb, _tr(cb, "admin_source_del_confirm", title=title),
+                     admin_source_del_confirm_kb(sid, _lang_for(cb)), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "adm:cancel")
@@ -1453,7 +1827,6 @@ async def on_admin_section_updates(cb: CallbackQuery, state: FSMContext) -> None
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:section:updates")
     await _render_updates_list(cb, state, 0)
     try:
@@ -1471,7 +1844,6 @@ async def on_admin_updates_list(cb: CallbackQuery, state: FSMContext) -> None:
     page = 0
     if len(parts) > 2 and parts[2].isdigit():
         page = int(parts[2])
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, f"adm:updates:{page}")
     await _render_updates_list(cb, state, page)
     try:
@@ -1487,7 +1859,6 @@ async def on_admin_section_post(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:section:post")
     await state.set_state(AdminFlow.menu)
     await answer(cb, _post_section_text(lang), admin_post_section_kb(lang=lang), "admin")
@@ -1495,66 +1866,6 @@ async def on_admin_section_post(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer()
     except Exception:
         pass
-
-
-@router.message(Command("sync_version"))
-async def on_sync_version(message: Message, state: FSMContext) -> None:
-    lang = _lang_for(message)
-    if not _ensure_admin_role(message, "plugins"):
-        return
-
-    parts = (message.text or "").strip().split(maxsplit=2)
-    if len(parts) < 3:
-        await message.answer("Формат: /sync_version [id] [version]")
-        return
-    target_id = parts[1]
-    new_version = parts[2].strip()
-    if not new_version:
-        await message.answer("Версия не задана")
-        return
-
-    db = load_plugins()
-    plugins = db.get("plugins", [])
-    updated = False
-    for p in plugins:
-        if not isinstance(p, dict):
-            continue
-        if _match_plugin_id(p, target_id):
-            ru = p.setdefault("ru", {})
-            en = p.setdefault("en", {})
-            ru["version"] = new_version
-            en["version"] = new_version
-            p["updated_at"] = datetime.utcnow().isoformat()
-            updated = True
-            break
-
-    if not updated:
-        await message.answer("Плагин не найден")
-        return
-
-    save_plugins(db)
-    invalidate_catalog_cache()
-    await message.answer("Версия обновлена")
-
-
-@router.message(Command("erase"))
-async def cmd_erase(message: Message) -> None:
-    if not _ensure_admin_role(message, "plugins"):
-        return
-
-    parts = (message.text or "").strip().split(maxsplit=1)
-    if len(parts) > 1 and parts[1].strip():
-        target_id = parts[1].strip()
-        removed = delete_requests_by_plugin_id(target_id)
-        if removed:
-            await message.answer(f"Удалено заявок: {removed}")
-        else:
-            await message.answer("Заявки с таким ID не найдены")
-        return
-
-    removed = cleanup_hidden_requests()
-    await message.answer(f"Очищено скрытых заявок: {removed}")
-
 
 
 @router.callback_query(F.data.regexp(r"^adm:scheduled:\d+$"))
@@ -1569,7 +1880,6 @@ async def on_admin_scheduled(cb: CallbackQuery, state: FSMContext) -> None:
     if len(parts) > 2 and parts[2].isdigit():
         page = int(parts[2])
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, f"adm:scheduled:{page}")
     await _render_scheduled_list(cb, state, page)
     try:
@@ -1786,55 +2096,6 @@ async def on_admin_scheduled_change_preset(cb: CallbackQuery, state: FSMContext)
     await state.set_state(AdminFlow.menu)
     await cb.answer()
     await on_admin_scheduled_view(cb, state)
-
-
-@router.callback_query(F.data == "adm:auto_updates")
-async def on_admin_auto_updates(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
-    if not _ensure_admin_role(cb, "super"):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-
-    from bot.services.catalog_auto_updates import start_manual_catalog_auto_updates
-
-    chat_id = cb.message.chat.id if cb.message else (cb.from_user.id if cb.from_user else None)
-    message_id = cb.message.message_id if cb.message else None
-
-    async def _done() -> None:
-        if chat_id and message_id:
-            try:
-                tmp = CallbackQuery(id="0", from_user=cb.from_user, chat_instance="0", message=cb.message, data="")  # type: ignore
-                await _render_updates_list(tmp, state, 0)
-            except Exception:
-                try:
-                    await cb.bot.edit_message_text(
-                        _tr(cb, "admin_updates_check_done"),
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=None,
-                        disable_web_page_preview=True,
-                    )
-                except Exception:
-                    pass
-
-    started = start_manual_catalog_auto_updates(cb.bot, on_done=_done)
-    if not started:
-        await cb.answer(_tr(cb, "admin_updates_check_already_running"), show_alert=True)
-        return
-
-    await cb.answer(_tr(cb, "admin_updates_check_started"), show_alert=True)
-    if cb.message:
-        try:
-            await cb.message.edit_text(
-                _tr(cb, "admin_updates_check_started"),
-                parse_mode=ParseMode.HTML,
-                reply_markup=None,
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            pass
-
 
 @router.callback_query(F.data.startswith("adm:icon_edit_select:"))
 async def on_admin_icon_edit_select(cb: CallbackQuery, state: FSMContext) -> None:
@@ -2116,7 +2377,6 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:section:plugins")
     await state.set_state(AdminFlow.menu)
     await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang), "admin")
@@ -2133,7 +2393,6 @@ async def on_admin_section_icons(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:section:icons")
     await state.set_state(AdminFlow.menu)
     await answer(cb, _icons_section_text(lang), admin_icons_section_kb(lang=lang), "admin")
@@ -2150,7 +2409,6 @@ async def on_admin_post(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:section:post")
     await state.set_state(AdminFlow.entering_post)
     await state.update_data(post_message_id=cb.message.message_id if cb.message else None)
@@ -2226,7 +2484,7 @@ async def _send_admin_post(cb: CallbackQuery, state: FSMContext) -> None:
             link = (it.get("link") or "").strip()
             if not name or not link:
                 continue
-            lines.append(f"• <a href=\"{link}\">{name}</a>")
+            lines.append(f'• <a href="{html.escape(link, quote=True)}">{plain_html(name)}</a>')
         if len(lines) > 1:
             final_text = f"{final_text}\n\n" + "\n".join(lines)
 
@@ -2272,7 +2530,7 @@ def _with_updated_plugins_block(target: CallbackQuery | Message, base_text: str)
             link = (it.get("link") or "").strip()
             if not name or not link:
                 continue
-            lines.append(f"• <a href=\"{link}\">{name}</a>")
+            lines.append(f'• <a href="{html.escape(link, quote=True)}">{plain_html(name)}</a>')
         if len(lines) > 1:
             return f"{final_text}\n\n" + "\n".join(lines)
     except Exception:
@@ -2453,7 +2711,6 @@ async def on_admin_schedule_datetime(message: Message, state: FSMContext) -> Non
     schedule_dt_utc = schedule_dt_local.astimezone(timezone.utc)
     result = await userbot.schedule_post(post_text, schedule_dt_utc)
 
-    # persist scheduled post
     post_id = str(result.get("message_id") or int(time.time() * 1000))
     _upsert_scheduled_post(
         {
@@ -2490,7 +2747,6 @@ async def on_admin_scheduled_posts(cb: CallbackQuery, state: FSMContext) -> None
     if len(parts) > 2 and parts[2].isdigit():
         page = int(parts[2])
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, f"adm:scheduled_posts:{page}")
     await _render_scheduled_posts_list(cb, state, page)
     try:
@@ -2913,7 +3169,6 @@ async def on_admin_menu(cb: CallbackQuery, state: FSMContext) -> None:
     if not _ensure_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-    await _nav_push(state, "adm:menu")
     await _render_menu(cb, state)
     try:
         await cb.answer()
@@ -2997,7 +3252,6 @@ async def on_admin_config(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    await _nav_push(state, "adm:menu")
     if not _ensure_admin_role(cb, "super"):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
@@ -3262,7 +3516,6 @@ async def on_admin_broadcast(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, "adm:broadcast")
     await _render_broadcast_enter(cb, state)
     try:
@@ -3409,7 +3662,6 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
             return
     page = int(parts[3]) if len(parts) > 3 else 0
 
-    await _nav_push(state, "adm:menu")
     await _nav_push(state, f"adm:queue:{queue_type}:{page}")
 
     visible_requests = list(get_requests(status="pending")) + list(get_requests(status="error"))
@@ -3841,6 +4093,11 @@ async def on_admin_catalog_delete_confirm(cb: CallbackQuery, state: FSMContext) 
         await cb.answer(_tr(cb, "admin_delete_failed"), show_alert=True)
         return
 
+    try:
+        await notify_plugin_authors_removed(cb.bot, plugin_entry)
+    except Exception:
+        logger.exception("event=delete.notify_authors_failed slug=%s", slug)
+
     await state.set_state(AdminFlow.menu)
     await answer(cb, _tr(cb, "admin_title"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
     try:
@@ -3985,7 +4242,7 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
     request_type = entry.get("type", "new")
     submission_type = payload.get("submission_type") or ("icon" if payload.get("icon") else "plugin")
 
-    user_link = f"@{plain_html(username)}" if username else f"<code>{plain_html(user_id)}</code>"
+    user_link = user_mention(user_id, username)
     settings = _tr(cb, "admin_yes") if plugin.get("has_ui_settings") else _tr(cb, "admin_no")
 
     if request_type == "update":
@@ -4881,6 +5138,10 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "not_found"), show_alert=True)
         return
 
+    if not _acquire_request_lock(request_id):
+        await cb.answer(_tr(cb, "admin_request_processing"), show_alert=True)
+        return
+
     payload = entry.get("payload", {})
     request_type = entry.get("type", "new")
     submission_type = payload.get("submission_type") or ("icon" if payload.get("icon") else "plugin")
@@ -4920,6 +5181,7 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.answer()
         except Exception:
             pass
+        _release_request_lock(request_id)
         return
 
     validation_errors = _validate_request_before_publish(entry)
@@ -4949,6 +5211,7 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.answer("Есть ошибки", show_alert=True)
         except Exception:
             pass
+        _release_request_lock(request_id)
         return
 
     logger.info(
@@ -4994,10 +5257,14 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             if not removed:
                 raise ValueError("Failed to remove plugin")
             update_request_status(request_id, "deleted")
+            try:
+                await notify_plugin_authors_removed(cb.bot, plugin_entry)
+            except Exception:
+                logger.exception("event=delete.notify_authors_failed slug=%s", delete_slug)
             result = {"link": plugin_entry.get("channel_message", {}).get("link", "")}
             notify_key = "notify_deleted"
         else:
-            result = await publish_plugin(entry)
+            result = await publish_plugin(entry, cb.bot)
             notify_key = "notify_published"
 
         try:
@@ -5080,6 +5347,8 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
             admin_menu_kb(_admin_menu_role(cb), lang=lang),
             "profile",
         )
+
+    _release_request_lock(request_id)
 
 
 @router.callback_query(F.data.startswith("adm:reject:"))
@@ -5189,15 +5458,22 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
         user_id = entry.get("payload", {}).get("user_id")
         if user_id:
             lang = get_lang(user_id)
+            payload = entry.get("payload", {})
+            item = payload.get("plugin") or payload.get("icon") or {}
+            plugin_name = plain_html(item.get("name") or "—")
+            reason = strip_blockquote_tags(comment) or "—"
             try:
                 await message.bot.send_message(
                     user_id,
-                    t("notify_rejected", lang, comment=comment),
+                    t("notify_rejected", lang, name=plugin_name, comment=reason),
                     parse_mode=ParseMode.HTML,
                     disable_web_page_preview=True,
                 )
             except Exception:
-                pass
+                logger.exception(
+                    "event=reject.notify_author_failed user_id=%s request_id=%s",
+                    user_id, request_id,
+                )
 
     await state.clear()
     await state.set_state(AdminFlow.menu)

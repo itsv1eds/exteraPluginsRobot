@@ -1,9 +1,33 @@
+import hashlib
 import random
+import re
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from storage import load_icons, load_plugins
 
 CatalogEntry = Dict[str, Any]
+
+_ASCII_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]{1,60}$")
+
+
+def plugin_deeplink_token(slug: Optional[str]) -> str:
+    s = (slug or "").strip()
+    if _ASCII_SLUG_RE.match(s):
+        return s
+    return "p" + hashlib.sha1(s.encode("utf-8")).hexdigest()[:16]
+
+
+def find_plugin_by_deeplink_token(token: Optional[str]) -> Optional[CatalogEntry]:
+    token = (token or "").strip()
+    if not token:
+        return None
+    direct = find_plugin_by_slug(token)
+    if direct:
+        return direct
+    for plugin in _get_published_plugins():
+        if plugin_deeplink_token(plugin.get("slug")) == token:
+            return plugin
+    return None
 
 _plugins_cache: Optional[List[CatalogEntry]] = None
 _icons_cache: Optional[List[CatalogEntry]] = None

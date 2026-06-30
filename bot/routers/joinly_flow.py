@@ -5,7 +5,7 @@ from typing import Any
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.filters import ChatMemberUpdatedFilter
 from aiogram.filters.chat_member_updated import IS_MEMBER, IS_NOT_MEMBER
@@ -24,11 +24,58 @@ router = Router()
 logger = logging.getLogger(__name__)
 _post_guard_unlock_tasks: dict[int, asyncio.Task] = {}
 
+_RETRY_CAP_SECONDS = 5.0
+_ADMIN_STATUS_TTL = 60.0
+_me_cache: dict[int, Any] = {}
+_admin_status_cache: dict[int, tuple[float, bool]] = {}
+
+
+async def _safe_telegram(factory, *, retries: int = 1):
+    attempt = 0
+    while True:
+        try:
+            return await factory()
+        except TelegramRetryAfter as exc:
+            if attempt >= retries:
+                logger.warning("joinly: giving up after RetryAfter=%ss", exc.retry_after)
+                return None
+            attempt += 1
+            await asyncio.sleep(min(float(exc.retry_after or 1), _RETRY_CAP_SECONDS))
+        except TelegramBadRequest as exc:
+            logger.debug("joinly: bad request: %s", exc)
+            return None
+        except Exception:
+            logger.exception("joinly: telegram call failed")
+            return None
+
+
+async def _get_me_cached(bot):
+    me = _me_cache.get(id(bot))
+    if me is None:
+        me = await bot.get_me()
+        _me_cache[id(bot)] = me
+    return me
+
+
+async def _bot_is_admin(bot, chat_id: int) -> bool:
+    now = time.monotonic()
+    cached = _admin_status_cache.get(chat_id)
+    if cached and (now - cached[0]) < _ADMIN_STATUS_TTL:
+        return cached[1]
+    try:
+        me = await _get_me_cached(bot)
+        member = await bot.get_chat_member(chat_id, me.id)
+        is_admin = getattr(member, "status", None) in {"administrator", "creator"}
+    except Exception:
+        is_admin = False
+    _admin_status_cache[chat_id] = (now, is_admin)
+    return is_admin
+
 _DEFAULTS: dict[str, Any] = {
-    "DeleteServiceMessages": True,
+    "DeleteServiceMessages": False,
     "BanMembers": False,
-    "Enabled": True,
-    "WelcomeEnabled": True,
+    "Enabled": False,
+    "WelcomeEnabled": False,
     "WelcomeText": t("join_welcome_default", "ru"),
     "JoinReactionEmoji": "",
     "PostGuardEnabled": False,
@@ -309,7 +356,6 @@ async def _show_panel_main_by_id(bot, chat_id: int, message_id: int, lang: str) 
         text=t("join_settings_title", lang),
         reply_markup=_settings_kb(chat_id, lang),
     )
-
 
 
 async def _can_manage_chat_settings(bot, chat_id: int, user_id: int | None) -> bool:
@@ -718,44 +764,38 @@ async def on_new_members(message: Message) -> None:
         return
 
     try:
-        gotme = await message.bot.get_me()
+        gotme = await _get_me_cached(message.bot)
     except Exception:
         gotme = None
 
     if gotme and any(getattr(u, "id", None) == getattr(gotme, "id", None) for u in list(message.new_chat_members or [])):
-        try:
-            await message.answer(t("joinly_bot_added", _lang_for(message)), parse_mode=ParseMode.HTML)
-        except Exception:
-            pass
+        await _safe_telegram(lambda: message.answer(
+            t("joinly_bot_added", _lang_for(message)), parse_mode=ParseMode.HTML
+        ))
 
     if not _get_setting(message.chat.id, "WelcomeEnabled"):
         return
 
     if not gotme:
-        gotme = await message.bot.get_me()
+        gotme = await _get_me_cached(message.bot)
 
     if not _get_setting(message.chat.id, "DeleteServiceMessages"):
         emoji = str(_get_setting(message.chat.id, "JoinReactionEmoji") or "").strip()
         if emoji and hasattr(message.bot, "set_message_reaction"):
-            try:
-                me = await message.bot.get_chat_member(message.chat.id, gotme.id)
-                if getattr(me, "status", None) in {"administrator", "creator"}:
-                    try:
-                        from aiogram.types import ReactionTypeEmoji
+            if await _bot_is_admin(message.bot, message.chat.id):
+                try:
+                    from aiogram.types import ReactionTypeEmoji
 
-                        reaction = [ReactionTypeEmoji(emoji=emoji)]
-                    except Exception:
-                        reaction = [emoji]
-                    logger.info("Setting join reaction: %s", emoji)
-                    await message.bot.set_message_reaction(
-                        chat_id=message.chat.id,
-                        message_id=message.message_id,
-                        reaction=reaction,
-                    )
-                else:
-                    logger.info("Join reaction skipped: bot is not admin")
-            except Exception:
-                logger.exception("Failed to set join reaction")
+                    reaction = [ReactionTypeEmoji(emoji=emoji)]
+                except Exception:
+                    reaction = [emoji]
+                await _safe_telegram(lambda: message.bot.set_message_reaction(
+                    chat_id=message.chat.id,
+                    message_id=message.message_id,
+                    reaction=reaction,
+                ))
+            else:
+                logger.info("Join reaction skipped: bot is not admin")
         elif emoji:
             logger.info("Join reaction skipped: set_message_reaction is not available")
 
@@ -768,26 +808,25 @@ async def on_new_members(message: Message) -> None:
         templ, flags = _extract_flags(template)
         rendered = templ.format(**vars_map)
         rendered, kb = _parse_buttonurl_md(rendered)
-        try:
-            await message.answer(
-                rendered,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=kb,
-                disable_web_page_preview=(not flags.get("preview")),
-                disable_notification=bool(flags.get("nonotif")),
-                protect_content=bool(flags.get("protect")),
-            )
-        except TelegramBadRequest:
+        sent = await _safe_telegram(lambda: message.answer(
+            rendered,
+            parse_mode=ParseMode.MARKDOWN_V2,
+            reply_markup=kb,
+            disable_web_page_preview=(not flags.get("preview")),
+            disable_notification=bool(flags.get("nonotif")),
+            protect_content=bool(flags.get("protect")),
+        ))
+        if sent is None:
             plain_template = _unescape_md_v2(templ)
             plain_text = plain_template.format(**raw_vars)
             plain_text, safe_kb = _parse_buttonurl_md(plain_text)
-            await message.answer(
+            await _safe_telegram(lambda: message.answer(
                 plain_text,
                 reply_markup=safe_kb,
                 disable_web_page_preview=(not flags.get("preview")),
                 disable_notification=bool(flags.get("nonotif")),
                 protect_content=bool(flags.get("protect")),
-            )
+            ))
 
     if _get_setting(message.chat.id, "DeleteServiceMessages"):
         try:
@@ -1118,21 +1157,20 @@ async def on_welcome_edit(message: Message) -> None:
 
 @router.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
 async def on_member_join(event: ChatMemberUpdated) -> None:
-    gotme = await event.bot.get_me()
-    me = await event.bot.get_chat_member(event.chat.id, gotme.id)
-
-    if getattr(me, "status", None) not in {"administrator", "creator"}:
-        return
-
     if not _get_setting(event.chat.id, "Enabled"):
         return
-
-    try:
-        await event.chat.ban(event.new_chat_member.user.id)
-        if not _get_setting(event.chat.id, "BanMembers"):
-            await event.chat.unban(event.new_chat_member.user.id)
-    except Exception:
+    if not await _bot_is_admin(event.bot, event.chat.id):
         return
+
+    user_id = event.new_chat_member.user.id
+    ban_members = bool(_get_setting(event.chat.id, "BanMembers"))
+
+    banned = await _safe_telegram(lambda: event.chat.ban(user_id))
+    if banned is None:
+        logger.warning("joinly: ban failed chat=%s user=%s", event.chat.id, user_id)
+        return
+    if not ban_members:
+        await _safe_telegram(lambda: event.chat.unban(user_id))
 
 
 @router.message()
@@ -1148,11 +1186,5 @@ async def on_service_messages(message: Message) -> None:
         return
 
     if message.new_chat_members or message.left_chat_member:
-        try:
-            gotme = await message.bot.get_me()
-            me = await message.bot.get_chat_member(message.chat.id, gotme.id)
-            if getattr(me, "status", None) not in {"administrator", "creator"}:
-                return
-            await message.delete()
-        except Exception:
-            pass
+        if await _bot_is_admin(message.bot, message.chat.id):
+            await _safe_telegram(lambda: message.delete())

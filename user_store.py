@@ -84,7 +84,6 @@ def get_user(user_id: int) -> Dict[str, Any]:
 
 def is_broadcast_enabled(user_id: int) -> bool:
     user = get_user(user_id)
-    # Default: enabled
     return bool(user.get("broadcast_enabled", True))
 
 

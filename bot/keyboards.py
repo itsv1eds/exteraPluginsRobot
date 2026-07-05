@@ -524,7 +524,7 @@ def profile_kb(
 
     rows.append([_btn(t("btn_joinly", lang), callback_data="profile:joinly", icon="joinly")])
 
-    rows.append([_btn(t("poster_btn", lang), callback_data="pstr:home", icon="clock")])
+    rows.append([_btn(t("poster_btn", lang), callback_data="pstr:start", icon="clock")])
 
     rows.append([_btn(t("btn_support", lang), url="https://t.me/itsv2eds", icon="support")])
     
@@ -541,8 +541,8 @@ def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMa
             _btn(t("admin_btn_plugins", lang), callback_data="adm:section:plugins", icon="plugin"),
             _btn(t("admin_btn_icons", lang), callback_data="adm:section:icons", icon="art"),
         ],
+        [_btn(t("poster_btn", lang), callback_data="pstr:admin", icon="send")],
         [_btn(t("admin_btn_my_notifications", lang), callback_data="adm:notifs", icon="bell")],
-        [_btn(t("admin_btn_post", lang), callback_data="adm:section:post", icon="send")],
     ]
     if is_super:
         rows.append([

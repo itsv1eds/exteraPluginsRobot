@@ -177,6 +177,14 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "poster_btn_edit_buttons": {"ru": "Кнопки", "en": "Buttons"},
     "poster_btn_schedule": {"ru": "Запланировать", "en": "Schedule"},
     "poster_preview_header": {"ru": "<b>Предпросмотр поста</b>", "en": "<b>Post preview</b>"},
+    "poster_preview_control": {
+        "ru": "👆 <b>Предпросмотр</b>\n\nВыше — как будет выглядеть пост. Отредактируйте или запланируйте:",
+        "en": "👆 <b>Preview</b>\n\nAbove is how the post will look. Edit it or schedule:",
+    },
+    "poster_autodel_prompt": {
+        "ru": "🗑 <b>Автоудаление поста</b>\n\nЧерез сколько времени после публикации удалить пост из канала?",
+        "en": "🗑 <b>Auto-delete post</b>\n\nHow long after publishing should the post be removed from the channel?",
+    },
     "poster_preview_meta": {
         "ru": "<b>Медиа:</b> {media}\n<b>Кнопки:</b> {buttons}",
         "en": "<b>Media:</b> {media}\n<b>Buttons:</b> {buttons}",
@@ -198,15 +206,23 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Attach a <b>photo</b> or <b>video</b>, or skip.",
     },
     "poster_compose_buttons": {
-        "ru": "Отправьте кнопки — по одной на строку в формате <code>Текст | https://ссылка</code>.\n\nЦвет кнопки — добавьте в конце <code>::red</code> или <code>::green</code>, например <code>Текст | https://ссылка::red</code>. Или пропустите.",
-        "en": "Send buttons — one per line as <code>Text | https://link</code>.\n\nColor a button by appending <code>::red</code> or <code>::green</code>, e.g. <code>Text | https://link::red</code>. Or skip.",
+        "ru": "Отправьте кнопки — по одной на строку в формате <code>Текст | https://ссылка</code>.\n\nЦвет кнопки — добавьте в конце <code>::red</code> (красная), <code>::green</code> (зелёная) или <code>::blue</code> (синяя), например <code>Текст | https://ссылка::red</code>. Или пропустите.",
+        "en": "Send buttons — one per line as <code>Text | https://link</code>.\n\nColor a button by appending <code>::red</code>, <code>::green</code> or <code>::blue</code>, e.g. <code>Text | https://link::red</code>. Or skip.",
     },
     "poster_compose_time": {
         "ru": "Когда опубликовать? Выберите быстрый вариант или отправьте дату <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5).",
         "en": "When to publish? Pick a quick option or send a date <code>DD.MM.YYYY HH:MM</code> (UTC+5).",
     },
     "poster_scheduled": {"ru": "✅ Пост запланирован на <b>{datetime}</b>.", "en": "✅ Post scheduled for <b>{datetime}</b>."},
-    "poster_my_posts": {"ru": "<b>Запланированные посты</b>\n\nНажмите, чтобы отменить:", "en": "<b>Scheduled posts</b>\n\nTap to cancel:"},
+    "poster_my_posts": {"ru": "<b>Запланированные посты</b>\n\nНажмите на пост, чтобы открыть:", "en": "<b>Scheduled posts</b>\n\nTap a post to open:"},
+    "poster_post_detail": {
+        "ru": "☝️ <b>Запланированный пост</b>\n\nПубликация: <b>{datetime}</b> (UTC+5)",
+        "en": "☝️ <b>Scheduled post</b>\n\nPublish at: <b>{datetime}</b> (UTC+5)",
+    },
+    "poster_btn_post_edit": {"ru": "Редактировать", "en": "Edit"},
+    "poster_btn_post_delete": {"ru": "Удалить пост", "en": "Delete post"},
+    "poster_btn_autodel": {"ru": "Автоудаление: {value}", "en": "Auto-delete: {value}"},
+    "poster_inline_title": {"ru": "Отложенный пост", "en": "Scheduled post"},
     "poster_my_posts_empty": {"ru": "Запланированных постов нет.", "en": "No scheduled posts."},
     "poster_post_canceled": {"ru": "Пост отменён", "en": "Post canceled"},
     "poster_err_not_found": {"ru": "Канал не найден.", "en": "Channel not found."},

@@ -44,6 +44,7 @@ class AdminFlow(StatesGroup):
     editing_draft_field = State()
     editing_icon_field = State()
     entering_reject_comment = State()
+    entering_rework_comment = State()
     linking_author_user = State()
     editing_config = State()
     entering_broadcast = State()

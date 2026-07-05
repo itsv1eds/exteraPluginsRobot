@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -188,6 +188,26 @@ def _update_post(post_id: str, **fields: Any) -> None:
     save_poster(doc)
 
 
+def update_post(post_id: str, owner_user_id: int,
+                content: Optional[Dict[str, Any]] = None,
+                run_at_iso: Optional[str] = None) -> bool:
+    doc = load_poster()
+    changed = False
+    for post in doc.get("posts", []):
+        if (isinstance(post, dict) and post.get("id") == post_id
+                and post.get("owner_user_id") == owner_user_id
+                and post.get("status") == "scheduled"):
+            if content is not None:
+                post["content"] = content
+            if run_at_iso is not None:
+                post["run_at"] = run_at_iso
+            changed = True
+            break
+    if changed:
+        save_poster(doc)
+    return changed
+
+
 def due_posts(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     now = now or _now()
     out = []
@@ -200,6 +220,9 @@ def due_posts(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
     return out
 
 
+VALID_BUTTON_STYLES = {"danger", "success", "primary"}
+
+
 def _build_keyboard(buttons: List[List[Dict[str, Any]]]):
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -209,7 +232,9 @@ def _build_keyboard(buttons: List[List[Dict[str, Any]]]):
         for btn in row:
             text = str(btn.get("text") or "").strip()
             url = str(btn.get("url") or "").strip()
-            style = btn.get("style") or None
+            style = btn.get("style")
+            if style not in VALID_BUTTON_STYLES:
+                style = None
             if text and url:
                 built.append(InlineKeyboardButton(text=text, url=url, style=style))
         if built:
@@ -233,15 +258,12 @@ async def _safe_send(factory, *, retries: int = 1):
             raise
 
 
-async def deliver_post(bot, post: Dict[str, Any]) -> bool:
+async def send_content(bot, chat_id: int, content: Dict[str, Any]):
     from aiogram.enums import ParseMode
 
-    post_id = post.get("id")
-    content = post.get("content") or {}
     text = normalize_custom_emoji(content.get("html_text") or "")
     media = content.get("media") or []
     kb = _build_keyboard(content.get("buttons") or [])
-    chat_id = post.get("chat_id")
 
     async def _send():
         if media:
@@ -257,14 +279,54 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
             chat_id, text or "—", parse_mode=ParseMode.HTML,
             reply_markup=kb, disable_web_page_preview=True)
 
+    return await _safe_send(_send)
+
+
+async def deliver_post(bot, post: Dict[str, Any]) -> bool:
+    post_id = post.get("id")
+    content = post.get("content") or {}
+    chat_id = post.get("chat_id")
     try:
-        message = await _safe_send(_send)
-        _update_post(post_id, status="sent", sent_message_id=getattr(message, "message_id", None), error=None)
+        message = await send_content(bot, chat_id, content)
+        extra: Dict[str, Any] = {}
+        try:
+            delete_after = int(content.get("delete_after_minutes") or 0)
+        except (TypeError, ValueError):
+            delete_after = 0
+        if delete_after > 0:
+            extra["delete_at"] = (_now() + timedelta(minutes=delete_after)).isoformat()
+        _update_post(post_id, status="sent", sent_message_id=getattr(message, "message_id", None),
+                     error=None, **extra)
         return True
     except Exception as exc:
         logger.exception("poster: delivery failed post=%s chat=%s", post_id, chat_id)
         _update_post(post_id, status="failed", error=str(exc)[:300])
         return False
+
+
+def due_deletions(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    now = now or _now()
+    out = []
+    for post in load_poster().get("posts", []):
+        if not isinstance(post, dict) or post.get("status") != "sent":
+            continue
+        if not post.get("delete_at"):
+            continue
+        da = _parse_dt(post.get("delete_at"))
+        if da and da <= now:
+            out.append(post)
+    return out
+
+
+async def delete_sent_post(bot, post: Dict[str, Any]) -> None:
+    chat_id = post.get("chat_id")
+    message_id = post.get("sent_message_id")
+    if message_id:
+        try:
+            await bot.delete_message(chat_id, message_id)
+        except Exception:
+            logger.exception("poster: auto-delete failed post=%s chat=%s", post.get("id"), chat_id)
+    _update_post(post.get("id"), status="deleted", delete_at=None)
 
 
 _worker_task: Optional[asyncio.Task] = None
@@ -277,6 +339,8 @@ async def _worker_loop(bot) -> None:
         try:
             for post in due_posts():
                 await deliver_post(bot, post)
+            for post in due_deletions():
+                await delete_sent_post(bot, post)
         except Exception:
             logger.exception("poster: worker loop error")
 

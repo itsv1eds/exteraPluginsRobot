@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from storage import SQLITE_PATH, load_config, save_config
-from bot.cache import get_config, get_owners, invalidate
+from bot.cache import get_admins_super, get_config, invalidate
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ async def send_backup(bot, chat_id: int) -> bool:
         _cleanup(zip_path)
 
 
-async def send_backup_to_owners(bot) -> int:
+async def send_backup_to_admins(bot) -> int:
     sent = 0
     zip_path: Optional[Path] = None
     try:
@@ -103,12 +103,12 @@ async def send_backup_to_owners(bot) -> int:
     from aiogram.types import FSInputFile
 
     caption = datetime.now(timezone.utc).strftime("Backup %Y-%m-%d %H:%M UTC")
-    for owner_id in get_owners():
+    for admin_id in get_admins_super():
         try:
-            await bot.send_document(owner_id, FSInputFile(str(zip_path)), caption=caption)
+            await bot.send_document(admin_id, FSInputFile(str(zip_path)), caption=caption)
             sent += 1
         except Exception:
-            logger.exception("event=backup.send_failed owner=%s", owner_id)
+            logger.exception("event=backup.send_failed admin=%s", admin_id)
     _cleanup(zip_path)
     return sent
 
@@ -137,9 +137,9 @@ async def _worker_loop(bot) -> None:
                 continue
             if not _due(cfg["last_run"], cfg["interval_hours"]):
                 continue
-            sent = await send_backup_to_owners(bot)
+            sent = await send_backup_to_admins(bot)
             set_backup_config(last_run=datetime.now(timezone.utc).isoformat())
-            logger.info("event=backup.auto_sent owners=%s", sent)
+            logger.info("event=backup.auto_sent sent=%s", sent)
         except Exception:
             logger.exception("event=backup.worker_error")
 

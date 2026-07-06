@@ -62,6 +62,21 @@ def vote_counts(entry: dict | None) -> tuple[int, int, int]:
     return yes, no, yes + no
 
 
+def rejection_reasons(entry: dict | None) -> list[str]:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    votes = payload.get("moderation_votes") if isinstance(payload, dict) else {}
+    out: list[str] = []
+    if not isinstance(votes, dict):
+        return out
+    for item in votes.values():
+        if not isinstance(item, dict) or item.get("vote") != "no":
+            continue
+        reason = str(item.get("reason") or "").strip()
+        if reason:
+            out.append(strip_blockquote_tags(telegram_html(reason)))
+    return out
+
+
 def vote_summary(entry: dict | None) -> str:
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     votes = payload.get("moderation_votes") if isinstance(payload, dict) else {}

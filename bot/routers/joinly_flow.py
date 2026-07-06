@@ -1066,7 +1066,10 @@ async def on_settings_cb(cb: CallbackQuery) -> None:
         await cb.message.edit_reply_markup(reply_markup=_settings_kb(cb.message.chat.id, lang))
     except Exception:
         pass
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.message(F.text)

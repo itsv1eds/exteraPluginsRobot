@@ -534,8 +534,7 @@ def profile_kb(
 
 
 def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMarkup:
-    is_super = role in {"super", "owner", None}
-    is_owner = role == "owner"
+    is_super = role in {"super", None}
     rows = [
         [
             _btn(t("admin_btn_plugins", lang), callback_data="adm:section:plugins", icon="plugin"),
@@ -557,7 +556,7 @@ def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMa
             _btn(t("admin_btn_banned", lang), callback_data="adm:banned:0", icon="ban"),
             _btn(t("admin_btn_config", lang), callback_data="adm:config", icon="settings"),
         ])
-    if is_owner:
+    if is_super:
         rows.append([_btn(t("admin_btn_backup", lang), callback_data="adm:backup", icon="download")])
     if not is_super:
         rows.append([_btn(t("admin_btn_stats", lang), callback_data="adm:stats", icon="stats")])
@@ -774,6 +773,7 @@ def admin_config_moderation_kb(lang: str = "ru") -> InlineKeyboardMarkup:
         ],
         [_btn(t("admin_cfg_moderation_notification_chat_ids", lang), callback_data="adm:config:moderation.notification_chat_ids", icon="bell")],
         [_btn(t("admin_cfg_moderation_delete_review_notifications_on_decision", lang), callback_data="adm:config:moderation.delete_review_notifications_on_decision", icon="delete")],
+        [_btn(t("admin_cfg_reject_templates", lang), callback_data="adm:rejtpl_cfg", icon="file")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
@@ -889,13 +889,13 @@ def admin_review_kb(
             _btn(submit_label, callback_data=submit_callback, icon="yes"),
             _btn(t("btn_more", lang), callback_data=f"adm:actions:{request_id}", icon="menu"),
         ])
-    rows.extend([
-        [
-            _btn(t("btn_vote_yes", lang), callback_data=f"modvote:yes:{request_id}", icon="yes", style="success"),
-            _btn(t("btn_vote_no", lang), callback_data=f"modvote:no:{request_id}", icon="no", style="danger"),
-        ],
-        [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
+    rows.append([
+        _btn(t("btn_vote_yes", lang), callback_data=f"modvote:yes:{request_id}", icon="yes", style="success"),
+        _btn(t("btn_vote_no", lang), callback_data=f"modvote:no:{request_id}", icon="no", style="danger"),
     ])
+    if user_id:
+        rows.append([_btn(t("kb_admin_msg_author", lang), callback_data=f"adm:msgauthor:{request_id}", icon="edit")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -928,14 +928,56 @@ def admin_actions_kb(request_id: str, allow_ban: bool = False, lang: str = "ru")
     ])
 
 
-def admin_reject_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
+def admin_reject_kb(request_id: str, lang: str = "ru", show_votes: bool = False) -> InlineKeyboardMarkup:
+    votes_key = "kb_admin_reject_votes_on" if show_votes else "kb_admin_reject_votes_off"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             _btn(t("kb_admin_reject_with_reason", lang), callback_data=f"adm:reject_comment:{request_id}", icon="edit"),
             _btn(t("kb_admin_reject_silent", lang), callback_data=f"adm:reject_silent:{request_id}", icon="no"),
         ],
+        [_btn(t("kb_admin_reject_template", lang), callback_data=f"adm:rejtpl_pick:{request_id}", icon="file")],
+        [_btn(t(votes_key, lang), callback_data=f"adm:reject_votes:{request_id}",
+              icon=("yes" if show_votes else "no"), style=("success" if show_votes else None))],
+        [_btn(t("kb_admin_rework", lang), callback_data=f"adm:rework:{request_id}", icon="updates")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
+
+
+def _tpl_label(text: str, limit: int = 28) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def admin_reject_templates_kb(
+    request_id: str,
+    templates: List[str],
+    selected: List[int],
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
+    rows = []
+    for idx, tpl in enumerate(templates):
+        if idx in selected:
+            label = f"[{selected.index(idx) + 1}] {_tpl_label(tpl)}"
+            style = "success"
+        else:
+            label = f"{idx + 1}. {_tpl_label(tpl)}"
+            style = None
+        rows.append([_btn(label, callback_data=f"adm:rejtpl_t:{request_id}:{idx}", style=style)])
+    if selected:
+        rows.append([_btn(t("kb_admin_reject_tpl_send", lang),
+                          callback_data=f"adm:rejtpl_go:{request_id}", icon="yes", style="success")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_reject_templates_cfg_kb(templates: List[str], lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [
+        [_btn(f"{idx + 1}. {_tpl_label(tpl)}", callback_data=f"adm:rejtpl_del:{idx}", icon="delete")]
+        for idx, tpl in enumerate(templates)
+    ]
+    rows.append([_btn(t("kb_admin_rejtpl_add", lang), callback_data="adm:rejtpl_add", icon="edit", style="success")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_confirm_delete_plugin_kb(slug: str, lang: str = "ru") -> InlineKeyboardMarkup:

@@ -991,7 +991,10 @@ async def on_icon_detail(cb: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     back = data.get("catalog_back") or "icons:0"
     await answer(cb, text, plugin_detail_kb(link, back, lang), "iconpacks")
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "profile")
@@ -1039,7 +1042,10 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
         profile_kb(lang, bool(user_plugins), bool(user_icons), notify_all_enabled=notify_all_enabled),
         "profile",
     )
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("subs:all_toggle:"))
@@ -1143,7 +1149,9 @@ def _user_joinly_chat_ids(db: dict[str, Any], user_id: int) -> list[int]:
             continue
         if not isinstance(v, dict):
             continue
-        if int(v.get(panel_key) or 0) <= 0:
+        manual = v.get("ManualAdmins") or []
+        is_manual = isinstance(manual, list) and user_id in manual
+        if int(v.get(panel_key) or 0) <= 0 and not is_manual:
             continue
         try:
             chat_ids.append(int(k))
@@ -1169,9 +1177,10 @@ async def _render_profile_joinly(target: CallbackQuery | Message, state: FSMCont
     chat_ids = _user_joinly_chat_ids(db, user.id)
     if not chat_ids:
         text += t("joinly_profile_no_chats", lang)
-        kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile", style="danger")]]
-        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=t("btn_joinly_add_chat", lang), callback_data="profile:joinly_add", style="success")],
+            [InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile", style="danger")],
+        ])
         await answer(target, text, kb, "joinly")
         if isinstance(target, CallbackQuery):
             await target.answer()
@@ -1196,11 +1205,87 @@ async def _render_profile_joinly(target: CallbackQuery | Message, state: FSMCont
             ]
         )
 
+    rows.append([InlineKeyboardButton(text=t("btn_joinly_add_chat", lang), callback_data="profile:joinly_add", style="success")])
     rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile", style="danger")])
     kb = InlineKeyboardMarkup(inline_keyboard=rows)
     await answer(target, text, kb, "joinly")
     if isinstance(target, CallbackQuery):
         await target.answer()
+
+
+@router.callback_query(F.data == "profile:joinly_add")
+async def on_profile_joinly_add(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    await state.set_state(UserFlow.entering_joinly_chat)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile:joinly", style="danger")],
+    ])
+    await answer(cb, t("joinly_add_prompt", lang), kb, "joinly")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+def _parse_chat_ref(raw: str) -> str | int:
+    ref = (raw or "").strip()
+    for prefix in ("https://t.me/", "http://t.me/", "t.me/", "telegram.me/"):
+        if ref.lower().startswith(prefix):
+            ref = ref[len(prefix):]
+            break
+    ref = ref.split("?")[0].split("/")[0].strip()
+    if ref.lstrip("-").isdigit():
+        return int(ref)
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+    return ref
+
+
+@router.message(UserFlow.entering_joinly_chat)
+async def on_joinly_chat_input(message: Message, state: FSMContext) -> None:
+    lang = await get_language(message, state)
+    user = message.from_user
+    if not user:
+        return
+    ref = _parse_chat_ref(message.text or "")
+    if not ref or ref == "@":
+        await message.answer(t("joinly_add_err_not_found", lang))
+        return
+
+    try:
+        chat = await message.bot.get_chat(ref)
+    except Exception:
+        await message.answer(t("joinly_add_err_not_found", lang))
+        return
+    if getattr(chat, "type", None) not in {"group", "supergroup", "channel"}:
+        await message.answer(t("joinly_add_err_bad_type", lang))
+        return
+
+    try:
+        member = await message.bot.get_chat_member(chat.id, user.id)
+        is_admin = getattr(member, "status", None) in {"administrator", "creator"}
+    except Exception:
+        is_admin = False
+    if not is_admin:
+        await message.answer(t("joinly_add_err_not_admin", lang))
+        return
+
+    db = load_joinly()
+    if not isinstance(db, dict):
+        db = {}
+    rec = db.setdefault(str(chat.id), {})
+    manual = rec.get("ManualAdmins")
+    if not isinstance(manual, list):
+        manual = []
+    if user.id not in manual:
+        manual.append(user.id)
+    rec["ManualAdmins"] = manual
+    save_joinly(db)
+
+    title = (getattr(chat, "title", None) or str(chat.id)).strip() or str(chat.id)
+    await state.set_state(None)
+    await message.answer(t("joinly_add_ok", lang, title=title), parse_mode=ParseMode.HTML)
+    await _render_profile_joinly(message, state)
 
 
 @router.callback_query(F.data.startswith("profile:joinly_chat:"))
@@ -1220,7 +1305,10 @@ async def on_profile_joinly_chat(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     await _render_joinly_chat_detail(cb, state, chat_id)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_id: int) -> None:
@@ -1396,7 +1484,10 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
     title = t("icons_title" if kind == "icons" else "catalog_title", lang)
     caption = f"{title}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
     await answer(cb, caption, paginated_list_kb(items, page, total_pages, f"my:{kind}", "profile", lang=lang), "profile")
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.inline_query()

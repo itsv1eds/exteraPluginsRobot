@@ -33,7 +33,6 @@ logger = logging.getLogger(__name__)
 router = Router(name="poster-flow")
 
 TZ_DISPLAY = timezone(timedelta(hours=5))
-_STATUS_EMOJI = {"scheduled": "", "sent": "✅", "failed": "", "canceled": ""}
 
 
 def _lang(target) -> str:
@@ -142,28 +141,40 @@ async def render_home(target, state: FSMContext) -> None:
 @router.callback_query(F.data == "pstr:home")
 async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
     await render_home(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "pstr:start")
 async def on_start_user(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(poster_admin_mode=False)
     await render_home(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "pstr:admin")
 async def on_start_admin(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(poster_admin_mode=True)
     await render_home(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data == "pstr:ch:add")
 async def on_channel_add(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.entering_channel_ref)
     await answer(cb, t("poster_add_channel_prompt", _lang(cb)), _skip_kb("noop", _lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 def _admin_label(user) -> str:
@@ -253,7 +264,10 @@ async def on_channel_detail(cb: CallbackQuery, state: FSMContext) -> None:
              title=plain_html(channel.get("title")), username=plain_html(channel.get("username") or "—"))
     text += "\n\n" + t("poster_channel_access", _lang(cb), admins=access)
     await answer(cb, text, _channel_kb(chat_id, _lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.regexp(r"^pstr:ch:-?\d+:del$"))
@@ -275,7 +289,10 @@ async def on_new_post(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(poster_chat_id=chat_id, poster_media=[], poster_buttons=[],
                             poster_html="", poster_delete_after=0, editing_post_id=None)
     await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("noop", _lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:upd")
@@ -289,7 +306,10 @@ async def on_preview_updated_plugins(cb: CallbackQuery, state: FSMContext) -> No
         return
     await state.update_data(poster_html=text)
     await _render_preview(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 async def _editing(state: FSMContext) -> bool:
@@ -322,7 +342,10 @@ async def on_skip_media(cb: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(PosterFlow.composing_buttons)
     await answer(cb, t("poster_compose_buttons", _lang(cb)), _skip_kb("buttons", _lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.message(PosterFlow.composing_media)
@@ -447,7 +470,10 @@ async def _render_preview(target, state: FSMContext) -> None:
 async def on_skip_buttons(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(poster_buttons=[], from_preview=False)
     await _render_preview(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.message(PosterFlow.composing_buttons)
@@ -465,7 +491,10 @@ async def on_edit_text(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(from_preview=True)
     await state.set_state(PosterFlow.composing_text)
     await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("noop", _lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:edit:media")
@@ -473,7 +502,10 @@ async def on_edit_media(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(from_preview=True)
     await state.set_state(PosterFlow.composing_media)
     await answer(cb, t("poster_compose_media", _lang(cb)), _skip_kb("media", _lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:edit:buttons")
@@ -481,13 +513,19 @@ async def on_edit_buttons(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(from_preview=True)
     await state.set_state(PosterFlow.composing_buttons)
     await answer(cb, t("poster_compose_buttons", _lang(cb)), _skip_kb("buttons", _lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:autodelmenu")
 async def on_preview_autodel_menu(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(cb, t("poster_autodel_prompt", _lang(cb)), _autodel_kb(_lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(PosterFlow.previewing, F.data.regexp(r"^pstr:autodel:\d+$"))
@@ -497,20 +535,29 @@ async def on_preview_autodel_set(cb: CallbackQuery, state: FSMContext) -> None:
         minutes = 0
     await state.update_data(poster_delete_after=minutes)
     await _render_preview(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:back")
 async def on_preview_back(cb: CallbackQuery, state: FSMContext) -> None:
     await _render_preview(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:schedule")
 async def on_preview_schedule(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.composing_time)
     await answer(cb, t("poster_compose_time", _lang(cb)), _time_kb(_lang(cb)))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
@@ -546,7 +593,10 @@ async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
 async def on_time_preset(cb: CallbackQuery, state: FSMContext) -> None:
     minutes = int(cb.data.split(":")[2])
     await _finalize(cb, state, datetime.now(timezone.utc) + timedelta(minutes=minutes))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.message(PosterFlow.composing_time)
@@ -574,7 +624,10 @@ async def _render_posts_list(target, state: FSMContext) -> None:
 @router.callback_query(F.data == "pstr:posts")
 async def on_my_posts(cb: CallbackQuery, state: FSMContext) -> None:
     await _render_posts_list(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 def _post_detail_kb(post_id: str, lang: str) -> InlineKeyboardMarkup:
@@ -610,7 +663,10 @@ async def on_post_detail(cb: CallbackQuery, state: FSMContext) -> None:
         chat_id, t("poster_post_detail", lang, datetime=when),
         reply_markup=_post_detail_kb(post_id, lang), parse_mode=ParseMode.HTML)
     await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.regexp(r"^pstr:postedit:\w+$"))
@@ -631,7 +687,10 @@ async def on_post_edit(cb: CallbackQuery, state: FSMContext) -> None:
         from_preview=False,
     )
     await _render_preview(cb, state)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.regexp(r"^pstr:postdel:\w+$"))

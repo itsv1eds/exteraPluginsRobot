@@ -22,7 +22,6 @@ from bot.cache import (
     get_categories,
     get_config,
     invalidate,
-    is_owner,
 )
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
@@ -58,6 +57,8 @@ from bot.keyboards import (
     admin_queue_kb,
     admin_review_kb,
     admin_reject_kb,
+    admin_reject_templates_kb,
+    admin_reject_templates_cfg_kb,
     admin_confirm_delete_plugin_kb,
     admin_cancel_kb,
     cancel_kb,
@@ -92,11 +93,13 @@ from bot.services.admin_notifications import (
     finalize_admin_notify_messages,
     set_admin_notification_preference,
 )
+from bot.services.dialogs import register_dialog_message
 from bot.services.forum import answer_in_moderation_topic
 from bot.services.moderation import (
     delete_forum_request_message,
     is_moderation_forum_chat,
     moderation_config,
+    rejection_reasons,
     send_request_to_forum,
     vote_summary,
 )
@@ -1015,6 +1018,8 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await _render_backup(cb, state)
     elif token == "adm:maint":
         await answer(cb, _tr(cb, "admin_maint_title"), admin_maintenance_kb(lang), "admin")
+    elif token == "adm:rejtpl_cfg":
+        await _render_rejtpl_cfg(cb, state)
     else:
         await _render_menu(cb, state)
 
@@ -1236,15 +1241,6 @@ def _is_super_admin(target: CallbackQuery | Message | int | None) -> bool:
         user = target.from_user if target else None
         user_id = user.id if user else None
     return bool(user_id and int(user_id) in get_admins_super())
-
-
-def _is_owner(target: CallbackQuery | Message | int | None) -> bool:
-    if isinstance(target, int):
-        user_id = target
-    else:
-        user = target.from_user if target else None
-        user_id = user.id if user else None
-    return bool(user_id and is_owner(int(user_id)))
 
 
 def _ensure_request_role(cb: CallbackQuery | Message, entry: dict) -> bool:
@@ -1581,7 +1577,7 @@ async def _render_backup(target: CallbackQuery | Message, state: FSMContext) -> 
 
 @router.callback_query(F.data == "adm:backup")
 async def on_admin_backup(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _is_owner(cb):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     await _render_backup(cb, state)
@@ -1595,7 +1591,7 @@ async def on_admin_backup(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_admin_backup_now(cb: CallbackQuery, state: FSMContext) -> None:
     from bot.services.backup import send_backup
 
-    if not _is_owner(cb):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     try:
@@ -1604,7 +1600,7 @@ async def on_admin_backup_now(cb: CallbackQuery, state: FSMContext) -> None:
         pass
     ok = await send_backup(cb.bot, cb.from_user.id)
     add_audit_event(
-        "owner.backup_manual",
+        "backup.manual",
         actor_id=cb.from_user.id if cb.from_user else None,
         actor=_admin_actor_label(cb),
         details={"ok": ok},
@@ -1618,7 +1614,7 @@ async def on_admin_backup_now(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_admin_backup_toggle(cb: CallbackQuery, state: FSMContext) -> None:
     from bot.services.backup import get_backup_config, set_backup_config
 
-    if not _is_owner(cb):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     cfg = get_backup_config()
@@ -1634,7 +1630,7 @@ async def on_admin_backup_toggle(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_admin_backup_interval(cb: CallbackQuery, state: FSMContext) -> None:
     from bot.services.backup import get_backup_config, set_backup_config, cycle_interval
 
-    if not _is_owner(cb):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     cfg = get_backup_config()
@@ -1966,7 +1962,10 @@ async def on_admin_scheduled_up(cb: CallbackQuery, state: FSMContext) -> None:
 
     update_request_payload(request_id, {"scheduled_at": prev_dt.isoformat()})
     update_request_payload(prev_id, {"scheduled_at": cur_dt.isoformat()})
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
     await on_admin_scheduled_view(cb, state)
 
 
@@ -2003,7 +2002,10 @@ async def on_admin_scheduled_down(cb: CallbackQuery, state: FSMContext) -> None:
 
     update_request_payload(request_id, {"scheduled_at": next_dt.isoformat()})
     update_request_payload(next_id, {"scheduled_at": cur_dt.isoformat()})
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
     await on_admin_scheduled_view(cb, state)
 
 
@@ -2094,7 +2096,10 @@ async def on_admin_scheduled_change_preset(cb: CallbackQuery, state: FSMContext)
     schedule_dt_utc = schedule_dt_local.astimezone(timezone.utc)
     update_request_payload(request_id, {"scheduled_at": schedule_dt_utc.isoformat()})
     await state.set_state(AdminFlow.menu)
-    await cb.answer()
+    try:
+        await cb.answer()
+    except Exception:
+        pass
     await on_admin_scheduled_view(cb, state)
 
 @router.callback_query(F.data.startswith("adm:icon_edit_select:"))
@@ -5375,7 +5380,34 @@ async def on_admin_reject(cb: CallbackQuery, state: FSMContext) -> None:
             return
 
     await _nav_push(state, f"adm:reject:{request_id}")
-    await cb.message.edit_reply_markup(reply_markup=admin_reject_kb(request_id, lang=lang))
+    await state.update_data(reject_show_votes=False)
+    await cb.message.edit_reply_markup(reply_markup=admin_reject_kb(request_id, lang=lang, show_votes=False))
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm:reject_votes:"))
+async def on_admin_reject_votes_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if entry and not _ensure_request_role(cb, entry):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+
+    data = await state.get_data()
+    show_votes = not bool(data.get("reject_show_votes"))
+    await state.update_data(reject_show_votes=show_votes)
+    try:
+        await cb.message.edit_reply_markup(
+            reply_markup=admin_reject_kb(request_id, lang=lang, show_votes=show_votes))
+    except Exception:
+        pass
     try:
         await cb.answer()
     except Exception:
@@ -5414,6 +5446,61 @@ async def on_admin_reject_comment(cb: CallbackQuery, state: FSMContext) -> None:
         pass
 
 
+async def _finalize_rejection(
+    bot,
+    actor_target: CallbackQuery | Message,
+    entry: dict,
+    request_id: str,
+    comment: str,
+    show_votes: bool,
+) -> None:
+    update_request_status(request_id, "rejected", comment=comment)
+    actor_user = actor_target.from_user
+    add_audit_event(
+        "moderation.reject",
+        actor_id=actor_user.id if actor_user else None,
+        actor=_admin_actor_label(actor_target),
+        request_id=str(request_id),
+        details={"silent": False},
+    )
+    try:
+        await finalize_admin_notify_messages(
+            bot,
+            entry,
+            "Заявка была отклонена",
+            _admin_actor_label(actor_target),
+        )
+    except Exception:
+        pass
+    await delete_forum_request_message(bot, entry)
+    payload = entry.get("payload", {})
+    user_id = payload.get("user_id")
+    if not user_id:
+        return
+    author_lang = get_lang(user_id)
+    item = payload.get("plugin") or payload.get("icon") or {}
+    plugin_name = plain_html(item.get("name") or "—")
+    reason = strip_blockquote_tags(comment) or "—"
+    notify_text = t("notify_rejected", author_lang, name=plugin_name, comment=reason)
+    if show_votes:
+        reasons = rejection_reasons(entry)
+        if reasons:
+            reasons_text = "\n".join(f"• {r}" for r in reasons)
+            notify_text += "\n\n" + t("notify_rejected_votes", author_lang, reasons=reasons_text)
+    try:
+        await bot.send_message(
+            user_id,
+            notify_text,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception(
+            "event=reject.notify_author_failed user_id=%s request_id=%s",
+            user_id, request_id,
+        )
+
+
 @router.message(AdminFlow.entering_reject_comment)
 async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
@@ -5435,45 +5522,11 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
     if not _is_super_admin(message):
         return
 
-    entry = get_request_by_id(request_id)
     if entry:
-        update_request_status(request_id, "rejected", comment=comment)
-        add_audit_event(
-            "moderation.reject",
-            actor_id=message.from_user.id if message.from_user else None,
-            actor=_admin_actor_label(message),
-            request_id=str(request_id),
-            details={"silent": False},
+        await _finalize_rejection(
+            message.bot, message, entry, request_id, comment,
+            show_votes=bool(data.get("reject_show_votes")),
         )
-        try:
-            await finalize_admin_notify_messages(
-                message.bot,
-                entry,
-                "Заявка была отклонена",
-                _admin_actor_label(message),
-            )
-        except Exception:
-            pass
-        await delete_forum_request_message(message.bot, entry)
-        user_id = entry.get("payload", {}).get("user_id")
-        if user_id:
-            lang = get_lang(user_id)
-            payload = entry.get("payload", {})
-            item = payload.get("plugin") or payload.get("icon") or {}
-            plugin_name = plain_html(item.get("name") or "—")
-            reason = strip_blockquote_tags(comment) or "—"
-            try:
-                await message.bot.send_message(
-                    user_id,
-                    t("notify_rejected", lang, name=plugin_name, comment=reason),
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                )
-            except Exception:
-                logger.exception(
-                    "event=reject.notify_author_failed user_id=%s request_id=%s",
-                    user_id, request_id,
-                )
 
     await state.clear()
     await state.set_state(AdminFlow.menu)
@@ -5523,11 +5576,416 @@ async def on_admin_reject_silent(cb: CallbackQuery, state: FSMContext) -> None:
         except Exception:
             pass
         await delete_forum_request_message(cb.bot, entry)
+        data = await state.get_data()
+        if data.get("reject_show_votes"):
+            payload = entry.get("payload", {})
+            user_id = payload.get("user_id")
+            reasons = rejection_reasons(entry)
+            if user_id and reasons:
+                author_lang = get_lang(user_id)
+                item = payload.get("plugin") or payload.get("icon") or {}
+                plugin_name = plain_html(item.get("name") or "—")
+                reasons_text = "\n".join(f"• {r}" for r in reasons)
+                try:
+                    await cb.bot.send_message(
+                        user_id,
+                        t("notify_rejected_moderation", author_lang, name=plugin_name, reasons=reasons_text),
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    logger.exception(
+                        "event=reject.notify_votes_failed user_id=%s request_id=%s",
+                        user_id, request_id,
+                    )
     await answer(cb, _tr(cb, "admin_rejected_done"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
     try:
         await cb.answer()
     except Exception:
         pass
+
+
+_REJECT_TEMPLATES_LIMIT = 15
+
+
+def _load_reject_templates() -> list[str]:
+    cfg = get_config()
+    raw = cfg.get("reject_templates")
+    if not isinstance(raw, list):
+        return []
+    return [str(x).strip() for x in raw if str(x).strip()]
+
+
+def _save_reject_templates(templates: list[str]) -> None:
+    cfg = get_config()
+    cfg["reject_templates"] = list(templates)
+    save_config(cfg)
+    invalidate("config")
+
+
+def _rejtpl_list_text(templates: list[str]) -> str:
+    return "\n".join(
+        f"{idx + 1}. {strip_blockquote_tags(telegram_html(tpl))}"
+        for idx, tpl in enumerate(templates)
+    )
+
+
+async def _render_rejtpl_cfg(target, state: FSMContext) -> None:
+    lang = _lang_for(target)
+    templates = _load_reject_templates()
+    if templates:
+        text = t("admin_rejtpl_cfg_title", lang, templates=_rejtpl_list_text(templates))
+    else:
+        text = t("admin_rejtpl_cfg_empty", lang)
+    await answer(target, text, admin_reject_templates_cfg_kb(templates, lang=lang), "admin")
+
+
+@router.callback_query(F.data == "adm:rejtpl_cfg")
+async def on_admin_rejtpl_cfg(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _nav_push(state, "adm:rejtpl_cfg")
+    await state.set_state(AdminFlow.menu)
+    await _render_rejtpl_cfg(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:rejtpl_add")
+async def on_admin_rejtpl_add(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    if len(_load_reject_templates()) >= _REJECT_TEMPLATES_LIMIT:
+        await cb.answer(_tr(cb, "admin_rejtpl_limit", limit=_REJECT_TEMPLATES_LIMIT), show_alert=True)
+        return
+    await state.set_state(AdminFlow.entering_reject_template)
+    await answer(cb, _tr(cb, "admin_enter_reject_template"), None, "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(AdminFlow.entering_reject_template)
+async def on_admin_enter_reject_template(message: Message, state: FSMContext) -> None:
+    if not _ensure_admin_role(message, "super"):
+        return
+    text = " ".join((message.text or "").split()).strip()
+    if not text:
+        await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
+        return
+    templates = _load_reject_templates()
+    if len(templates) >= _REJECT_TEMPLATES_LIMIT:
+        await message.answer(_tr(message, "admin_rejtpl_limit", limit=_REJECT_TEMPLATES_LIMIT))
+        return
+    templates.append(text)
+    _save_reject_templates(templates)
+    await state.set_state(AdminFlow.menu)
+    await _render_rejtpl_cfg(message, state)
+
+
+@router.callback_query(F.data.regexp(r"^adm:rejtpl_del:\d+$"))
+async def on_admin_rejtpl_del(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    idx = int(cb.data.split(":")[2])
+    templates = _load_reject_templates()
+    if 0 <= idx < len(templates):
+        templates.pop(idx)
+        _save_reject_templates(templates)
+    await _render_rejtpl_cfg(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm:rejtpl_pick:"))
+async def on_admin_rejtpl_pick(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if entry and not _ensure_request_role(cb, entry):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    templates = _load_reject_templates()
+    if not templates:
+        await cb.answer(_tr(cb, "admin_rejtpl_empty"), show_alert=True)
+        return
+    await state.update_data(reject_tpl_sel=[])
+    text = t("admin_rejtpl_pick_title", lang, templates=_rejtpl_list_text(templates))
+    await answer(cb, text, admin_reject_templates_kb(request_id, templates, [], lang=lang), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^adm:rejtpl_t:[^:]+:\d+$"))
+async def on_admin_rejtpl_toggle(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    parts = cb.data.split(":")
+    request_id, idx = parts[2], int(parts[3])
+    templates = _load_reject_templates()
+    if idx >= len(templates):
+        await cb.answer()
+        return
+    data = await state.get_data()
+    selected = [i for i in (data.get("reject_tpl_sel") or []) if isinstance(i, int) and i < len(templates)]
+    if idx in selected:
+        selected.remove(idx)
+    else:
+        selected.append(idx)
+    await state.update_data(reject_tpl_sel=selected)
+    try:
+        await cb.message.edit_reply_markup(
+            reply_markup=admin_reject_templates_kb(request_id, templates, selected, lang=lang))
+    except Exception:
+        pass
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm:rejtpl_go:"))
+async def on_admin_rejtpl_go(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if not entry:
+        await cb.answer(_tr(cb, "admin_request_not_found"), show_alert=True)
+        return
+    if not _ensure_request_role(cb, entry):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    templates = _load_reject_templates()
+    data = await state.get_data()
+    selected = [i for i in (data.get("reject_tpl_sel") or []) if isinstance(i, int) and 0 <= i < len(templates)]
+    if not selected:
+        await cb.answer(_tr(cb, "admin_rejtpl_empty"), show_alert=True)
+        return
+    comment = "\n".join(f"{pos + 1}. {templates[i]}" for pos, i in enumerate(selected))
+    await _finalize_rejection(
+        cb.bot, cb, entry, request_id, comment,
+        show_votes=bool(data.get("reject_show_votes")),
+    )
+    await state.update_data(reject_tpl_sel=[])
+    await answer(cb, _tr(cb, "admin_rejected_done"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm:rework:"))
+async def on_admin_rework(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if entry:
+        if not _ensure_request_role(cb, entry):
+            await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+            return
+    else:
+        if not _ensure_admin(cb):
+            await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+            return
+
+    await _nav_push(state, f"adm:rework:{request_id}")
+    await state.update_data(rework_request_id=request_id)
+    await state.set_state(AdminFlow.entering_rework_comment)
+    await answer(cb, _tr(cb, "admin_enter_rework_reason"), None, "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(AdminFlow.entering_rework_comment)
+async def on_admin_enter_rework_comment(message: Message, state: FSMContext) -> None:
+    lang = _lang_for(message)
+    comment = telegram_html(message.html_text or message.text or "")
+    if not comment:
+        await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
+        return
+
+    data = await state.get_data()
+    request_id = data.get("rework_request_id")
+    if not request_id:
+        await state.clear()
+        await state.set_state(AdminFlow.menu)
+        return
+
+    entry = get_request_by_id(request_id)
+    if entry and not _ensure_request_role(message, entry):
+        return
+    if not _is_super_admin(message):
+        return
+
+    if entry:
+        update_request_status(request_id, "rework", comment=comment)
+        add_audit_event(
+            "moderation.rework",
+            actor_id=message.from_user.id if message.from_user else None,
+            actor=_admin_actor_label(message),
+            request_id=str(request_id),
+        )
+        try:
+            await finalize_admin_notify_messages(
+                message.bot,
+                entry,
+                "Заявка отправлена на доработку",
+                _admin_actor_label(message),
+            )
+        except Exception:
+            pass
+        await delete_forum_request_message(message.bot, entry)
+        payload = entry.get("payload", {})
+        user_id = payload.get("user_id")
+        if user_id:
+            author_lang = get_lang(user_id)
+            item = payload.get("plugin") or payload.get("icon") or {}
+            plugin_name = plain_html(item.get("name") or "—")
+            reason = strip_blockquote_tags(comment) or "—"
+            file_id = str(item.get("file_id") or payload.get("moderation_file_id") or "").strip()
+            resubmit_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=t("btn_resubmit", author_lang), callback_data=f"resub:{request_id}", style="success"),
+            ]])
+            try:
+                await message.bot.send_message(
+                    user_id,
+                    t("notify_rework", author_lang, name=plugin_name, comment=reason),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                if file_id:
+                    await message.bot.send_document(
+                        user_id,
+                        file_id,
+                        caption=t("notify_rework_request", author_lang),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=resubmit_kb,
+                    )
+                else:
+                    await message.bot.send_message(
+                        user_id,
+                        t("notify_rework_request", author_lang),
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=resubmit_kb,
+                        disable_web_page_preview=True,
+                    )
+            except Exception:
+                logger.exception(
+                    "event=rework.notify_author_failed user_id=%s request_id=%s",
+                    user_id, request_id,
+                )
+
+    await state.clear()
+    await state.set_state(AdminFlow.menu)
+    await answer(message, _tr(message, "admin_rework_done"), admin_menu_kb(_admin_menu_role(message), lang=lang), "admin")
+
+
+@router.callback_query(F.data.startswith("adm:msgauthor:"))
+async def on_admin_msg_author(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if not entry or not entry.get("payload", {}).get("user_id"):
+        await cb.answer(_tr(cb, "admin_request_not_found"), show_alert=True)
+        return
+    if not _ensure_request_role(cb, entry):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+
+    await _nav_push(state, f"adm:msgauthor:{request_id}")
+    await state.update_data(author_msg_request_id=request_id)
+    await state.set_state(AdminFlow.entering_author_message)
+    await answer(cb, _tr(cb, "admin_enter_author_message"), None, "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(AdminFlow.entering_author_message)
+async def on_admin_enter_author_message(message: Message, state: FSMContext) -> None:
+    lang = _lang_for(message)
+    text = telegram_html(message.html_text or message.text or "")
+    if not text:
+        await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
+        return
+
+    data = await state.get_data()
+    request_id = data.get("author_msg_request_id")
+    entry = get_request_by_id(request_id) if request_id else None
+    if not entry or not _ensure_request_role(message, entry):
+        await state.clear()
+        await state.set_state(AdminFlow.menu)
+        return
+
+    payload = entry.get("payload", {})
+    user_id = payload.get("user_id")
+    admin_user = message.from_user
+    if not user_id or not admin_user:
+        await state.clear()
+        await state.set_state(AdminFlow.menu)
+        return
+
+    author_lang = get_lang(user_id)
+    item = payload.get("plugin") or payload.get("icon") or {}
+    plugin_name = plain_html(item.get("name") or "—")
+    sender_label = user_mention(admin_user.id, admin_user.username)
+    body = strip_blockquote_tags(text)
+    delivered = None
+    try:
+        delivered = await message.bot.send_message(
+            user_id,
+            t("dialog_msg_to_author", author_lang, name=plugin_name, sender=sender_label, text=body),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        logger.exception(
+            "event=dialog.notify_author_failed user_id=%s request_id=%s",
+            user_id, request_id,
+        )
+
+    if delivered:
+        register_dialog_message(
+            int(user_id), delivered.message_id,
+            peer_id=admin_user.id, request_id=str(request_id),
+            author_id=int(user_id), admin_id=admin_user.id,
+        )
+        add_audit_event(
+            "moderation.message_author",
+            actor_id=admin_user.id,
+            actor=_admin_actor_label(message),
+            request_id=str(request_id),
+        )
+
+    await state.clear()
+    await state.set_state(AdminFlow.menu)
+    result_key = "admin_author_message_sent" if delivered else "admin_author_message_failed"
+    await answer(message, _tr(message, result_key), admin_menu_kb(_admin_menu_role(message), lang=lang), "admin")
 
 
 @router.callback_query(F.data.startswith("adm:ban:"))

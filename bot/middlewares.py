@@ -41,6 +41,33 @@ async def stop_log_worker() -> None:
             _log_task.cancel()
 
 
+class CallbackAckWatchdogMiddleware(BaseMiddleware):
+    def __init__(self, delay: float = 1.5):
+        self.delay = delay
+
+    async def __call__(
+        self,
+        handler: Callable[[Any, dict[str, Any]], Awaitable[Any]],
+        event: Any,
+        data: dict[str, Any],
+    ) -> Any:
+        if not isinstance(event, CallbackQuery):
+            return await handler(event, data)
+
+        async def _ack_later() -> None:
+            try:
+                await asyncio.sleep(self.delay)
+                await event.answer()
+            except Exception:
+                pass
+
+        watchdog = asyncio.create_task(_ack_later())
+        try:
+            return await handler(event, data)
+        finally:
+            watchdog.cancel()
+
+
 class UserActionLoggingMiddleware(BaseMiddleware):
     def __init__(self, enabled: bool = True):
         self.enabled = enabled

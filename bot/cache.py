@@ -95,7 +95,6 @@ def _get_admin_list(key: str) -> set:
     return out
 
 
-ROLE_OWNER = "owner"
 ROLE_SUPER = "super"
 ROLE_ADMIN = "admin"
 
@@ -128,21 +127,12 @@ def get_admins_icons() -> set:
     return get_admins()
 
 
-def is_owner(user_id: int) -> bool:
-    try:
-        return int(user_id) in get_owners()
-    except (TypeError, ValueError):
-        return False
-
-
 def get_admin_role(user_id: int) -> Optional[str]:
     try:
         uid = int(user_id)
     except (TypeError, ValueError):
         return None
-    if uid in get_owners():
-        return ROLE_OWNER
-    if uid in _get_admin_list("admins_super"):
+    if uid in get_admins_super():
         return ROLE_SUPER
     if uid in get_admins_regular():
         return ROLE_ADMIN

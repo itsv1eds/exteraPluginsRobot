@@ -650,6 +650,82 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "kb_admin_ban": {"ru": "Забанить", "en": "Ban"},
     "kb_admin_reject_with_reason": {"ru": "С причиной", "en": "With reason"},
     "kb_admin_reject_silent": {"ru": "Без уведомления", "en": "Silent"},
+    "kb_admin_rework": {"ru": "На доработку", "en": "Request changes"},
+    "kb_admin_msg_author": {"ru": "Написать автору", "en": "Message author"},
+    "admin_request_not_found": {"ru": "Заявка не найдена.", "en": "Request not found."},
+    "admin_enter_author_message": {
+        "ru": "Введите сообщение для автора заявки:",
+        "en": "Enter a message for the submission author:",
+    },
+    "admin_author_message_sent": {
+        "ru": "Сообщение отправлено автору",
+        "en": "Message sent to the author",
+    },
+    "admin_author_message_failed": {
+        "ru": "Не удалось отправить сообщение автору.",
+        "en": "Failed to deliver the message to the author.",
+    },
+    "dialog_msg_to_author": {
+        "ru": "💬 <b>Сообщение от модерации</b>\n\n<b>Заявка:</b> {name}\n<b>От:</b> {sender}\n\n<blockquote expandable>{text}</blockquote>\n\n<i>Ответьте реплаем на это сообщение, чтобы ответить.</i>",
+        "en": "💬 <b>Message from moderation</b>\n\n<b>Submission:</b> {name}\n<b>From:</b> {sender}\n\n<blockquote expandable>{text}</blockquote>\n\n<i>Reply to this message to answer.</i>",
+    },
+    "dialog_msg_to_admin": {
+        "ru": "💬 <b>Ответ автора</b>\n\n<b>Заявка:</b> {name}\n<b>От:</b> {sender}\n\n<blockquote expandable>{text}</blockquote>\n\n<i>Ответьте реплаем на это сообщение, чтобы продолжить диалог.</i>",
+        "en": "💬 <b>Author's reply</b>\n\n<b>Submission:</b> {name}\n<b>From:</b> {sender}\n\n<blockquote expandable>{text}</blockquote>\n\n<i>Reply to this message to continue the conversation.</i>",
+    },
+    "dialog_delivered": {"ru": "✅ Доставлено", "en": "✅ Delivered"},
+    "dialog_deliver_failed": {
+        "ru": "Не удалось доставить сообщение.",
+        "en": "Failed to deliver the message.",
+    },
+    "dialog_need_text": {
+        "ru": "Отправьте текстовое сообщение.",
+        "en": "Please send a text message.",
+    },
+    "kb_admin_reject_template": {"ru": "По шаблону", "en": "By template"},
+    "kb_admin_reject_tpl_send": {"ru": "Отправить отказ", "en": "Send rejection"},
+    "admin_rejtpl_pick_title": {
+        "ru": "<b>Отказ по шаблону</b>\n\nНажимайте шаблоны в нужном порядке — в этом порядке они уйдут автору списком:\n\n{templates}",
+        "en": "<b>Rejection by template</b>\n\nTap templates in the desired order — they will be sent to the author as a list in that order:\n\n{templates}",
+    },
+    "admin_rejtpl_empty": {
+        "ru": "Шаблоны не настроены. Добавьте их: Настройки → Модерация → Шаблоны отказа.",
+        "en": "No templates configured. Add them: Settings → Moderation → Rejection templates.",
+    },
+    "admin_cfg_reject_templates": {"ru": "Шаблоны отказа", "en": "Rejection templates"},
+    "admin_rejtpl_cfg_title": {
+        "ru": "<b>Шаблоны отказа</b>\n\nНажмите на шаблон, чтобы удалить его.\n\n{templates}",
+        "en": "<b>Rejection templates</b>\n\nTap a template to delete it.\n\n{templates}",
+    },
+    "admin_rejtpl_cfg_empty": {
+        "ru": "<b>Шаблоны отказа</b>\n\nШаблонов пока нет.",
+        "en": "<b>Rejection templates</b>\n\nNo templates yet.",
+    },
+    "kb_admin_rejtpl_add": {"ru": "Добавить шаблон", "en": "Add template"},
+    "admin_enter_reject_template": {
+        "ru": "Введите текст шаблона отказа:",
+        "en": "Enter the rejection template text:",
+    },
+    "admin_rejtpl_limit": {
+        "ru": "Максимум {limit} шаблонов.",
+        "en": "Maximum {limit} templates.",
+    },
+    "kb_admin_reject_votes_on": {
+        "ru": "Причины модерации: отправить",
+        "en": "Moderation reasons: send",
+    },
+    "kb_admin_reject_votes_off": {
+        "ru": "Причины модерации: не отправлять",
+        "en": "Moderation reasons: don't send",
+    },
+    "admin_enter_rework_reason": {
+        "ru": "Введите комментарий для автора (что нужно исправить):",
+        "en": "Enter a comment for the author (what should be fixed):",
+    },
+    "admin_rework_done": {
+        "ru": f'{emoji_html("edit", "✏️")} Отправлено на доработку',
+        "en": f'{emoji_html("edit", "✏️")} Sent back for changes',
+    },
     "kb_admin_confirm_ban": {"ru": "Подтвердить бан", "en": "Confirm ban"},
 
     "catalog_empty": {"ru": "Пусто", "en": "Empty"},
@@ -1010,6 +1086,31 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": f'{emoji_html("no", "❌")} <b>Заявка отклонена</b>\n\n<b>Плагин:</b> {{name}}\n\n<b>Причина отказа:</b>\n<blockquote expandable>{{comment}}</blockquote>',
         "en": f'{emoji_html("no", "❌")} <b>Submission rejected</b>\n\n<b>Plugin:</b> {{name}}\n\n<b>Reason:</b>\n<blockquote expandable>{{comment}}</blockquote>',
     },
+    "notify_rejected_votes": {
+        "ru": "<b>Причины модерации:</b>\n<blockquote expandable>{reasons}</blockquote>",
+        "en": "<b>Moderation reasons:</b>\n<blockquote expandable>{reasons}</blockquote>",
+    },
+    "notify_rejected_moderation": {
+        "ru": f'{emoji_html("no", "❌")} <b>Заявка отклонена</b>\n\n<b>Плагин:</b> {{name}}\n\n<b>Причины модерации:</b>\n<blockquote expandable>{{reasons}}</blockquote>',
+        "en": f'{emoji_html("no", "❌")} <b>Submission rejected</b>\n\n<b>Plugin:</b> {{name}}\n\n<b>Moderation reasons:</b>\n<blockquote expandable>{{reasons}}</blockquote>',
+    },
+    "notify_rework": {
+        "ru": f'{emoji_html("edit", "✏️")} <b>Заявка отправлена на доработку</b>\n\n<b>Плагин:</b> {{name}}\n\n<b>Комментарий модерации:</b>\n<blockquote expandable>{{comment}}</blockquote>',
+        "en": f'{emoji_html("edit", "✏️")} <b>Submission sent back for changes</b>\n\n<b>Plugin:</b> {{name}}\n\n<b>Moderation comment:</b>\n<blockquote expandable>{{comment}}</blockquote>',
+    },
+    "notify_rework_request": {
+        "ru": "Ваша заявка ниже. Исправьте замечания и нажмите «Переотправить» — файл и описание заполнять заново не нужно.",
+        "en": "Your submission is below. Fix the issues and press \"Resubmit\" — no need to fill in the file and description again.",
+    },
+    "btn_resubmit": {"ru": "Переотправить", "en": "Resubmit"},
+    "resubmit_done": {
+        "ru": f'{emoji_html("yes", "✅")} Заявка переотправлена на модерацию',
+        "en": f'{emoji_html("yes", "✅")} Submission resent for moderation',
+    },
+    "resubmit_expired": {
+        "ru": "Эта заявка уже неактуальна.",
+        "en": "This submission is no longer available.",
+    },
     "notify_subscription_update": {
         "ru": "Плагин {name} обновился до версии <b>{version}</b>\n\n<b>Что нового:</b>\n<blockquote expandable>{changelog}</blockquote>",
         "en": "Plugin {name} updated to <b>{version}</b>\n\n<b>What's new:</b>\n<blockquote expandable>{changelog}</blockquote>",
@@ -1103,8 +1204,29 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "<b>Joinly</b> — chat join settings",
     },
     "joinly_profile_no_chats": {
-        "ru": "Пока не найдено ни одного чата, где вы настраивали Joinly. Добавьте бота в чат и выполните команду /settings.",
-        "en": "No chats found where you configured Joinly yet. Add the bot to a chat and run /settings.",
+        "ru": "Пока не найдено ни одного чата, где вы настраивали Joinly. Добавьте бота в чат и выполните команду /settings — или добавьте чат вручную кнопкой ниже.",
+        "en": "No chats found where you configured Joinly yet. Add the bot to a chat and run /settings — or add a chat manually with the button below.",
+    },
+    "btn_joinly_add_chat": {"ru": "Добавить чат", "en": "Add chat"},
+    "joinly_add_prompt": {
+        "ru": "Отправьте @username, ссылку или ID чата/канала.\n\nБот должен быть добавлен в этот чат, а вы — быть его администратором.",
+        "en": "Send the @username, link or ID of the chat/channel.\n\nThe bot must be a member of that chat, and you must be one of its administrators.",
+    },
+    "joinly_add_ok": {
+        "ru": "✅ Чат <b>{title}</b> добавлен в Joinly.",
+        "en": "✅ Chat <b>{title}</b> added to Joinly.",
+    },
+    "joinly_add_err_not_found": {
+        "ru": "Чат не найден. Проверьте, что бот добавлен в этот чат, и попробуйте ещё раз.",
+        "en": "Chat not found. Make sure the bot is a member of that chat and try again.",
+    },
+    "joinly_add_err_bad_type": {
+        "ru": "Это не группа и не канал.",
+        "en": "That is not a group or a channel.",
+    },
+    "joinly_add_err_not_admin": {
+        "ru": "Вы не администратор этого чата.",
+        "en": "You are not an administrator of that chat.",
     },
     "joinly_profile_chat": {
         "ru": "Чат: <code>{chat_id}</code>",

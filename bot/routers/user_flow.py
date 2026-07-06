@@ -29,7 +29,6 @@ from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
 from bot.keyboards import (
     cancel_kb,
     comment_skip_kb,
-    confirm_kb,
     categories_kb,
     description_lang_kb,
     draft_category_kb,

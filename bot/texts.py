@@ -578,6 +578,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Пользователь разблокирован",
         "en": "User unbanned",
     },
+    "admin_user_info_reason": {"ru": "Причина", "en": "Reason"},
 
     "ask_admin_comment": {
         "ru": "Добавьте комментарий для администратора (необязательно).\n\nМожно пропустить.",

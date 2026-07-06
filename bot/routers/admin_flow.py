@@ -41,7 +41,6 @@ from bot.keyboards import (
     admin_config_moderation_kb,
     admin_config_other_kb,
     admin_confirm_ban_kb,
-    admin_icons_section_kb,
     admin_post_section_kb,
     admin_updates_list_kb,
     admin_manage_admins_kb,
@@ -394,6 +393,18 @@ def _scheduled_post_includes_updated_plugins(item: dict) -> bool:
     return any(str(title or "").strip() and str(title).strip() in text for title in titles.values())
 
 
+def _count_future_scheduled_posts() -> int:
+    now = datetime.now(timezone.utc)
+    count = 0
+    for it in _get_scheduled_posts():
+        if not isinstance(it, dict):
+            continue
+        dt = _parse_dt_utc(it.get("scheduled_at"))
+        if dt and dt > now:
+            count += 1
+    return count
+
+
 def _cleanup_scheduled_posts() -> list[dict]:
     now = datetime.now(timezone.utc)
     kept: list[dict] = []
@@ -582,7 +593,7 @@ def _admin_request_counts() -> dict[str, int]:
         "plugin_pending": len(plugin_pending),
         "icon_pending": len(icon_pending),
         "scheduled_plugins": len(scheduled_plugins),
-        "scheduled_posts": len(_cleanup_scheduled_posts()),
+        "scheduled_posts": _count_future_scheduled_posts(),
     }
 
 
@@ -592,13 +603,11 @@ def _admin_menu_text(lang: str) -> str:
         return (
             "<b>Admin Panel</b>\n\n"
             f"Plugins: {c['plugin_pending']} pending, {c['scheduled_plugins']} scheduled\n"
-            f"Icons: {c['icon_pending']} pending\n"
             f"Posts: {c['scheduled_posts']} scheduled"
         )
     return (
         "<b>Админ-панель</b>\n\n"
         f"Плагины: {c['plugin_pending']} заявок, {c['scheduled_plugins']} отложено\n"
-        f"Иконки: {c['icon_pending']} заявок\n"
         f"Посты: {c['scheduled_posts']} по расписанию"
     )
 
@@ -620,13 +629,6 @@ def _plugins_section_text(lang: str) -> str:
         f"Удаления: {c['deletes']}\n"
         f"Отложенные: {c['scheduled_plugins']}"
     )
-
-
-def _icons_section_text(lang: str) -> str:
-    c = _admin_request_counts()
-    if lang == "en":
-        return f"{t('admin_section_icons', lang)}\n\nPending requests: {c['icon_pending']}"
-    return f"{t('admin_section_icons', lang)}\n\nЗаявки: {c['icon_pending']}"
 
 
 def _post_section_text(lang: str) -> str:
@@ -969,9 +971,6 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang), "admin")
     elif token == "adm:section:updates":
         await _render_updates_list(cb, state, 0)
-    elif token == "adm:section:icons":
-        await state.set_state(AdminFlow.menu)
-        await answer(cb, _icons_section_text(lang), admin_icons_section_kb(lang=lang), "admin")
     elif token == "adm:section:post":
         await state.set_state(AdminFlow.menu)
         await answer(cb, _post_section_text(lang), admin_post_section_kb(lang=lang), "admin")
@@ -1571,7 +1570,6 @@ async def _render_backup(target: CallbackQuery | Message, state: FSMContext) -> 
         next_run = _tr(target, "admin_backup_auto_state", hours=cfg["interval_hours"])
     text = _tr(target, "admin_backup_title", state=next_run)
     await state.set_state(AdminFlow.menu)
-    await _nav_push(state, "adm:backup")
     await answer(target, text, admin_backup_kb(cfg, lang), "admin")
 
 
@@ -1580,6 +1578,7 @@ async def on_admin_backup(cb: CallbackQuery, state: FSMContext) -> None:
     if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
+    await _nav_push(state, "adm:backup")
     await _render_backup(cb, state)
     try:
         await cb.answer()
@@ -2385,22 +2384,6 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
     await _nav_push(state, "adm:section:plugins")
     await state.set_state(AdminFlow.menu)
     await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang), "admin")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
-
-
-@router.callback_query(F.data == "adm:section:icons")
-async def on_admin_section_icons(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
-    if not _ensure_admin_role(cb, "icons"):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-
-    await _nav_push(state, "adm:section:icons")
-    await state.set_state(AdminFlow.menu)
-    await answer(cb, _icons_section_text(lang), admin_icons_section_kb(lang=lang), "admin")
     try:
         await cb.answer()
     except Exception:
@@ -3804,6 +3787,27 @@ async def on_admin_unban(cb: CallbackQuery, state: FSMContext) -> None:
         )
     else:
         await answer(cb, _tr(cb, "admin_title"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
+
+
+@router.callback_query(F.data.startswith("adm:user_info:"))
+async def on_admin_user_info(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    try:
+        user_id = int(cb.data.split(":")[2])
+    except (ValueError, IndexError):
+        await cb.answer()
+        return
+    info = next((u for u in get_banned_users() if u.get("user_id") == user_id), None)
+    lines = [f"ID: {user_id}"]
+    if info:
+        if info.get("username"):
+            lines.append(f"@{info['username']}")
+        reason = str(info.get("ban_reason") or "").strip()
+        if reason:
+            lines.append(f"{_tr(cb, 'admin_user_info_reason')}: {reason}")
+    await cb.answer("\n".join(lines), show_alert=True)
 
 
 @router.callback_query(F.data == "adm:link_author")

@@ -971,14 +971,21 @@ def save_config(data: Dict[str, Any]) -> None:
     payload, _ = _normalize_config_defaults(payload)
     payload.setdefault("updated_at", _now_iso())
 
-    _ensure_db()
-    with _connect() as conn:
-        _set_meta_json(conn, _CONFIG_META_KEY, payload)
-        conn.commit()
-
     global _config_cache, _config_cache_time
     _config_cache = payload
     _config_cache_time = time.time()
+
+    def _write() -> None:
+        _ensure_db()
+        with _connect() as conn:
+            _set_meta_json(conn, _CONFIG_META_KEY, payload)
+            conn.commit()
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(asyncio.to_thread(_write))
+    except RuntimeError:
+        _write()
 
 
 def load_plugins() -> Dict[str, Any]:

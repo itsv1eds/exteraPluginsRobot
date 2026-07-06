@@ -71,8 +71,10 @@ def _home_kb(channels: list, lang: str) -> InlineKeyboardMarkup:
     for ch in channels:
         title = str(ch.get("title") or ch.get("chat_id"))
         rows.append([_btn(f"{title}", callback_data=f"pstr:ch:{ch.get('chat_id')}", icon="send")])
-    rows.append([_btn(t("poster_btn_add_channel", lang), callback_data="pstr:ch:add", icon="add", style="success")])
-    rows.append([_btn(t("poster_btn_my_posts", lang), callback_data="pstr:posts", icon="clock")])
+    rows.append([
+        _btn(t("poster_btn_add_channel", lang), callback_data="pstr:ch:add", icon="add", style="success"),
+        _btn(t("poster_btn_my_posts", lang), callback_data="pstr:posts", icon="clock"),
+    ])
     rows.append([_btn(t("btn_back", lang), callback_data="profile", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -88,6 +90,12 @@ def _channel_kb(chat_id: int, lang: str) -> InlineKeyboardMarkup:
 def _skip_kb(step: str, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("poster_btn_skip", lang), callback_data=f"pstr:skip:{step}", icon="forward")],
+        [_btn(t("btn_cancel", lang), callback_data="pstr:home", style="danger", icon="back")],
+    ])
+
+
+def _cancel_only_kb(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("btn_cancel", lang), callback_data="pstr:home", style="danger", icon="back")],
     ])
 
@@ -170,7 +178,7 @@ async def on_start_admin(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "pstr:ch:add")
 async def on_channel_add(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.entering_channel_ref)
-    await answer(cb, t("poster_add_channel_prompt", _lang(cb)), _skip_kb("noop", _lang(cb)))
+    await answer(cb, t("poster_add_channel_prompt", _lang(cb)), _cancel_only_kb(_lang(cb)))
     try:
         await cb.answer()
     except Exception:
@@ -288,7 +296,7 @@ async def on_new_post(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.composing_text)
     await state.update_data(poster_chat_id=chat_id, poster_media=[], poster_buttons=[],
                             poster_html="", poster_delete_after=0, editing_post_id=None)
-    await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("noop", _lang(cb)))
+    await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("text", _lang(cb)))
     try:
         await cb.answer()
     except Exception:
@@ -315,6 +323,20 @@ async def on_preview_updated_plugins(cb: CallbackQuery, state: FSMContext) -> No
 async def _editing(state: FSMContext) -> bool:
     data = await state.get_data()
     return bool(data.get("from_preview"))
+
+
+@router.callback_query(PosterFlow.composing_text, F.data == "pstr:skip:text")
+async def on_skip_text(cb: CallbackQuery, state: FSMContext) -> None:
+    if await _editing(state):
+        await state.update_data(from_preview=False)
+        await _render_preview(cb, state)
+    else:
+        await state.set_state(PosterFlow.composing_media)
+        await answer(cb, t("poster_compose_media", _lang(cb)), _skip_kb("media", _lang(cb)))
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.message(PosterFlow.composing_text)
@@ -490,7 +512,7 @@ async def on_compose_buttons(message: Message, state: FSMContext) -> None:
 async def on_edit_text(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(from_preview=True)
     await state.set_state(PosterFlow.composing_text)
-    await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("noop", _lang(cb)))
+    await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("text", _lang(cb)))
     try:
         await cb.answer()
     except Exception:

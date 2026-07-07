@@ -264,11 +264,21 @@ async def send_content(bot, chat_id: int, content: Dict[str, Any]):
     text = normalize_custom_emoji(content.get("html_text") or "")
     media = content.get("media") or []
     kb = _build_keyboard(content.get("buttons") or [])
+    visible_len = len(re.sub(r"<[^>]+>", "", text))
 
     async def _send():
         if media:
             item = media[0]
-            if item.get("type") == "video":
+            is_video = item.get("type") == "video"
+            if visible_len > 1024:
+                if is_video:
+                    await bot.send_video(chat_id, item["file_id"])
+                else:
+                    await bot.send_photo(chat_id, item["file_id"])
+                return await bot.send_message(
+                    chat_id, text, parse_mode=ParseMode.HTML,
+                    reply_markup=kb, disable_web_page_preview=True)
+            if is_video:
                 return await bot.send_video(
                     chat_id, item["file_id"], caption=(text or None),
                     parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -289,12 +299,16 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
     try:
         message = await send_content(bot, chat_id, content)
         extra: Dict[str, Any] = {}
-        try:
-            delete_after = int(content.get("delete_after_minutes") or 0)
-        except (TypeError, ValueError):
-            delete_after = 0
-        if delete_after > 0:
-            extra["delete_at"] = (_now() + timedelta(minutes=delete_after)).isoformat()
+        delete_at_abs = _parse_dt(content.get("delete_at_iso"))
+        if delete_at_abs:
+            extra["delete_at"] = delete_at_abs.isoformat()
+        else:
+            try:
+                delete_after = int(content.get("delete_after_minutes") or 0)
+            except (TypeError, ValueError):
+                delete_after = 0
+            if delete_after > 0:
+                extra["delete_at"] = (_now() + timedelta(minutes=delete_after)).isoformat()
         _update_post(post_id, status="sent", sent_message_id=getattr(message, "message_id", None),
                      error=None, **extra)
         return True

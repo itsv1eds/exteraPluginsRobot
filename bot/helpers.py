@@ -86,6 +86,11 @@ def _is_not_modified_error(exc: Exception) -> bool:
     return "message is not modified" in str(exc).lower()
 
 
+def _is_superseded_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "canceled by new" in text or "message can't be edited" in text
+
+
 def _is_entities_error(exc: Exception) -> bool:
     if not isinstance(exc, TelegramBadRequest):
         return False
@@ -297,7 +302,9 @@ async def answer(
                 return None
                 
         except Exception as exc:
-            if isinstance(exc, TelegramBadRequest) and _is_not_modified_error(exc):
+            if isinstance(exc, TelegramBadRequest) and (
+                _is_not_modified_error(exc) or _is_superseded_error(exc)
+            ):
                 try:
                     await target.answer()
                 except Exception:

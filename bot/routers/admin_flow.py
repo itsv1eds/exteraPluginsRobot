@@ -539,11 +539,26 @@ async def _render_scheduled_post_view(target: CallbackQuery | Message, state: FS
     await answer(target, body, admin_scheduled_post_kb(str(post_id), lang=lang), "admin")
 
 
+_TOP_LEVEL_NAV_TOKENS = {
+    "adm:section:plugins", "adm:notifs", "adm:broadcast", "adm:stats", "adm:config",
+}
+
+
+def _is_top_level_token(token: str) -> bool:
+    return token in _TOP_LEVEL_NAV_TOKENS or token.startswith("adm:banned:")
+
+
 async def _nav_push(state: FSMContext, token: str) -> None:
+    if _is_top_level_token(token):
+        await state.update_data(**{_NAV_STACK_KEY: ["adm:menu", token]})
+        return
+
     data = await state.get_data()
     stack = data.get(_NAV_STACK_KEY)
     if not isinstance(stack, list):
         stack = []
+    if not stack or stack[0] != "adm:menu":
+        stack = ["adm:menu"] + [s for s in stack if s != "adm:menu"]
     if stack and stack[-1] == token:
         return
     stack.append(token)
@@ -570,6 +585,18 @@ async def _render_menu(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminFlow.menu)
     await state.update_data(**{_NAV_STACK_KEY: ["adm:menu"]})
     await answer(cb, _admin_menu_text(lang), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
+
+
+@router.callback_query(F.data == "adm:menu")
+async def on_admin_menu(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _render_menu(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 def _admin_request_counts() -> dict[str, int]:
@@ -1329,6 +1356,7 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await state.set_state(AdminFlow.menu)
+    await state.update_data(**{_NAV_STACK_KEY: ["adm:menu"]})
     sent = await answer(message, _tr(message, "admin_title"), admin_menu_kb(_admin_menu_role(message), lang=lang), "admin")
     if sent:
         await remember_menu_owner(message, state, sent)
@@ -3224,6 +3252,17 @@ async def on_admin_stats(cb: CallbackQuery, state: FSMContext) -> None:
         for user_lang, count in sorted(counts.items()):
             label = user_lang.upper() if user_lang not in {"unknown", ""} else _tr(cb, "admin_label_not_set")
             lines.append(f"{label}: {count}")
+
+    try:
+        from bot.services.analytics import top_plugin_opens, total_plugin_opens
+        top = top_plugin_opens(10)
+        if top:
+            lines.append("")
+            lines.append(_tr(cb, "admin_stats_plugin_opens", total=total_plugin_opens()))
+            for slug, opens in top:
+                lines.append(f"• <code>{plain_html(slug)}</code> — {opens}")
+    except Exception:
+        logger.exception("event=admin_stats.opens_failed")
 
     msg = await answer(cb, "\n".join(lines), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
     if msg:

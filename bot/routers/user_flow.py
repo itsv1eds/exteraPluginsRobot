@@ -572,6 +572,11 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
             plugin = find_plugin_by_slug(payload) or find_plugin_by_deeplink_token(payload)
             if plugin:
                 plugin_slug = plugin.get("slug") or payload
+                try:
+                    from bot.services.analytics import record_plugin_open
+                    record_plugin_open(plugin_slug)
+                except Exception:
+                    logger.exception("event=start.record_open_failed slug=%s", plugin_slug)
                 text = build_plugin_preview(plugin, lang)
                 link = plugin.get("channel_message", {}).get("link")
                 external = is_external_plugin(plugin)

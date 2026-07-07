@@ -66,7 +66,7 @@ def _fmt_local(run_at_iso: str) -> str:
     return dt.astimezone(TZ_DISPLAY).strftime("%d.%m.%Y %H:%M")
 
 
-def _home_kb(channels: list, lang: str) -> InlineKeyboardMarkup:
+def _home_kb(channels: list, lang: str, admin_mode: bool = False) -> InlineKeyboardMarkup:
     rows = []
     for ch in channels:
         title = str(ch.get("title") or ch.get("chat_id"))
@@ -75,7 +75,8 @@ def _home_kb(channels: list, lang: str) -> InlineKeyboardMarkup:
         _btn(t("poster_btn_add_channel", lang), callback_data="pstr:ch:add", icon="add", style="success"),
         _btn(t("poster_btn_my_posts", lang), callback_data="pstr:posts", icon="clock"),
     ])
-    rows.append([_btn(t("btn_back", lang), callback_data="profile", style="danger", icon="back")])
+    back_cb = "adm:menu" if admin_mode else "profile"
+    rows.append([_btn(t("btn_back", lang), callback_data=back_cb, style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -139,11 +140,13 @@ async def _exit_screen(target, state: FSMContext, text: str, kb) -> None:
 
 async def render_home(target, state: FSMContext) -> None:
     lang = _lang(target)
+    data = await state.get_data()
+    admin_mode = bool(data.get("poster_admin_mode"))
     uid = target.from_user.id if target.from_user else 0
     channels = poster.list_channels(uid)
     text = t("poster_home" if channels else "poster_home_empty", lang)
     await state.set_state(None)
-    await _exit_screen(target, state, text, _home_kb(channels, lang))
+    await _exit_screen(target, state, text, _home_kb(channels, lang, admin_mode))
 
 
 @router.callback_query(F.data == "pstr:home")
@@ -295,7 +298,8 @@ async def on_new_post(cb: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(PosterFlow.composing_text)
     await state.update_data(poster_chat_id=chat_id, poster_media=[], poster_buttons=[],
-                            poster_html="", poster_delete_after=0, editing_post_id=None)
+                            poster_html="", poster_delete_after=0, poster_delete_at_iso=None,
+                            editing_post_id=None)
     await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("text", _lang(cb)))
     try:
         await cb.answer()
@@ -433,14 +437,14 @@ _AUTODEL_LABELS = {
 }
 
 
-def _preview_kb(lang: str, admin_mode: bool = False, delete_after: int = 0) -> InlineKeyboardMarkup:
+def _preview_kb(lang: str, admin_mode: bool = False, autodel_label: str = "нет") -> InlineKeyboardMarkup:
     rows = [
         [_btn(t("poster_btn_edit_text", lang), callback_data="pstr:edit:text", icon="edit")],
         [
             _btn(t("poster_btn_edit_media", lang), callback_data="pstr:edit:media", icon="art"),
             _btn(t("poster_btn_edit_buttons", lang), callback_data="pstr:edit:buttons", icon="link"),
         ],
-        [_btn(t("poster_btn_autodel", lang, value=_AUTODEL_SHORT.get(int(delete_after or 0), "нет")),
+        [_btn(t("poster_btn_autodel", lang, value=autodel_label),
               callback_data="pstr:preview:autodelmenu", icon="clock")],
     ]
     if admin_mode:
@@ -450,9 +454,17 @@ def _preview_kb(lang: str, admin_mode: bool = False, delete_after: int = 0) -> I
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _autodel_label(data: dict, lang: str) -> str:
+    iso = data.get("poster_delete_at_iso")
+    if iso:
+        return _fmt_local(iso)
+    return _AUTODEL_SHORT.get(int(data.get("poster_delete_after") or 0), "нет")
+
+
 def _autodel_kb(lang: str) -> InlineKeyboardMarkup:
     labels = _AUTODEL_LABELS.get(lang, _AUTODEL_LABELS["en"])
     rows = [[_btn(labels[m], callback_data=f"pstr:autodel:{m}")] for m in _AUTODEL_PRESETS]
+    rows.append([_btn(t("poster_autodel_custom_btn", lang), callback_data="pstr:autodel:custom", icon="clock")])
     rows.append([_btn(t("btn_back", lang), callback_data="pstr:preview:back", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -481,10 +493,9 @@ async def _render_preview(target, state: FSMContext) -> None:
         logger.exception("poster: preview render failed")
 
     admin_mode = bool(data.get("poster_admin_mode"))
-    delete_after = int(data.get("poster_delete_after") or 0)
     ctrl = await bot.send_message(
         chat_id, t("poster_preview_control", lang),
-        reply_markup=_preview_kb(lang, admin_mode, delete_after), parse_mode=ParseMode.HTML)
+        reply_markup=_preview_kb(lang, admin_mode, _autodel_label(data, lang)), parse_mode=ParseMode.HTML)
     await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
 
 
@@ -555,12 +566,41 @@ async def on_preview_autodel_set(cb: CallbackQuery, state: FSMContext) -> None:
     minutes = int(cb.data.split(":")[2])
     if minutes not in _AUTODEL_PRESETS:
         minutes = 0
-    await state.update_data(poster_delete_after=minutes)
+    # A preset overrides any previously entered custom date.
+    await state.update_data(poster_delete_after=minutes, poster_delete_at_iso=None)
     await _render_preview(cb, state)
     try:
         await cb.answer()
     except Exception:
         pass
+
+
+@router.callback_query(PosterFlow.previewing, F.data == "pstr:autodel:custom")
+async def on_preview_autodel_custom(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PosterFlow.entering_autodel_date)
+    await answer(cb, t("poster_autodel_date_prompt", _lang(cb)), _cancel_only_kb(_lang(cb)))
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(PosterFlow.entering_autodel_date)
+async def on_autodel_date_input(message: Message, state: FSMContext) -> None:
+    lang = _lang(message)
+    raw = (message.text or "").strip()
+    try:
+        naive = datetime.strptime(raw, "%d.%m.%Y %H:%M")
+    except ValueError:
+        await message.answer(t("poster_err_bad_time", lang))
+        return
+    delete_at_utc = naive.replace(tzinfo=TZ_DISPLAY).astimezone(timezone.utc)
+    if delete_at_utc <= datetime.now(timezone.utc):
+        await message.answer(t("poster_err_past_time", lang))
+        return
+    await state.update_data(poster_delete_at_iso=delete_at_utc.isoformat(), poster_delete_after=0)
+    await state.set_state(PosterFlow.previewing)
+    await _render_preview(message, state)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:back")
@@ -594,6 +634,7 @@ async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
         "media": data.get("poster_media") or [],
         "buttons": data.get("poster_buttons") or [],
         "delete_after_minutes": int(data.get("poster_delete_after") or 0),
+        "delete_at_iso": data.get("poster_delete_at_iso") or None,
     }
     editing_id = data.get("editing_post_id")
     if editing_id:
@@ -608,7 +649,9 @@ async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
     text = t("poster_home" if channels else "poster_home_empty", _lang(target))
     await state.set_state(None)
     await target.bot.send_message(
-        _chat_id(target), text, reply_markup=_home_kb(channels, _lang(target)), parse_mode=ParseMode.HTML)
+        _chat_id(target), text,
+        reply_markup=_home_kb(channels, _lang(target), bool(data.get("poster_admin_mode"))),
+        parse_mode=ParseMode.HTML)
 
 
 @router.callback_query(PosterFlow.composing_time, F.data.regexp(r"^pstr:time:\d+$"))
@@ -705,6 +748,7 @@ async def on_post_edit(cb: CallbackQuery, state: FSMContext) -> None:
         poster_media=content.get("media") or [],
         poster_buttons=content.get("buttons") or [],
         poster_delete_after=int(content.get("delete_after_minutes") or 0),
+        poster_delete_at_iso=content.get("delete_at_iso") or None,
         editing_post_id=post_id,
         from_preview=False,
     )

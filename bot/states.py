@@ -8,6 +8,7 @@ class PosterFlow(StatesGroup):
     composing_buttons = State()
     previewing = State()
     composing_time = State()
+    entering_autodel_date = State()
 
 
 class UserFlow(StatesGroup):

@@ -99,6 +99,7 @@ _DOC_STENKA = "stenka"
 _DOC_AUDIT = "audit"
 _DOC_POSTER = "poster"
 _DOC_DIALOGS = "dialogs"
+_DOC_STATS = "stats"
 
 _cache: Dict[str, Dict[str, Any]] = {}
 _cache_time: Dict[str, float] = {}
@@ -793,6 +794,21 @@ def _write_dialogs_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     _mark_initialized(conn, _DOC_DIALOGS)
 
 
+def _read_stats_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
+    data = _get_meta_json(conn, _meta_key(_DOC_STATS), {})
+    if not isinstance(data.get("plugin_opens"), dict):
+        data["plugin_opens"] = {}
+    return data
+
+
+def _write_stats_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+    payload = dict(data) if isinstance(data, dict) else {}
+    if not isinstance(payload.get("plugin_opens"), dict):
+        payload["plugin_opens"] = {}
+    _set_meta_json(conn, _meta_key(_DOC_STATS), payload)
+    _mark_initialized(conn, _DOC_STATS)
+
+
 _READERS = {
     _DOC_PLUGINS: _read_plugins_doc,
     _DOC_ICONS: _read_icons_doc,
@@ -805,6 +821,7 @@ _READERS = {
     _DOC_AUDIT: _read_audit_doc,
     _DOC_POSTER: _read_poster_doc,
     _DOC_DIALOGS: _read_dialogs_doc,
+    _DOC_STATS: _read_stats_doc,
 }
 
 _WRITERS = {
@@ -819,6 +836,7 @@ _WRITERS = {
     _DOC_AUDIT: _write_audit_doc,
     _DOC_POSTER: _write_poster_doc,
     _DOC_DIALOGS: _write_dialogs_doc,
+    _DOC_STATS: _write_stats_doc,
 }
 
 
@@ -1078,6 +1096,17 @@ def load_poster() -> Dict[str, Any]:
 
 def save_poster(data: Dict[str, Any]) -> None:
     _save_sync(_DOC_POSTER, data)
+
+
+def load_stats() -> Dict[str, Any]:
+    data = _normalize_dict(_get_cached(_DOC_STATS), {"plugin_opens": {}})
+    if not isinstance(data.get("plugin_opens"), dict):
+        data["plugin_opens"] = {}
+    return data
+
+
+def save_stats(data: Dict[str, Any]) -> None:
+    _save_sync(_DOC_STATS, data)
 
 
 def load_dialogs() -> Dict[str, Any]:

@@ -185,6 +185,11 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "🗑 <b>Автоудаление поста</b>\n\nЧерез сколько времени после публикации удалить пост из канала?",
         "en": "🗑 <b>Auto-delete post</b>\n\nHow long after publishing should the post be removed from the channel?",
     },
+    "poster_autodel_custom_btn": {"ru": "📅 Своя дата", "en": "📅 Custom date"},
+    "poster_autodel_date_prompt": {
+        "ru": "📅 <b>Дата удаления</b>\n\nВведите дату и время, когда удалить пост, в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (по вашему времени, UTC+5).",
+        "en": "📅 <b>Deletion date</b>\n\nEnter the date and time to delete the post as <code>DD.MM.YYYY HH:MM</code> (your time, UTC+5).",
+    },
     "poster_preview_meta": {
         "ru": "<b>Медиа:</b> {media}\n<b>Кнопки:</b> {buttons}",
         "en": "<b>Media:</b> {media}\n<b>Buttons:</b> {buttons}",
@@ -473,6 +478,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_queue_title_all": {"ru": "Заявки", "en": "Requests"},
     "admin_page": {"ru": "Стр. {current}/{total}", "en": "Page {current}/{total}"},
     "admin_label_users": {"ru": "<b>Пользователи:</b> {total}", "en": "<b>Users:</b> {total}"},
+    "admin_stats_plugin_opens": {
+        "ru": "<b>Открытий плагинов по ссылке:</b> {total}\n<b>Топ:</b>",
+        "en": "<b>Plugin opens via link:</b> {total}\n<b>Top:</b>",
+    },
     "admin_label_not_set": {"ru": "Не указано", "en": "Not set"},
     "admin_yes": {"ru": "Да", "en": "Yes"},
     "admin_no": {"ru": "Нет", "en": "No"},

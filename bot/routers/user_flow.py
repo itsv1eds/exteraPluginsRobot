@@ -27,6 +27,7 @@ from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, use
 from bot.helpers import answer, extract_html_text, try_react_pray
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
 from bot.keyboards import (
+    banned_appeal_kb,
     cancel_kb,
     comment_skip_kb,
     categories_kb,
@@ -181,7 +182,10 @@ async def _ensure_not_banned(target: Message | CallbackQuery, state: FSMContext)
         if isinstance(target, CallbackQuery):
             await target.answer(t("user_banned_short", lang), show_alert=True)
         else:
-            await target.answer(t("user_banned", lang), parse_mode=ParseMode.HTML)
+            await target.answer(
+                t("user_banned", lang), parse_mode=ParseMode.HTML,
+                reply_markup=_appeal_kb_for(user_id, lang),
+            )
         return False
 
     return True
@@ -547,7 +551,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     if is_user_banned(user_id):
         lang = get_lang(user_id)
-        await answer(message, t("user_banned", lang))
+        await answer(message, t("user_banned", lang), _appeal_kb_for(user_id, lang))
         return
 
     if payload:
@@ -616,6 +620,81 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     sent = await answer(message, t("language_prompt", lang), language_kb())
     if sent:
         await remember_menu_owner(message, state, sent)
+
+
+def _has_pending_appeal(user_id: int) -> bool:
+    for req in get_user_requests(user_id):
+        if req.get("type") == "unban_appeal" and req.get("status") == "pending":
+            return True
+    return False
+
+
+def _appeal_kb_for(user_id: int, lang: str):
+    if _has_pending_appeal(user_id):
+        return None
+    return banned_appeal_kb(lang)
+
+
+@router.callback_query(F.data == "appeal:start")
+async def on_appeal_start(cb: CallbackQuery, state: FSMContext) -> None:
+    user = cb.from_user
+    if not user:
+        return
+    lang = get_lang(user.id)
+    if not is_user_banned(user.id):
+        await cb.answer()
+        return
+    if _has_pending_appeal(user.id):
+        await cb.answer(t("appeal_already_pending", lang), show_alert=True)
+        return
+    await state.set_state(UserFlow.entering_appeal)
+    await answer(cb, t("appeal_prompt", lang), None)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(UserFlow.entering_appeal)
+async def on_appeal_text(message: Message, state: FSMContext) -> None:
+    user = message.from_user
+    if not user:
+        return
+    lang = get_lang(user.id)
+    if not is_user_banned(user.id):
+        await state.set_state(UserFlow.idle)
+        return
+    if _has_pending_appeal(user.id):
+        await state.set_state(UserFlow.idle)
+        await message.answer(t("appeal_already_pending", lang))
+        return
+
+    text = telegram_html(message.html_text or message.text or "").strip()
+    if not text:
+        await message.answer(t("need_text", lang), disable_web_page_preview=True)
+        return
+
+    payload = {
+        "user_id": user.id,
+        "username": user.username or "",
+        "appeal_text": text,
+    }
+    entry = add_request(payload, request_type="unban_appeal")
+
+    sender = user_mention(user.id, user.username)
+    forum_text = t(
+        "appeal_forum_text",
+        "ru",
+        user=sender,
+        text=strip_blockquote_tags(text),
+    )
+    try:
+        await send_request_to_forum(message.bot, entry, forum_text)
+    except Exception:
+        logger.exception("event=appeal.forum_send_failed user_id=%s", user.id)
+
+    await state.set_state(UserFlow.idle)
+    await message.answer(t("appeal_sent", lang), parse_mode=ParseMode.HTML)
 
 
 @router.message(UserFlow.entering_stenka_tag)

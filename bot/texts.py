@@ -737,6 +737,55 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": f'{emoji_html("edit", "✏️")} Sent back for changes',
     },
     "kb_admin_confirm_ban": {"ru": "Подтвердить бан", "en": "Confirm ban"},
+    "kb_admin_ban_delete": {"ru": "Забанить и удалить плагины", "en": "Ban & delete plugins"},
+    "kb_admin_ban_keep": {"ru": "Забанить, оставить плагины", "en": "Ban, keep plugins"},
+    "kb_admin_ban_manual": {"ru": "Забанить по ID / @username", "en": "Ban by ID / @username"},
+    "admin_ban_manual_prompt": {
+        "ru": "🚫 <b>Ручной бан</b>\n\nОтправьте числовой ID пользователя или его @username.",
+        "en": "🚫 <b>Manual ban</b>\n\nSend the user's numeric ID or their @username.",
+    },
+    "admin_ban_manual_not_found": {
+        "ru": "Пользователь не найден. Проверьте ID/@username (пользователь должен был запускать бота).",
+        "en": "User not found. Check the ID/@username (the user must have started the bot).",
+    },
+    "admin_ban_manual_is_admin": {
+        "ru": "Нельзя забанить администратора.",
+        "en": "Can't ban an administrator.",
+    },
+    "admin_ban_manual_confirm": {
+        "ru": "Забанить пользователя <code>{user_id}</code>?\n\nВыберите, что сделать с его плагинами:",
+        "en": "Ban user <code>{user_id}</code>?\n\nChoose what to do with their plugins:",
+    },
+    "kb_appeal_submit": {"ru": "Подать апелляцию", "en": "Submit appeal"},
+    "kb_appeal_unban": {"ru": "Разбанить", "en": "Unban"},
+    "kb_appeal_deny": {"ru": "Отклонить апелляцию", "en": "Deny appeal"},
+    "appeal_prompt": {
+        "ru": "✍️ <b>Апелляция</b>\n\nНапишите одним сообщением, почему вас стоит разблокировать. Оно уйдёт модераторам на голосование.",
+        "en": "✍️ <b>Appeal</b>\n\nSend one message explaining why you should be unbanned. It will go to moderators for a vote.",
+    },
+    "appeal_sent": {
+        "ru": "✅ Апелляция отправлена на рассмотрение. Решение примет администрация.",
+        "en": "✅ Your appeal has been submitted. The administration will decide.",
+    },
+    "appeal_already_pending": {
+        "ru": "У вас уже есть апелляция на рассмотрении.",
+        "en": "You already have a pending appeal.",
+    },
+    "appeal_already_handled": {"ru": "Апелляция уже обработана.", "en": "Appeal already handled."},
+    "appeal_forum_text": {
+        "ru": "🔓 <b>Апелляция на разблокировку</b>\n\n<b>От:</b> {user}\n\n<blockquote expandable>{text}</blockquote>",
+        "en": "🔓 <b>Unban appeal</b>\n\n<b>From:</b> {user}\n\n<blockquote expandable>{text}</blockquote>",
+    },
+    "appeal_approved": {
+        "ru": "✅ Ваша апелляция одобрена — вы разблокированы.",
+        "en": "✅ Your appeal was approved — you are unbanned.",
+    },
+    "appeal_denied": {
+        "ru": "❌ Ваша апелляция отклонена.",
+        "en": "❌ Your appeal was denied.",
+    },
+    "appeal_done_unban": {"ru": "Пользователь разблокирован", "en": "User unbanned"},
+    "appeal_done_deny": {"ru": "Апелляция отклонена", "en": "Appeal denied"},
 
     "catalog_empty": {"ru": "Пусто", "en": "Empty"},
     "catalog_page": {"ru": "Стр. {current}/{total}", "en": "Page {current}/{total}"},

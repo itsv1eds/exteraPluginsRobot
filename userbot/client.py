@@ -283,6 +283,23 @@ class UserbotClient:
             "link": f"https://t.me/{channel_username}/{message.id}",
         }
 
+    async def send_channel_text(self, chat_ref, text: str) -> int:
+        """Send an HTML text message (with custom emoji) to an arbitrary chat.
+
+        Used by Poster so custom (premium) emoji render — a bot cannot send
+        them to channels, but this account can where it is a member/admin.
+        Raises on any failure so the caller can fall back to the bot.
+        """
+        entity = await self.client.get_entity(chat_ref)
+        parsed_text, entities = self._format_text_for_telegram(text or "")
+        message = await self.client.send_message(
+            entity,
+            parsed_text,
+            formatting_entities=entities,
+            link_preview=False,
+        )
+        return message.id
+
     async def schedule_post(self, text: str, schedule_date: datetime) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
         parsed_text, entities = self._format_text_for_telegram(text)

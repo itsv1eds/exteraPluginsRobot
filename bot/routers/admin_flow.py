@@ -41,6 +41,7 @@ from bot.keyboards import (
     admin_config_moderation_kb,
     admin_config_other_kb,
     admin_confirm_ban_kb,
+    admin_confirm_ban_user_kb,
     admin_post_section_kb,
     admin_updates_list_kb,
     admin_manage_admins_kb,
@@ -1046,6 +1047,10 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await answer(cb, _tr(cb, "admin_maint_title"), admin_maintenance_kb(lang), "admin")
     elif token == "adm:rejtpl_cfg":
         await _render_rejtpl_cfg(cb, state)
+    elif token.startswith("adm:banned:"):
+        parts = token.split(":")
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _render_banned(cb, state, page)
     else:
         await _render_menu(cb, state)
 
@@ -3782,21 +3787,130 @@ async def on_admin_banned(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     page = int(cb.data.split(":")[2])
+    await _render_banned(cb, state, page)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+async def _render_banned(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
+    lang = _lang_for(target)
     banned = get_banned_users()
-
-    if not banned:
-        await cb.answer(_tr(cb, "admin_banned_empty"), show_alert=True)
-        return
-
     total = len(banned)
-    total_pages = math.ceil(total / PAGE_SIZE)
+    total_pages = max(1, math.ceil(total / PAGE_SIZE))
+    page = max(0, min(page, total_pages - 1))
     start = page * PAGE_SIZE
     page_items = banned[start : start + PAGE_SIZE]
-
     items = [(f"{user.get('username') or user['user_id']}", user["user_id"]) for user in page_items]
+    if banned:
+        caption = f"<b>{_tr(target, 'admin_btn_banned')}</b>\n{_tr(target, 'admin_page', current=page + 1, total=total_pages)}"
+    else:
+        caption = f"<b>{_tr(target, 'admin_btn_banned')}</b>\n\n{_tr(target, 'admin_banned_empty')}"
+    await state.set_state(AdminFlow.menu)
+    await answer(target, caption, admin_banned_kb(items, page, total_pages, lang=lang), "admin")
 
-    caption = f"<b>{_tr(cb, 'admin_btn_banned')}</b>\n{_tr(cb, 'admin_page', current=page + 1, total=total_pages)}"
-    await answer(cb, caption, admin_banned_kb(items, page, total_pages, lang=lang), "admin")
+
+async def _execute_ban(bot, user_id: int, delete_plugins: bool, actor_label: str, actor_id) -> int:
+    ban_user(user_id, reason="Заблокирован администратором")
+    add_audit_event(
+        "moderation.ban",
+        actor_id=actor_id,
+        actor=actor_label,
+        details={"user_id": user_id, "deleted_plugins": delete_plugins},
+    )
+    try:
+        await bot.send_message(
+            user_id, t("user_banned_by_admin", get_lang(user_id)),
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        )
+    except Exception:
+        pass
+    removed_count = 0
+    if delete_plugins:
+        from user_store import get_user
+        user_data = get_user(user_id)
+        removal = await remove_user_content(user_id, user_data.get("username", ""))
+        removed_count = len(removal["removed_plugins"]) + len(removal["removed_icons"])
+    return removed_count
+
+
+async def _resolve_ban_target(bot, raw: str):
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    if raw.lstrip("-").isdigit():
+        return int(raw)
+    uname = raw.lstrip("@").lower()
+    for u in list_users():
+        if str(u.get("username") or "").lower() == uname:
+            try:
+                return int(u.get("user_id"))
+            except (TypeError, ValueError):
+                continue
+    try:
+        chat = await bot.get_chat("@" + uname)
+        return int(chat.id)
+    except Exception:
+        return None
+
+
+@router.callback_query(F.data == "adm:ban_manual")
+async def on_admin_ban_manual(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _nav_push(state, "adm:ban_manual")
+    await state.set_state(AdminFlow.entering_ban_user)
+    await answer(cb, _tr(cb, "admin_ban_manual_prompt"), None, "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(AdminFlow.entering_ban_user)
+async def on_admin_ban_manual_input(message: Message, state: FSMContext) -> None:
+    lang = _lang_for(message)
+    if not _ensure_admin_role(message, "super"):
+        return
+    user_id = await _resolve_ban_target(message.bot, message.text or "")
+    if not user_id:
+        await message.answer(_tr(message, "admin_ban_manual_not_found"))
+        return
+    if user_id in get_admins():
+        await message.answer(_tr(message, "admin_ban_manual_is_admin"))
+        return
+    await state.set_state(AdminFlow.menu)
+    await answer(message, _tr(message, "admin_ban_manual_confirm", user_id=user_id),
+                 admin_confirm_ban_user_kb(user_id, lang=lang), "admin")
+
+
+@router.callback_query(F.data.regexp(r"^adm:banuid:-?\d+:(del|keep)$"))
+async def on_admin_ban_uid(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang_for(cb)
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    parts = cb.data.split(":")
+    user_id = int(parts[2])
+    delete_plugins = parts[3] == "del"
+    if user_id in get_admins():
+        await cb.answer(_tr(cb, "admin_ban_manual_is_admin"), show_alert=True)
+        return
+
+    removed_count = await _execute_ban(
+        cb.bot, user_id, delete_plugins,
+        _admin_actor_label(cb), cb.from_user.id if cb.from_user else None,
+    )
+    extra = (f"\n\nУдалено плагинов/иконок: {removed_count}" if removed_count
+             else "\n\nПлагины оставлены в канале." if not delete_plugins else "")
+    await answer(
+        cb,
+        _tr(cb, "admin_user_banned", user_id=user_id) + extra,
+        admin_menu_kb(_admin_menu_role(cb), lang=lang),
+        "profile",
+    )
     try:
         await cb.answer()
     except Exception:
@@ -5279,7 +5393,7 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
     try:
         if request_type == "update":
             old_plugin = payload.get("old_plugin", {})
-            result = await update_plugin(entry, old_plugin)
+            result = await update_plugin(entry, old_plugin, cb.bot)
             update_slug = payload.get("update_slug") or payload.get("plugin", {}).get("id")
             await _notify_subscribers(
                 cb.bot,
@@ -6076,6 +6190,8 @@ async def on_admin_ban_confirm(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "not_found"), show_alert=True)
         return
 
+    delete_plugins = (parts[3] if len(parts) > 3 else "del") == "del"
+
     await _nav_push(state, f"adm:ban_confirm:{request_id}")
 
     ban_user(user_id, reason="Заблокирован администратором")
@@ -6102,20 +6218,72 @@ async def on_admin_ban_confirm(cb: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         pass
 
-    from user_store import get_user
-    user_data = get_user(user_id)
-    username = user_data.get("username", "")
-    removal = await remove_user_content(user_id, username)
-    removed_count = len(removal["removed_plugins"]) + len(removal["removed_icons"])
+    removed_count = 0
+    if delete_plugins:
+        from user_store import get_user
+        user_data = get_user(user_id)
+        username = user_data.get("username", "")
+        removal = await remove_user_content(user_id, username)
+        removed_count = len(removal["removed_plugins"]) + len(removal["removed_icons"])
 
     await answer(
         cb,
         _tr(cb, "admin_user_banned", user_id=user_id)
-        + (f"\n\nУдалено плагинов/иконок: {removed_count}" if removed_count else ""),
+        + (f"\n\nУдалено плагинов/иконок: {removed_count}" if removed_count
+           else "\n\nПлагины оставлены в канале." if not delete_plugins else ""),
         admin_menu_kb(_admin_menu_role(cb), lang=lang),
         "profile",
     )
     try:
         await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("adm:appeal:"))
+async def on_admin_appeal_decision(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    parts = cb.data.split(":")
+    action = parts[2] if len(parts) > 2 else ""
+    request_id = parts[3] if len(parts) > 3 else ""
+    entry = get_request_by_id(request_id)
+    if not entry or entry.get("type") != "unban_appeal":
+        await cb.answer(_tr(cb, "not_found"), show_alert=True)
+        return
+    if entry.get("status") != "pending":
+        await cb.answer(_tr(cb, "appeal_already_handled"), show_alert=True)
+        return
+
+    user_id = int((entry.get("payload", {}) or {}).get("user_id") or 0)
+    approved = action == "approve"
+
+    if approved:
+        if user_id:
+            unban_user(user_id)
+        update_request_status(request_id, "published", comment="Апелляция одобрена")
+        add_audit_event("moderation.appeal_approved", actor_id=cb.from_user.id if cb.from_user else None,
+                        actor=_admin_actor_label(cb), request_id=str(request_id))
+    else:
+        update_request_status(request_id, "rejected", comment="Апелляция отклонена")
+        add_audit_event("moderation.appeal_denied", actor_id=cb.from_user.id if cb.from_user else None,
+                        actor=_admin_actor_label(cb), request_id=str(request_id))
+
+    await delete_forum_request_message(cb.bot, entry)
+
+    if user_id:
+        try:
+            await cb.bot.send_message(
+                user_id,
+                t("appeal_approved" if approved else "appeal_denied", get_lang(user_id)),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            logger.exception("event=appeal.notify_user_failed user_id=%s", user_id)
+
+    try:
+        await cb.answer(_tr(cb, "appeal_done_unban" if approved else "appeal_done_deny"), show_alert=True)
     except Exception:
         pass

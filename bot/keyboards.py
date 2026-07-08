@@ -844,9 +844,18 @@ def admin_banned_kb(
     if nav:
         rows.append(nav)
 
+    rows.append([_btn(t("kb_admin_ban_manual", lang), callback_data="adm:ban_manual", icon="ban", style="danger")])
     rows.append([_btn(t("btn_back", lang), callback_data=back_callback, style="danger", icon="back")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_confirm_ban_user_kb(user_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(t("kb_admin_ban_delete", lang), callback_data=f"adm:banuid:{user_id}:del", icon="delete", style="danger")],
+        [_btn(t("kb_admin_ban_keep", lang), callback_data=f"adm:banuid:{user_id}:keep", icon="ban")],
+        [_btn(t("btn_cancel", lang), callback_data="adm:cancel", icon="back")],
+    ])
 
 
 def admin_review_kb(
@@ -967,8 +976,28 @@ def admin_confirm_delete_plugin_kb(slug: str, lang: str = "ru") -> InlineKeyboar
 
 def admin_confirm_ban_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("kb_admin_confirm_ban", lang), callback_data=f"adm:ban_confirm:{request_id}")],
-        [InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="adm:cancel")],
+        [_btn(t("kb_admin_ban_delete", lang), callback_data=f"adm:ban_confirm:{request_id}:del", icon="delete", style="danger")],
+        [_btn(t("kb_admin_ban_keep", lang), callback_data=f"adm:ban_confirm:{request_id}:keep", icon="ban")],
+        [_btn(t("btn_cancel", lang), callback_data="adm:cancel", icon="back")],
+    ])
+
+
+def moderation_appeal_kb(request_id: str, yes_count: int = 0, no_count: int = 0, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn(f"{t('btn_vote_yes', lang)} ({yes_count})", callback_data=f"modvote:yes:{request_id}", icon="yes", style="success"),
+            _btn(f"{t('btn_vote_no', lang)} ({no_count})", callback_data=f"modvote:no:{request_id}", icon="no", style="danger"),
+        ],
+        [
+            _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_id}", icon="yes", style="success"),
+            _btn(t("kb_appeal_deny", lang), callback_data=f"adm:appeal:deny:{request_id}", icon="no", style="danger"),
+        ],
+    ])
+
+
+def banned_appeal_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(t("kb_appeal_submit", lang), callback_data="appeal:start", icon="edit")],
     ])
 
 

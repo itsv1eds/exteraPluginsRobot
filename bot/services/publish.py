@@ -283,22 +283,22 @@ async def publish_icon(entry: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
-async def update_plugin(entry: Dict[str, Any], old_catalog_entry: Dict[str, Any]) -> Dict[str, Any]:
+async def update_plugin(entry: Dict[str, Any], old_catalog_entry: Dict[str, Any], bot: Optional[Bot] = None) -> Dict[str, Any]:
     from userbot.client import get_userbot
-    
+
     userbot = await get_userbot()
     if not userbot:
         raise ValueError("Userbot not available")
-    
+
     payload = entry.get("payload", {})
     plugin = payload.get("plugin", {})
-    
+
     old_message = old_catalog_entry.get("channel_message", {})
     old_message_id = old_message.get("message_id")
-    
+
     if not old_message_id:
         raise ValueError("Original message not found")
-    
+
     new_payload = {
         **payload,
         "usage_ru": payload.get("usage_ru") or old_catalog_entry.get("ru", {}).get("usage", ""),
@@ -306,10 +306,34 @@ async def update_plugin(entry: Dict[str, Any], old_catalog_entry: Dict[str, Any]
         "category_key": payload.get("category_key") or old_catalog_entry.get("category", ""),
     }
     entry_copy = {**entry, "payload": new_payload}
-    
+
     post_text = build_channel_post(entry_copy)
     file_path = plugin.get("file_path")
-    
+
+    # Keep the "Открыть в боте | Предложить плагин" footer on updates too —
+    # build_channel_post doesn't include it, so add it if it's missing.
+    footer_slug = (
+        old_catalog_entry.get("slug")
+        or payload.get("update_slug")
+        or make_slug(plugin.get("name") or plugin.get("id"))
+    )
+    bot_username = ""
+    if bot is not None:
+        try:
+            me = await bot.me()
+            bot_username = me.username or ""
+        except Exception:
+            bot_username = ""
+    if not bot_username:
+        try:
+            from bot.routers.catalog_flow import BOT_USERNAME
+            bot_username = BOT_USERNAME
+        except Exception:
+            bot_username = ""
+    links_line = _channel_links_line(bot_username, footer_slug)
+    if links_line and "Открыть в боте" not in post_text:
+        post_text = f"{post_text}\n\n{links_line}"
+
     result = await userbot.update_message(old_message_id, post_text, file_path)
     
     update_request_status(entry.get("id"), "published")

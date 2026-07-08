@@ -30,6 +30,7 @@ class UserFlow(StatesGroup):
     entering_publish_not_before = State()
     entering_moderation_vote_reason = State()
     entering_joinly_chat = State()
+    entering_appeal = State()
 
     choosing_plugin_to_update = State()
     uploading_update_file = State()
@@ -49,6 +50,7 @@ class AdminFlow(StatesGroup):
     entering_rework_comment = State()
     entering_author_message = State()
     entering_reject_template = State()
+    entering_ban_user = State()
     linking_author_user = State()
     editing_config = State()
     entering_broadcast = State()

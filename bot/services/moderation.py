@@ -10,7 +10,13 @@ from aiogram.types import FSInputFile
 from bot.cache import get_admins, get_config
 from bot.formatting import code_html, quote_html, strip_blockquote_tags, telegram_html
 from bot.helpers import link_preview_options
-from bot.keyboards import moderation_vote_kb
+from bot.keyboards import moderation_appeal_kb, moderation_vote_kb
+
+
+def _forum_reply_markup(entry: dict | None, request_id: str, yes: int, no: int):
+    if isinstance(entry, dict) and entry.get("type") == "unban_appeal":
+        return moderation_appeal_kb(request_id, yes, no)
+    return moderation_vote_kb(request_id, yes, no)
 from request_store import get_request_by_id, update_request_payload
 
 VoteValue = Literal["yes", "no"]
@@ -180,7 +186,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     entry = update_request_payload(request_id, {"moderation_forum_text": text}) or entry
     rendered_text = forum_text_with_votes(entry)
     yes, no, _ = vote_counts(entry)
-    reply_markup = moderation_vote_kb(request_id, yes, no)
+    reply_markup = _forum_reply_markup(entry, request_id, yes, no)
     chat_id = cfg["chat_id"]
     topic_id = cfg["topic_id"]
 
@@ -236,7 +242,7 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
         return
     chat_id = int(info["chat_id"])
     message_id = int(info["message_id"])
-    reply_markup = moderation_vote_kb(request_id, yes, no)
+    reply_markup = _forum_reply_markup(entry, request_id, yes, no)
     text_message_id = info.get("text_message_id")
     has_base_text = bool(str(payload.get("moderation_forum_text") or "").strip())
     if not has_base_text:

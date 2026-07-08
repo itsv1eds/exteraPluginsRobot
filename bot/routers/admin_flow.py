@@ -600,8 +600,12 @@ async def on_admin_menu(cb: CallbackQuery, state: FSMContext) -> None:
         pass
 
 
+def _is_appeal(entry: dict) -> bool:
+    return isinstance(entry, dict) and entry.get("type") == "unban_appeal"
+
+
 def _admin_request_counts() -> dict[str, int]:
-    pending = list(get_requests(status="pending")) + list(get_requests(status="error"))
+    pending = [r for r in (list(get_requests(status="pending")) + list(get_requests(status="error"))) if not _is_appeal(r)]
     scheduled = list(get_requests(status="scheduled"))
 
     def is_icon(entry: dict) -> bool:
@@ -870,7 +874,7 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
     parts = token.split(":")
     queue_type = parts[2] if len(parts) > 2 else "plugins"
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
-    visible_requests = list(get_requests(status="pending")) + list(get_requests(status="error"))
+    visible_requests = [r for r in (list(get_requests(status="pending")) + list(get_requests(status="error"))) if not _is_appeal(r)]
 
     if queue_type == "icons":
         requests = [

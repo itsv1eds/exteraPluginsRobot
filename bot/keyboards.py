@@ -1001,6 +1001,15 @@ def banned_appeal_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     ])
 
 
+def admin_appeal_decision_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_id}", icon="yes", style="success"),
+            _btn(t("kb_appeal_deny", lang), callback_data=f"adm:appeal:deny:{request_id}", icon="no", style="danger"),
+        ],
+    ])
+
+
 def admin_plugins_list_kb(
     plugins: List[Tuple[str, str]],
     page: int,

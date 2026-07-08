@@ -776,6 +776,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "🔓 <b>Апелляция на разблокировку</b>\n\n<b>От:</b> {user}\n\n<blockquote expandable>{text}</blockquote>",
         "en": "🔓 <b>Unban appeal</b>\n\n<b>From:</b> {user}\n\n<blockquote expandable>{text}</blockquote>",
     },
+    "appeal_threshold_title": {
+        "ru": "🔓 <b>Апелляция набрала минимум голосов</b>",
+        "en": "🔓 <b>Appeal reached the vote threshold</b>",
+    },
     "appeal_approved": {
         "ru": "✅ Ваша апелляция одобрена — вы разблокированы.",
         "en": "✅ Your appeal was approved — you are unbanned.",

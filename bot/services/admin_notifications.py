@@ -17,7 +17,7 @@ from bot.cache import (
     invalidate,
 )
 from bot.context import get_lang
-from bot.keyboards import admin_review_kb
+from bot.keyboards import admin_appeal_decision_kb, admin_review_kb
 from bot.services.moderation import (
     forum_text_with_votes,
     moderation_config,
@@ -308,25 +308,39 @@ async def notify_superadmins_if_threshold(bot, entry: dict) -> None:
     request_id = str(entry.get("id") or "")
     if not request_id:
         return
-    title = html.escape(request_title(entry))
-    text = (
-        f"{t('moderation_threshold_title', 'ru')}\n\n"
-        f"<b>ID:</b> <code>{html.escape(request_id)}</code>\n"
-        f"<b>Заявка:</b> {title}\n\n"
-        f"{vote_summary(entry)}"
-    )
+    is_appeal = entry.get("type") == "unban_appeal"
+    if is_appeal:
+        base = str(payload.get("moderation_forum_text") or "").strip() or html.escape(request_title(entry))
+        text = (
+            f"{t('appeal_threshold_title', 'ru')}\n\n"
+            f"{base}\n\n"
+            f"{vote_summary(entry)}"
+        )
+    else:
+        title = html.escape(request_title(entry))
+        text = (
+            f"{t('moderation_threshold_title', 'ru')}\n\n"
+            f"<b>ID:</b> <code>{html.escape(request_id)}</code>\n"
+            f"<b>Заявка:</b> {title}\n\n"
+            f"{vote_summary(entry)}"
+        )
 
     delivered = 0
     for admin_id in get_admins_super():
         if not admin_notification_enabled(int(admin_id), "threshold"):
             continue
         try:
+            reply_markup = (
+                admin_appeal_decision_kb(request_id, lang=get_lang(admin_id))
+                if is_appeal else
+                admin_review_kb(request_id, 0, lang=get_lang(admin_id))
+            )
             await bot.send_message(
                 admin_id,
                 text,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
-                reply_markup=admin_review_kb(request_id, 0, lang=get_lang(admin_id)),
+                reply_markup=reply_markup,
             )
             delivered += 1
         except Exception:

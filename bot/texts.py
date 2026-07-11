@@ -74,6 +74,15 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_backup_auto_off": {"ru": "Автобэкап: выключен", "en": "Auto-backup: off"},
     "admin_backup_auto_state": {"ru": "включён, раз в {hours} ч", "en": "on, every {hours}h"},
     "admin_backup_interval": {"ru": "Интервал: {hours} ч", "en": "Interval: {hours}h"},
+    "admin_backup_recipients": {"ru": "Получатели бэкапа", "en": "Backup recipients"},
+    "admin_backup_recipients_title": {
+        "ru": "<b>Получатели авто-бэкапа</b>\n\nКому присылать бэкапы. Если список пуст — всем супер-админам.",
+        "en": "<b>Auto-backup recipients</b>\n\nWho receives backups. If the list is empty — all super-admins.",
+    },
+    "admin_backup_recipient_prompt": {
+        "ru": "Отправьте числовой ID пользователя/чата, куда присылать бэкапы:",
+        "en": "Send the numeric user/chat ID to receive backups:",
+    },
     "admin_backup_started": {"ru": "Создаю бэкап…", "en": "Creating backup…"},
     "admin_backup_sent": {"ru": "✅ Бэкап отправлен.", "en": "✅ Backup sent."},
     "admin_backup_failed": {"ru": "Не удалось создать/отправить бэкап.", "en": "Failed to create/send the backup."},

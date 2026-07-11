@@ -51,6 +51,7 @@ class AdminFlow(StatesGroup):
     entering_author_message = State()
     entering_reject_template = State()
     entering_ban_user = State()
+    entering_backup_recipient = State()
     linking_author_user = State()
     editing_config = State()
     entering_broadcast = State()

@@ -557,8 +557,21 @@ def admin_backup_kb(cfg: dict, lang: str = "ru") -> InlineKeyboardMarkup:
         [_btn(f"{auto_label}", callback_data="adm:backup:toggle",
               icon=("yes" if auto else "no"), style=("success" if auto else "danger"))],
         [_btn(t("admin_backup_interval", lang, hours=interval), callback_data="adm:backup:interval", icon="clock")],
+        [_btn(t("admin_backup_recipients", lang), callback_data="adm:backup:recipients", icon="bell")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
+
+
+def admin_backup_recipients_kb(recipient_ids: List[int], lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = []
+    for rid in recipient_ids:
+        rows.append([
+            _btn(str(rid), callback_data="adm:backup:rcp_noop", icon="profile"),
+            _btn(t("btn_delete", lang), callback_data=f"adm:backup:rcp_rm:{rid}", icon="delete"),
+        ])
+    rows.append([_btn(t("btn_add", lang), callback_data="adm:backup:rcp_add", icon="add", style="success")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_maintenance_kb(lang: str = "ru") -> InlineKeyboardMarkup:

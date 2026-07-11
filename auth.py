@@ -25,10 +25,11 @@ async def authorize():
         print("   Создай новые на https://my.telegram.org → API development tools")
         return
    
-    session_dir = Path("sessions")
+    session_dir = Path(str(userbot_config.get("session_dir") or "sessions").strip() or "sessions")
+    session_name = str(userbot_config.get("session_name") or "userbot_session").strip() or "userbot_session"
     session_dir.mkdir(parents=True, exist_ok=True)
-   
-    session_path = str(session_dir / "userbot_session")
+
+    session_path = str(session_dir / session_name)
    
     client = TelegramClient(session_path, int(api_id), str(api_hash))
    

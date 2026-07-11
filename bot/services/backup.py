@@ -22,11 +22,19 @@ def get_backup_config() -> Dict[str, Any]:
     cfg = get_config()
     raw = cfg.get("backup") if isinstance(cfg, dict) else {}
     raw = raw if isinstance(raw, dict) else {}
+    recipients = [int(x) for x in (raw.get("recipients") or []) if str(x).lstrip("-").isdigit()]
     return {
         "auto_enabled": bool(raw.get("auto_enabled")),
         "interval_hours": int(raw.get("interval_hours") or 24),
         "last_run": raw.get("last_run"),
+        "recipients": recipients,
     }
+
+
+def get_backup_recipients() -> list[int]:
+    """Configured recipients for auto-backups; falls back to all super-admins."""
+    recipients = get_backup_config()["recipients"]
+    return recipients if recipients else sorted(get_admins_super())
 
 
 def set_backup_config(**fields: Any) -> Dict[str, Any]:
@@ -49,6 +57,36 @@ def cycle_interval(current_hours: int) -> int:
     return _INTERVAL_PRESETS[(idx + 1) % len(_INTERVAL_PRESETS)]
 
 
+def _userbot_session_path() -> Path:
+    ub = (get_config().get("userbot") or {}) if isinstance(get_config(), dict) else {}
+    session_dir = str(ub.get("session_dir") or "sessions").strip() or "sessions"
+    session_name = str(ub.get("session_name") or "userbot_session").strip() or "userbot_session"
+    return Path(session_dir) / f"{session_name}.session"
+
+
+def _snapshot_sqlite(src: Path, dst: Path) -> bool:
+    """Consistent copy of a (possibly live) SQLite file via the online backup API."""
+    try:
+        src_conn = sqlite3.connect(str(src), timeout=30)
+        try:
+            dst_conn = sqlite3.connect(str(dst))
+            try:
+                src_conn.backup(dst_conn)
+            finally:
+                dst_conn.close()
+        finally:
+            src_conn.close()
+        return True
+    except Exception:
+        try:
+            import shutil
+            shutil.copy2(src, dst)
+            return True
+        except Exception:
+            logger.exception("backup: failed to snapshot %s", src)
+            return False
+
+
 def create_backup_zip() -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     tmp_dir = Path(tempfile.mkdtemp(prefix="dbbackup_"))
@@ -58,10 +96,33 @@ def create_backup_zip() -> Path:
         conn.execute("VACUUM INTO ?", (str(snapshot),))
     finally:
         conn.close()
+
+    # Include the userbot session so a restore also brings back the login.
+    session_src = _userbot_session_path()
+    session_snap = None
+    if session_src.exists():
+        session_snap = tmp_dir / "userbot_session.session"
+        if not _snapshot_sqlite(session_src, session_snap):
+            session_snap = None
+
     zip_path = tmp_dir / f"storage_backup_{ts}.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         zf.write(snapshot, arcname="storage.sqlite3")
+        if session_snap and session_snap.exists():
+            zf.write(session_snap, arcname="sessions/userbot_session.session")
+        try:
+            from bot.helpers import get_uploads_dir
+            uploads_dir = get_uploads_dir()
+            if uploads_dir.exists():
+                for f in sorted(uploads_dir.rglob("*")):
+                    if f.is_file():
+                        zf.write(f, arcname=str(Path("uploads") / f.relative_to(uploads_dir)))
+        except Exception:
+            logger.exception("backup: failed to add uploads")
+
     snapshot.unlink(missing_ok=True)
+    if session_snap:
+        session_snap.unlink(missing_ok=True)
     return zip_path
 
 
@@ -103,7 +164,7 @@ async def send_backup_to_admins(bot) -> int:
     from aiogram.types import FSInputFile
 
     caption = datetime.now(timezone.utc).strftime("Backup %Y-%m-%d %H:%M UTC")
-    for admin_id in get_admins_super():
+    for admin_id in get_backup_recipients():
         try:
             await bot.send_document(admin_id, FSInputFile(str(zip_path)), caption=caption)
             sent += 1

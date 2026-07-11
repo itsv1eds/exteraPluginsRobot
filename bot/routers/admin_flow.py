@@ -1678,6 +1678,85 @@ async def on_admin_backup_interval(cb: CallbackQuery, state: FSMContext) -> None
         pass
 
 
+async def _render_backup_recipients(target: CallbackQuery | Message, state: FSMContext) -> None:
+    from bot.services.backup import get_backup_config
+    from bot.keyboards import admin_backup_recipients_kb
+    lang = _lang_for(target)
+    recipients = get_backup_config()["recipients"]
+    await state.set_state(AdminFlow.menu)
+    await answer(target, _tr(target, "admin_backup_recipients_title"),
+                 admin_backup_recipients_kb(recipients, lang), "admin")
+
+
+@router.callback_query(F.data == "adm:backup:recipients")
+async def on_admin_backup_recipients(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _nav_push(state, "adm:backup:recipients")
+    await _render_backup_recipients(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:backup:rcp_noop")
+async def on_admin_backup_rcp_noop(cb: CallbackQuery, state: FSMContext) -> None:
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "adm:backup:rcp_add")
+async def on_admin_backup_rcp_add(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await state.set_state(AdminFlow.entering_backup_recipient)
+    await answer(cb, _tr(cb, "admin_backup_recipient_prompt"), None, "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(AdminFlow.entering_backup_recipient)
+async def on_admin_backup_recipient_input(message: Message, state: FSMContext) -> None:
+    from bot.services.backup import get_backup_config, set_backup_config
+    if not _ensure_admin_role(message, "super"):
+        return
+    raw = (message.text or "").strip()
+    if not raw.lstrip("-").isdigit():
+        await message.answer(_tr(message, "admin_bad_id"), disable_web_page_preview=True)
+        return
+    rid = int(raw)
+    current = get_backup_config()["recipients"]
+    if rid not in current:
+        current = sorted(set(current) | {rid})
+        set_backup_config(recipients=current)
+    await state.set_state(AdminFlow.menu)
+    await _render_backup_recipients(message, state)
+
+
+@router.callback_query(F.data.regexp(r"^adm:backup:rcp_rm:-?\d+$"))
+async def on_admin_backup_rcp_rm(cb: CallbackQuery, state: FSMContext) -> None:
+    from bot.services.backup import get_backup_config, set_backup_config
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    rid = int(cb.data.split(":")[3])
+    current = get_backup_config()["recipients"]
+    if rid in current:
+        set_backup_config(recipients=[x for x in current if x != rid])
+    await _render_backup_recipients(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
 async def _render_sources_list(target: CallbackQuery | Message, state: FSMContext) -> None:
     from bot.services.sources import load_custom_sources, count_source_plugins
 

@@ -55,8 +55,19 @@ class UserbotClient:
         self.api_id = api_id
         self.api_hash = api_hash
         self.session_dir = session_dir
-        self.session_dir.mkdir(parents=True, exist_ok=True)
-        
+        try:
+            self.session_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            logger.exception("Failed to create userbot session dir %s", self.session_dir)
+        if not os.access(self.session_dir, os.W_OK):
+            logger.critical(
+                "Userbot session dir %s is NOT writable. Telethon cannot persist the "
+                "session -> reconnect loops and failed publishes ('attempt to write a "
+                "readonly database'). Mount it as a writable volume (or fix permissions), "
+                "or set userbot.session_dir in config to a writable path.",
+                self.session_dir.resolve(),
+            )
+
         session_path = str(self.session_dir / session_name)
         self.client = TelegramClient(session_path, api_id, api_hash)
         self._publish_entity = None
@@ -77,8 +88,13 @@ class UserbotClient:
                 if not api_id or not api_hash:
                     logger.warning("Userbot credentials not configured")
                     return None
-                
-                cls._instance = cls(int(api_id), str(api_hash))
+
+                session_dir = str(userbot_config.get("session_dir") or "sessions").strip() or "sessions"
+                session_name = str(userbot_config.get("session_name") or "userbot_session").strip() or "userbot_session"
+                cls._instance = cls(
+                    int(api_id), str(api_hash),
+                    session_name=session_name, session_dir=Path(session_dir),
+                )
             
             if not cls._instance._started:
                 started = await cls._instance.start()

@@ -1228,11 +1228,11 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
 
     merged_plugin = {
         **new_plugin,
-        "name": old_name or new_plugin.get("name"),
-        "author": old_author or new_plugin.get("author"),
-        "description": old_desc or "",
-        "min_version": old_min_version or "",
-        "has_ui_settings": old_has_settings,
+        "name": new_plugin.get("name") or old_name,
+        "author": new_plugin.get("author") or old_author,
+        "description": new_plugin.get("description") or old_desc or "",
+        "min_version": new_plugin.get("min_version") or old_min_version or "",
+        "has_ui_settings": new_plugin.get("has_ui_settings", old_has_settings),
     }
 
     await state.update_data(plugin=merged_plugin)
@@ -1583,11 +1583,11 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
     merged = {
         **new_plugin,
         "id": expected_id or new_plugin.get("id"),
-        "name": existing.get("name") or new_plugin.get("name"),
-        "author": existing.get("author") or new_plugin.get("author"),
-        "description": existing.get("description") or new_plugin.get("description"),
-        "min_version": existing.get("min_version") or new_plugin.get("min_version"),
-        "has_ui_settings": existing.get("has_ui_settings", new_plugin.get("has_ui_settings")),
+        "name": new_plugin.get("name") or existing.get("name"),
+        "author": new_plugin.get("author") or existing.get("author"),
+        "description": new_plugin.get("description") or existing.get("description"),
+        "min_version": new_plugin.get("min_version") or existing.get("min_version"),
+        "has_ui_settings": new_plugin.get("has_ui_settings", existing.get("has_ui_settings")),
     }
 
     await state.update_data(plugin=merged)
@@ -2159,11 +2159,11 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
     merged = {
         **new_plugin,
         "id": expected_id or new_plugin.get("id"),
-        "name": existing.get("name") or new_plugin.get("name"),
-        "author": existing.get("author") or new_plugin.get("author"),
-        "description": existing.get("description") or new_plugin.get("description"),
-        "min_version": existing.get("min_version") or new_plugin.get("min_version"),
-        "has_ui_settings": existing.get("has_ui_settings", new_plugin.get("has_ui_settings")),
+        "name": new_plugin.get("name") or existing.get("name"),
+        "author": new_plugin.get("author") or existing.get("author"),
+        "description": new_plugin.get("description") or existing.get("description"),
+        "min_version": new_plugin.get("min_version") or existing.get("min_version"),
+        "has_ui_settings": new_plugin.get("has_ui_settings", existing.get("has_ui_settings")),
     }
 
     await state.update_data(plugin=merged)

@@ -14,9 +14,19 @@ MANDATORY_FIELDS = {
 OPTIONAL_FIELDS = {
     "description": "__description__",
     "min_version": "__min_version__",
+    "app_version": "__app_version__",
     "icon": "__icon__",
     "link": "__link__",
 }
+
+_VERSION_RE = re.compile(r"\d+(?:\.\d+)*")
+
+
+def _version_only(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    match = _VERSION_RE.search(str(value))
+    return match.group(0) if match else ""
 
 
 @dataclass
@@ -30,6 +40,7 @@ class PluginMetadata:
     min_version: str
     has_ui_settings: bool
     raw_text: str
+    app_version: str = ""
     optional: Dict[str, Optional[str]] = field(default_factory=dict)
 
     def as_post_template(self) -> Dict[str, Optional[str]]:
@@ -73,6 +84,13 @@ def parse_plugin_text(text: str, fallback_version: str | None = None) -> PluginM
         if missing:
             raise PluginParseError(f"Missing mandatory fields: {', '.join(missing)}")
 
+    min_version = fields.get("min_version") or ""
+    app_version = fields.get("app_version") or ""
+    if not min_version and not app_version:
+        raise PluginParseError(
+            "не указана версия: нужен __min_version__ или __app_version__"
+        )
+
     has_ui_settings = _detect_ui_settings_import(normalized)
 
     metadata = PluginMetadata(
@@ -81,9 +99,10 @@ def parse_plugin_text(text: str, fallback_version: str | None = None) -> PluginM
         description=fields.get("description") or "",
         author=fields["author"],
         version=fields["version"],
-        min_version=fields.get("min_version") or "",
+        min_version=min_version or _version_only(app_version),
         has_ui_settings=has_ui_settings,
         raw_text=text,
+        app_version=app_version,
         optional={key: fields.get(key) for key in OPTIONAL_FIELDS},
     )
 

@@ -299,7 +299,7 @@ async def on_new_post(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.composing_text)
     await state.update_data(poster_chat_id=chat_id, poster_media=[], poster_buttons=[],
                             poster_html="", poster_delete_after=0, poster_delete_at_iso=None,
-                            editing_post_id=None)
+                            poster_repeat_days=0, editing_post_id=None)
     await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("text", _lang(cb)))
     try:
         await cb.answer()
@@ -436,16 +436,28 @@ _AUTODEL_LABELS = {
     "en": {0: "Don't delete", 60: "After 1 hour", 360: "After 6 hours", 1440: "After 24 hours", 10080: "After 7 days"},
 }
 
+_REPEAT_PRESETS = [0, 1, 3, 7, 30]
+_REPEAT_SHORT = {0: "нет", 1: "1д", 3: "3д", 7: "7д", 30: "30д"}
+_REPEAT_LABELS = {
+    "ru": {0: "Не повторять", 1: "Каждый день", 3: "Каждые 3 дня", 7: "Каждые 7 дней", 30: "Каждые 30 дней"},
+    "en": {0: "No repeat", 1: "Every day", 3: "Every 3 days", 7: "Every 7 days", 30: "Every 30 days"},
+}
 
-def _preview_kb(lang: str, admin_mode: bool = False, autodel_label: str = "нет") -> InlineKeyboardMarkup:
+
+def _preview_kb(lang: str, admin_mode: bool = False, autodel_label: str = "нет",
+                repeat_label: str = "нет") -> InlineKeyboardMarkup:
     rows = [
         [_btn(t("poster_btn_edit_text", lang), callback_data="pstr:edit:text", icon="edit")],
         [
             _btn(t("poster_btn_edit_media", lang), callback_data="pstr:edit:media", icon="art"),
             _btn(t("poster_btn_edit_buttons", lang), callback_data="pstr:edit:buttons", icon="link"),
         ],
-        [_btn(t("poster_btn_autodel", lang, value=autodel_label),
-              callback_data="pstr:preview:autodelmenu", icon="clock")],
+        [
+            _btn(t("poster_btn_autodel", lang, value=autodel_label),
+                 callback_data="pstr:preview:autodelmenu", icon="clock"),
+            _btn(t("poster_btn_repeat", lang, value=repeat_label),
+                 callback_data="pstr:preview:repeatmenu", icon="updates"),
+        ],
     ]
     if admin_mode:
         rows.append([_btn(t("poster_btn_updated_plugins", lang), callback_data="pstr:preview:upd", icon="updates")])
@@ -465,6 +477,17 @@ def _autodel_kb(lang: str) -> InlineKeyboardMarkup:
     labels = _AUTODEL_LABELS.get(lang, _AUTODEL_LABELS["en"])
     rows = [[_btn(labels[m], callback_data=f"pstr:autodel:{m}")] for m in _AUTODEL_PRESETS]
     rows.append([_btn(t("poster_autodel_custom_btn", lang), callback_data="pstr:autodel:custom", icon="clock")])
+    rows.append([_btn(t("btn_back", lang), callback_data="pstr:preview:back", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _repeat_label(data: dict, lang: str) -> str:
+    return _REPEAT_SHORT.get(int(data.get("poster_repeat_days") or 0), "нет")
+
+
+def _repeat_kb(lang: str) -> InlineKeyboardMarkup:
+    labels = _REPEAT_LABELS.get(lang, _REPEAT_LABELS["en"])
+    rows = [[_btn(labels[d], callback_data=f"pstr:repeat:{d}")] for d in _REPEAT_PRESETS]
     rows.append([_btn(t("btn_back", lang), callback_data="pstr:preview:back", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -495,7 +518,8 @@ async def _render_preview(target, state: FSMContext) -> None:
     admin_mode = bool(data.get("poster_admin_mode"))
     ctrl = await bot.send_message(
         chat_id, t("poster_preview_control", lang),
-        reply_markup=_preview_kb(lang, admin_mode, _autodel_label(data, lang)), parse_mode=ParseMode.HTML)
+        reply_markup=_preview_kb(lang, admin_mode, _autodel_label(data, lang), _repeat_label(data, lang)),
+        parse_mode=ParseMode.HTML)
     await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
 
 
@@ -566,7 +590,6 @@ async def on_preview_autodel_set(cb: CallbackQuery, state: FSMContext) -> None:
     minutes = int(cb.data.split(":")[2])
     if minutes not in _AUTODEL_PRESETS:
         minutes = 0
-    # A preset overrides any previously entered custom date.
     await state.update_data(poster_delete_after=minutes, poster_delete_at_iso=None)
     await _render_preview(cb, state)
     try:
@@ -603,6 +626,28 @@ async def on_autodel_date_input(message: Message, state: FSMContext) -> None:
     await _render_preview(message, state)
 
 
+@router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:repeatmenu")
+async def on_preview_repeat_menu(cb: CallbackQuery, state: FSMContext) -> None:
+    await answer(cb, t("poster_repeat_prompt", _lang(cb)), _repeat_kb(_lang(cb)))
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(PosterFlow.previewing, F.data.regexp(r"^pstr:repeat:\d+$"))
+async def on_preview_repeat_set(cb: CallbackQuery, state: FSMContext) -> None:
+    days = int(cb.data.split(":")[2])
+    if days not in _REPEAT_PRESETS:
+        days = 0
+    await state.update_data(poster_repeat_days=days)
+    await _render_preview(cb, state)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:back")
 async def on_preview_back(cb: CallbackQuery, state: FSMContext) -> None:
     await _render_preview(cb, state)
@@ -635,6 +680,7 @@ async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
         "buttons": data.get("poster_buttons") or [],
         "delete_after_minutes": int(data.get("poster_delete_after") or 0),
         "delete_at_iso": data.get("poster_delete_at_iso") or None,
+        "repeat_days": int(data.get("poster_repeat_days") or 0),
     }
     editing_id = data.get("editing_post_id")
     if editing_id:
@@ -697,6 +743,7 @@ async def on_my_posts(cb: CallbackQuery, state: FSMContext) -> None:
 
 def _post_detail_kb(post_id: str, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t("poster_btn_post_inline", lang), switch_inline_query_current_chat=post_id)],
         [_btn(t("poster_btn_post_edit", lang), callback_data=f"pstr:postedit:{post_id}", icon="edit", style="success")],
         [_btn(t("poster_btn_post_delete", lang), callback_data=f"pstr:postdel:{post_id}", icon="delete", style="danger")],
         [_btn(t("btn_back", lang), callback_data="pstr:posts", style="danger", icon="back")],
@@ -724,8 +771,14 @@ async def on_post_detail(cb: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         logger.exception("poster: post detail render failed")
     when = _fmt_local(post.get("run_at", ""))
+    repeat = _REPEAT_SHORT.get(int((post.get("content") or {}).get("repeat_days") or 0), "нет")
+    try:
+        bot_username = (await bot.me()).username or ""
+    except Exception:
+        bot_username = ""
     ctrl = await bot.send_message(
-        chat_id, t("poster_post_detail", lang, datetime=when),
+        chat_id, t("poster_post_detail", lang, datetime=when, post_id=post_id,
+                   bot=bot_username, repeat=repeat),
         reply_markup=_post_detail_kb(post_id, lang), parse_mode=ParseMode.HTML)
     await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
     try:
@@ -749,6 +802,7 @@ async def on_post_edit(cb: CallbackQuery, state: FSMContext) -> None:
         poster_buttons=content.get("buttons") or [],
         poster_delete_after=int(content.get("delete_after_minutes") or 0),
         poster_delete_at_iso=content.get("delete_at_iso") or None,
+        poster_repeat_days=int(content.get("repeat_days") or 0),
         editing_post_id=post_id,
         from_preview=False,
     )

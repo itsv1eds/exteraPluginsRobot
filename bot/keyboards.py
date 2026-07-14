@@ -661,8 +661,22 @@ def admin_plugins_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
             _btn(t("admin_btn_edit_plugins", lang), callback_data="adm:edit_plugins", icon="edit"),
             _btn(t("admin_btn_link_author_search", lang), callback_data="adm:link_author", icon="link"),
         ],
+        [_btn(t("admin_btn_audit", lang), callback_data="adm:audit:0", icon="file")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
+
+
+def admin_audit_kb(page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
+    nav = []
+    if page > 0:
+        nav.append(_btn("<", callback_data=f"adm:audit:{page-1}", icon="back"))
+    if page < total_pages - 1:
+        nav.append(_btn(">", callback_data=f"adm:audit:{page+1}", icon="forward"))
+    rows = []
+    if nav:
+        rows.append(nav)
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def admin_updates_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
@@ -1005,6 +1019,7 @@ def moderation_appeal_kb(request_id: str, yes_count: int = 0, no_count: int = 0,
             _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_id}", icon="yes", style="success"),
             _btn(t("kb_appeal_deny", lang), callback_data=f"adm:appeal:deny:{request_id}", icon="no", style="danger"),
         ],
+        [_btn(t("kb_appeal_banfinal", lang), callback_data=f"adm:appeal:banfinal:{request_id}", icon="ban", style="danger")],
     ])
 
 
@@ -1020,6 +1035,7 @@ def admin_appeal_decision_kb(request_id: str, lang: str = "ru") -> InlineKeyboar
             _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_id}", icon="yes", style="success"),
             _btn(t("kb_appeal_deny", lang), callback_data=f"adm:appeal:deny:{request_id}", icon="no", style="danger"),
         ],
+        [_btn(t("kb_appeal_banfinal", lang), callback_data=f"adm:appeal:banfinal:{request_id}", icon="ban", style="danger")],
     ])
 
 

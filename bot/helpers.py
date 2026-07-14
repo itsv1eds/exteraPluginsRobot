@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 _LINK_PREVIEW_IMAGE_URLS = {
     "admin": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/admin.png?raw=true",
     "new": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/new.png?raw=true",
+    "update": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/update.png?raw=true",
+    "appeal": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/appeal.png?raw=true",
 }
 
 

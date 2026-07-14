@@ -40,3 +40,14 @@ def recent_audit_events(limit: int = 20) -> list[dict[str, Any]]:
     if not isinstance(events, list):
         return []
     return [event for event in events[-max(1, int(limit)):][::-1] if isinstance(event, dict)]
+
+
+def audit_events_page(page: int = 0, per_page: int = 10) -> tuple[list[dict[str, Any]], int]:
+    db = load_audit()
+    events = db.get("events")
+    if not isinstance(events, list):
+        return [], 0
+    events = [e for e in events if isinstance(e, dict)][::-1]
+    total = len(events)
+    start = max(0, int(page)) * per_page
+    return events[start:start + per_page], total

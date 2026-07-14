@@ -17,6 +17,7 @@ from bot.cache import (
     invalidate,
 )
 from bot.context import get_lang
+from bot.helpers import link_preview_options
 from bot.keyboards import admin_appeal_decision_kb, admin_review_kb
 from bot.services.moderation import (
     forum_text_with_votes,
@@ -339,7 +340,8 @@ async def notify_superadmins_if_threshold(bot, entry: dict) -> None:
                 admin_id,
                 text,
                 parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+                disable_web_page_preview=not is_appeal,
+                link_preview_options=link_preview_options("appeal") if is_appeal else None,
                 reply_markup=reply_markup,
             )
             delivered += 1

@@ -32,7 +32,6 @@ def get_backup_config() -> Dict[str, Any]:
 
 
 def get_backup_recipients() -> list[int]:
-    """Configured recipients for auto-backups; falls back to all super-admins."""
     recipients = get_backup_config()["recipients"]
     return recipients if recipients else sorted(get_admins_super())
 
@@ -65,7 +64,6 @@ def _userbot_session_path() -> Path:
 
 
 def _snapshot_sqlite(src: Path, dst: Path) -> bool:
-    """Consistent copy of a (possibly live) SQLite file via the online backup API."""
     try:
         src_conn = sqlite3.connect(str(src), timeout=30)
         try:
@@ -97,7 +95,6 @@ def create_backup_zip() -> Path:
     finally:
         conn.close()
 
-    # Include the userbot session so a restore also brings back the login.
     session_src = _userbot_session_path()
     session_snap = None
     if session_src.exists():

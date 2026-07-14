@@ -29,7 +29,7 @@ from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import answer
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
-from bot.services.audit import add_audit_event, recent_audit_events
+from bot.services.audit import add_audit_event, audit_events_page, recent_audit_events
 from bot.keyboards import (
     admin_actions_kb,
     admin_banned_kb,
@@ -53,6 +53,7 @@ from bot.keyboards import (
     admin_menu_kb,
     admin_notification_settings_kb,
     admin_plugins_list_kb,
+    admin_audit_kb,
     admin_plugins_section_kb,
     admin_queue_kb,
     admin_review_kb,
@@ -1055,6 +1056,10 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         parts = token.split(":")
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await _render_banned(cb, state, page)
+    elif token.startswith("adm:audit:"):
+        parts = token.split(":")
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        await _render_audit(cb, state, page)
     else:
         await _render_menu(cb, state)
 
@@ -2500,6 +2505,73 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
     await _nav_push(state, "adm:section:plugins")
     await state.set_state(AdminFlow.menu)
     await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+_AUDIT_LABELS = {
+    "moderation.publish_success": "✅ Опубликовано",
+    "moderation.publish_validation_failed": "⚠️ Публикация остановлена (ошибки)",
+    "moderation.reject": "❌ Отклонено",
+    "moderation.rework": "✏️ На доработку",
+    "moderation.message_author": "💬 Сообщение автору",
+    "moderation.ban": "🚫 Бан",
+    "moderation.vote": "🗳 Голос",
+    "moderation.appeal_approved": "🔓 Апелляция одобрена",
+    "moderation.appeal_denied": "❌ Апелляция отклонена",
+    "moderation.appeal_banned_final": "🚫 Апелляция отклонена окончательно",
+    "backup.manual": "💾 Ручной бэкап",
+}
+_AUDIT_PER_PAGE = 8
+
+
+def _fmt_audit_event(ev: dict) -> str:
+    label = _AUDIT_LABELS.get(str(ev.get("event") or ""), str(ev.get("event") or "—"))
+    when = "—"
+    raw = ev.get("created_at")
+    if raw:
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            when = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m %H:%M")
+        except ValueError:
+            when = str(raw)[:16]
+    actor = plain_html(str(ev.get("actor") or ev.get("actor_id") or "—"))
+    line = f"<b>{when}</b> · {label} · {actor}"
+    rid = ev.get("request_id")
+    if rid:
+        line += f"\n   <code>{plain_html(str(rid))}</code>"
+    details = ev.get("details") or {}
+    if isinstance(details, dict) and details.get("user_id"):
+        line += f" · uid <code>{details['user_id']}</code>"
+    return line
+
+
+async def _render_audit(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
+    lang = _lang_for(target)
+    events, total = audit_events_page(page, _AUDIT_PER_PAGE)
+    total_pages = max(1, math.ceil(total / _AUDIT_PER_PAGE))
+    page = max(0, min(page, total_pages - 1))
+    if not events and page > 0:
+        events, total = audit_events_page(0, _AUDIT_PER_PAGE)
+        page = 0
+    header = _tr(target, "admin_audit_title", current=page + 1, total=total_pages, count=total)
+    body = "\n\n".join(_fmt_audit_event(e) for e in events) if events else _tr(target, "admin_audit_empty")
+    await state.set_state(AdminFlow.menu)
+    await answer(target, f"{header}\n\n{body}", admin_audit_kb(page, total_pages, lang=lang), "admin")
+
+
+@router.callback_query(F.data.regexp(r"^adm:audit:\d+$"))
+async def on_admin_audit(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "plugins"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    page = int(cb.data.split(":")[2])
+    await _nav_push(state, f"adm:audit:{page}")
+    await _render_audit(cb, state, page)
     try:
         await cb.answer()
     except Exception:
@@ -4546,7 +4618,8 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
         kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish)
 
     text = f"{text}\n\n{_review_meta_block(entry)}"
-    review_msg = await answer(cb, text, kb, "new")
+    review_img = "update" if entry.get("type") == "update" else "new"
+    review_msg = await answer(cb, text, kb, review_img)
 
     if file_path and Path(file_path).exists() and cb.message:
         data = await state.get_data()
@@ -6341,6 +6414,7 @@ async def on_admin_appeal_decision(cb: CallbackQuery, state: FSMContext) -> None
 
     user_id = int((entry.get("payload", {}) or {}).get("user_id") or 0)
     approved = action == "approve"
+    banfinal = action == "banfinal"
 
     if approved:
         if user_id:
@@ -6348,6 +6422,13 @@ async def on_admin_appeal_decision(cb: CallbackQuery, state: FSMContext) -> None
         update_request_status(request_id, "published", comment="Апелляция одобрена")
         add_audit_event("moderation.appeal_approved", actor_id=cb.from_user.id if cb.from_user else None,
                         actor=_admin_actor_label(cb), request_id=str(request_id))
+    elif banfinal:
+        from user_store import update_user
+        if user_id:
+            update_user(user_id, banned=True, ban_permanent=True)
+        update_request_status(request_id, "rejected", comment="Апелляция отклонена, бан окончательный")
+        add_audit_event("moderation.appeal_banned_final", actor_id=cb.from_user.id if cb.from_user else None,
+                        actor=_admin_actor_label(cb), request_id=str(request_id), details={"user_id": user_id})
     else:
         update_request_status(request_id, "rejected", comment="Апелляция отклонена")
         add_audit_event("moderation.appeal_denied", actor_id=cb.from_user.id if cb.from_user else None,
@@ -6356,17 +6437,19 @@ async def on_admin_appeal_decision(cb: CallbackQuery, state: FSMContext) -> None
     await delete_forum_request_message(cb.bot, entry)
 
     if user_id:
+        notify_key = "appeal_approved" if approved else "appeal_banned_final" if banfinal else "appeal_denied"
         try:
             await cb.bot.send_message(
                 user_id,
-                t("appeal_approved" if approved else "appeal_denied", get_lang(user_id)),
+                t(notify_key, get_lang(user_id)),
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
         except Exception:
             logger.exception("event=appeal.notify_user_failed user_id=%s", user_id)
 
+    done_key = "appeal_done_unban" if approved else "appeal_done_banfinal" if banfinal else "appeal_done_deny"
     try:
-        await cb.answer(_tr(cb, "appeal_done_unban" if approved else "appeal_done_deny"), show_alert=True)
+        await cb.answer(_tr(cb, done_key), show_alert=True)
     except Exception:
         pass

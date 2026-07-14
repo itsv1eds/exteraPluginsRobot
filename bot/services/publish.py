@@ -310,8 +310,6 @@ async def update_plugin(entry: Dict[str, Any], old_catalog_entry: Dict[str, Any]
     post_text = build_channel_post(entry_copy)
     file_path = plugin.get("file_path")
 
-    # Keep the "Открыть в боте | Предложить плагин" footer on updates too —
-    # build_channel_post doesn't include it, so add it if it's missing.
     footer_slug = (
         old_catalog_entry.get("slug")
         or payload.get("update_slug")

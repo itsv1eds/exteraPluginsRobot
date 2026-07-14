@@ -147,6 +147,7 @@ def unban_user(user_id: int) -> None:
     if user_key in _users_cache:
         _users_cache[user_key]["banned"] = False
         _users_cache[user_key].pop("ban_reason", None)
+        _users_cache[user_key].pop("ban_permanent", None)
 
         try:
             loop = asyncio.get_running_loop()

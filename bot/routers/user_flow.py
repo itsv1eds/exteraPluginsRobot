@@ -629,8 +629,13 @@ def _has_pending_appeal(user_id: int) -> bool:
     return False
 
 
+def _is_permanent_ban(user_id: int) -> bool:
+    from user_store import get_user
+    return bool(get_user(user_id).get("ban_permanent"))
+
+
 def _appeal_kb_for(user_id: int, lang: str):
-    if _has_pending_appeal(user_id):
+    if _is_permanent_ban(user_id) or _has_pending_appeal(user_id):
         return None
     return banned_appeal_kb(lang)
 
@@ -644,11 +649,14 @@ async def on_appeal_start(cb: CallbackQuery, state: FSMContext) -> None:
     if not is_user_banned(user.id):
         await cb.answer()
         return
+    if _is_permanent_ban(user.id):
+        await cb.answer(t("appeal_permanently_denied", lang), show_alert=True)
+        return
     if _has_pending_appeal(user.id):
         await cb.answer(t("appeal_already_pending", lang), show_alert=True)
         return
     await state.set_state(UserFlow.entering_appeal)
-    await answer(cb, t("appeal_prompt", lang), None)
+    await answer(cb, t("appeal_prompt", lang), None, "appeal")
     try:
         await cb.answer()
     except Exception:
@@ -663,6 +671,10 @@ async def on_appeal_text(message: Message, state: FSMContext) -> None:
     lang = get_lang(user.id)
     if not is_user_banned(user.id):
         await state.set_state(UserFlow.idle)
+        return
+    if _is_permanent_ban(user.id):
+        await state.set_state(UserFlow.idle)
+        await message.answer(t("appeal_permanently_denied", lang))
         return
     if _has_pending_appeal(user.id):
         await state.set_state(UserFlow.idle)
@@ -903,7 +915,7 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
             include_back=True,
             lang=lang,
         ),
-        "profile",
+        "update",
     )
     try:
         await cb.answer()
@@ -1294,7 +1306,7 @@ async def on_changelog(message: Message, state: FSMContext) -> None:
             include_checked_on=False,
             lang=lang,
         ),
-        "plugins",
+        "update",
     )
     if sent:
         await state.update_data(draft_message_id=sent.message_id)
@@ -1611,7 +1623,7 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
             include_back=True,
             lang=lang,
         ),
-        "profile",
+        "update",
     )
 
 

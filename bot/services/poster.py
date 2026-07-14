@@ -292,45 +292,30 @@ async def send_content(bot, chat_id: int, content: Dict[str, Any]):
     return await _safe_send(_send)
 
 
-def _flatten_buttons(buttons) -> list:
-    return [
-        b for row in (buttons or []) for b in row
-        if str((b or {}).get("url") or "").strip() and str((b or {}).get("text") or "").strip()
-    ]
-
-
-async def _try_userbot_send(chat_id: int, text: str) -> Optional[int]:
+async def _try_userbot_edit(chat_id: int, message_id: int, text: str) -> bool:
     from userbot.client import get_userbot
 
     ub = await get_userbot()
     if not ub:
-        return None
+        return False
     channel = get_channel(chat_id)
     ref = (channel or {}).get("username") or chat_id
-    return await ub.send_channel_text(ref, text)
+    return await ub.edit_channel_text(ref, message_id, text)
 
 
 async def _send_content_for_delivery(bot, chat_id: int, content: Dict[str, Any]):
-    """Deliver a scheduled post, preferring the userbot for custom emoji.
-
-    A bot cannot render custom (premium) emoji in channels; the userbot can,
-    but it cannot carry inline buttons or reuse bot media file_ids. So the
-    userbot path is used only for text-only posts without buttons that contain
-    custom emoji; anything else (or any failure) falls back to the bot.
-    """
+    message = await send_content(bot, chat_id, content)
     text = normalize_custom_emoji(content.get("html_text") or "")
-    media = content.get("media") or []
-    buttons = _flatten_buttons(content.get("buttons") or [])
-    if "tg-emoji" in text and not media and not buttons:
+    message_id = getattr(message, "message_id", None)
+    if "tg-emoji" in text and message_id:
         try:
-            msg_id = await _try_userbot_send(chat_id, text)
-            if msg_id:
-                logger.info("poster: delivered via userbot (custom emoji) chat=%s", chat_id)
-                return type("PosterMsg", (), {"message_id": msg_id})()
+            if await _try_userbot_edit(chat_id, message_id, text):
+                logger.info("poster: custom emoji applied via userbot edit chat=%s msg=%s",
+                            chat_id, message_id)
         except Exception:
-            logger.warning("poster: userbot delivery failed, falling back to bot chat=%s",
-                           chat_id, exc_info=True)
-    return await send_content(bot, chat_id, content)
+            logger.warning("poster: userbot edit for custom emoji failed chat=%s msg=%s",
+                           chat_id, message_id, exc_info=True)
+    return message
 
 
 async def deliver_post(bot, post: Dict[str, Any]) -> bool:
@@ -352,11 +337,31 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
                 extra["delete_at"] = (_now() + timedelta(minutes=delete_after)).isoformat()
         _update_post(post_id, status="sent", sent_message_id=getattr(message, "message_id", None),
                      error=None, **extra)
+        _schedule_repeat(post, content)
         return True
     except Exception as exc:
         logger.exception("poster: delivery failed post=%s chat=%s", post_id, chat_id)
         _update_post(post_id, status="failed", error=str(exc)[:300])
         return False
+
+
+def _schedule_repeat(post: Dict[str, Any], content: Dict[str, Any]) -> None:
+    try:
+        repeat_days = int(content.get("repeat_days") or 0)
+    except (TypeError, ValueError):
+        repeat_days = 0
+    if repeat_days <= 0:
+        return
+    base = _parse_dt(post.get("run_at")) or _now()
+    next_run = base + timedelta(days=repeat_days)
+    now = _now()
+    while next_run <= now:
+        next_run += timedelta(days=repeat_days)
+    try:
+        add_post(post.get("owner_user_id"), post.get("chat_id"), next_run.isoformat(),
+                 dict(content), kind="repeat")
+    except Exception:
+        logger.exception("poster: failed to schedule repeat for post=%s", post.get("id"))
 
 
 def due_deletions(now: Optional[datetime] = None) -> List[Dict[str, Any]]:

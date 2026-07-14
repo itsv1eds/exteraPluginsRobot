@@ -189,6 +189,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     reply_markup = _forum_reply_markup(entry, request_id, yes, no)
     chat_id = cfg["chat_id"]
     topic_id = cfg["topic_id"]
+    img_key = "appeal" if entry.get("type") == "unban_appeal" else "new"
 
     msg = await bot.send_message(
         chat_id,
@@ -196,7 +197,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
         parse_mode=ParseMode.HTML,
         reply_markup=reply_markup,
         disable_web_page_preview=False,
-        link_preview_options=link_preview_options("new"),
+        link_preview_options=link_preview_options(img_key),
         message_thread_id=topic_id,
     )
     file_msg = None

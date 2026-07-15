@@ -666,17 +666,25 @@ def admin_plugins_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     ])
 
 
-def admin_audit_kb(page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
+def admin_rejected_kb(items: List[Tuple[str, str]], page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [[_btn(label, callback_data=f"adm:rejreq:{rid}", icon="file")] for label, rid in items]
     nav = []
     if page > 0:
         nav.append(_btn("<", callback_data=f"adm:audit:{page-1}", icon="back"))
     if page < total_pages - 1:
         nav.append(_btn(">", callback_data=f"adm:audit:{page+1}", icon="forward"))
-    rows = []
     if nav:
         rows.append(nav)
-    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:section:plugins", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_rejected_detail_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(t("admin_rej_review", lang), callback_data=f"adm:review:{request_id}", icon="edit", style="success")],
+        [_btn(t("admin_rej_delete", lang), callback_data=f"adm:rejdel:{request_id}", icon="delete", style="danger")],
+        [_btn(t("btn_back", lang), callback_data="adm:audit:0", style="danger", icon="back")],
+    ])
 
 
 def admin_updates_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
@@ -872,9 +880,31 @@ def admin_banned_kb(
         rows.append(nav)
 
     rows.append([_btn(t("kb_admin_ban_manual", lang), callback_data="adm:ban_manual", icon="ban", style="danger")])
+    rows.append([_btn(t("admin_btn_rejected_appeals", lang), callback_data="adm:rejapp:0", icon="file")])
     rows.append([_btn(t("btn_back", lang), callback_data=back_callback, style="danger", icon="back")])
 
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_rejected_appeals_kb(items: List[Tuple[str, str]], page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [[_btn(label, callback_data=f"adm:appd:{rid}", icon="profile")] for label, rid in items]
+    nav = []
+    if page > 0:
+        nav.append(_btn("<", callback_data=f"adm:rejapp:{page-1}", icon="back"))
+    if page < total_pages - 1:
+        nav.append(_btn(">", callback_data=f"adm:rejapp:{page+1}", icon="forward"))
+    if nav:
+        rows.append(nav)
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:banned:0", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_rejected_appeal_detail_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(t("kb_appeal_unban", lang), callback_data=f"adm:appunb:{request_id}", icon="yes", style="success")],
+        [_btn(t("admin_rej_delete", lang), callback_data=f"adm:appdel:{request_id}", icon="delete", style="danger")],
+        [_btn(t("btn_back", lang), callback_data="adm:rejapp:0", style="danger", icon="back")],
+    ])
 
 
 def admin_confirm_ban_user_kb(user_id: int, lang: str = "ru") -> InlineKeyboardMarkup:

@@ -173,12 +173,49 @@ def get_request_by_plugin_id(plugin_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _relocate_request_files(entry: Dict[str, Any], subdir: str) -> None:
+    try:
+        from bot.helpers import get_uploads_subdir
+    except Exception:
+        return
+    payload = entry.get("payload")
+    if not isinstance(payload, dict):
+        return
+    dest_dir = get_uploads_subdir(subdir)
+    for key in ("plugin", "icon"):
+        item = payload.get(key)
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("file_path")
+        if not raw:
+            continue
+        src = Path(raw)
+        dest = dest_dir / src.name
+        if src.resolve() == dest.resolve():
+            continue
+        try:
+            if not src.exists():
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.unlink(missing_ok=True)
+            src.replace(dest)
+            item["file_path"] = str(dest)
+        except Exception:
+            logger.exception("Failed to relocate %s to %s", src, dest)
+
+
 def update_request_status(request_id: str, status: str, comment: Optional[str] = None) -> bool:
     entry = get_request_by_id(request_id)
     if not entry:
         return False
-    
+
     entry["status"] = status
+    if status == "rejected":
+        _relocate_request_files(entry, "rejected")
+    elif status == "published" and entry.get("type") != "unban_appeal":
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        subdir = "icons" if isinstance(payload.get("icon"), dict) and (payload.get("icon") or {}).get("file_path") else "plugins"
+        _relocate_request_files(entry, subdir)
     _touch_request(entry)
     history = entry.setdefault("history", [])
     history.append({
@@ -303,7 +340,7 @@ def cleanup_orphan_plugin_files() -> int:
         if plugin_path:
             active_paths.add(Path(plugin_path).resolve())
     removed = 0
-    for file_path in attachments_dir.glob("*.plugin"):
+    for file_path in attachments_dir.rglob("*.plugin"):
         if file_path.resolve() not in active_paths:
             file_path.unlink(missing_ok=True)
             removed += 1

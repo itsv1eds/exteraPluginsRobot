@@ -59,6 +59,12 @@ def get_uploads_dir() -> Path:
     return path
 
 
+def get_uploads_subdir(name: str) -> Path:
+    path = get_uploads_dir() / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def sanitize_filename(value: str) -> str:
     return re.sub(r"[^\w\-@.]", "", value).strip("._") or "plugin"
 

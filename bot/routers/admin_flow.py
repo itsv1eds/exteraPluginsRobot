@@ -53,7 +53,10 @@ from bot.keyboards import (
     admin_menu_kb,
     admin_notification_settings_kb,
     admin_plugins_list_kb,
-    admin_audit_kb,
+    admin_rejected_kb,
+    admin_rejected_detail_kb,
+    admin_rejected_appeals_kb,
+    admin_rejected_appeal_detail_kb,
     admin_plugins_section_kb,
     admin_queue_kb,
     admin_review_kb,
@@ -102,6 +105,7 @@ from bot.services.moderation import (
     moderation_config,
     rejection_reasons,
     send_request_to_forum,
+    vote_counts,
     vote_summary,
 )
 from bot.routers.catalog_flow import build_inline_preview, build_plugin_preview
@@ -112,6 +116,7 @@ from bot.texts import TEXTS, t
 from catalog import find_icon_by_slug, find_plugin_by_slug, list_published_icons, list_published_plugins
 from request_store import (
     cleanup_hidden_requests,
+    delete_request_and_file,
     delete_requests_by_plugin_id,
     get_request_by_id,
     get_requests,
@@ -1059,7 +1064,7 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
     elif token.startswith("adm:audit:"):
         parts = token.split(":")
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-        await _render_audit(cb, state, page)
+        await _render_rejected(cb, state, page)
     else:
         await _render_menu(cb, state)
 
@@ -2511,57 +2516,45 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
         pass
 
 
-_AUDIT_LABELS = {
-    "moderation.publish_success": "✅ Опубликовано",
-    "moderation.publish_validation_failed": "⚠️ Публикация остановлена (ошибки)",
-    "moderation.reject": "❌ Отклонено",
-    "moderation.rework": "✏️ На доработку",
-    "moderation.message_author": "💬 Сообщение автору",
-    "moderation.ban": "🚫 Бан",
-    "moderation.vote": "🗳 Голос",
-    "moderation.appeal_approved": "🔓 Апелляция одобрена",
-    "moderation.appeal_denied": "❌ Апелляция отклонена",
-    "moderation.appeal_banned_final": "🚫 Апелляция отклонена окончательно",
-    "backup.manual": "💾 Ручной бэкап",
-}
-_AUDIT_PER_PAGE = 8
+_REJECTED_PER_PAGE = 8
 
 
-def _fmt_audit_event(ev: dict) -> str:
-    label = _AUDIT_LABELS.get(str(ev.get("event") or ""), str(ev.get("event") or "—"))
-    when = "—"
-    raw = ev.get("created_at")
-    if raw:
-        try:
-            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            when = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m %H:%M")
-        except ValueError:
-            when = str(raw)[:16]
-    actor = plain_html(str(ev.get("actor") or ev.get("actor_id") or "—"))
-    line = f"<b>{when}</b> · {label} · {actor}"
-    rid = ev.get("request_id")
-    if rid:
-        line += f"\n   <code>{plain_html(str(rid))}</code>"
-    details = ev.get("details") or {}
-    if isinstance(details, dict) and details.get("user_id"):
-        line += f" · uid <code>{details['user_id']}</code>"
-    return line
+def _rejected_requests() -> list[dict]:
+    reqs = [r for r in get_requests(status="rejected") if r.get("type") != "unban_appeal"]
+    reqs.sort(key=lambda r: str(r.get("updated_at") or r.get("submitted_at") or ""), reverse=True)
+    return reqs
 
 
-async def _render_audit(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
+def _request_label(entry: dict) -> str:
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    item = payload.get("plugin") or payload.get("icon") or {}
+    name = item.get("name") or payload.get("delete_slug") or entry.get("id") or "—"
+    typ = entry.get("type")
+    prefix = "🔄 " if typ == "update" else "🗑 " if typ == "delete" else ""
+    return f"{prefix}{name}"[:48]
+
+
+def _reject_comment(entry: dict) -> str:
+    for h in reversed(entry.get("history") or []):
+        if isinstance(h, dict) and h.get("status") == "rejected" and h.get("comment"):
+            return str(h.get("comment") or "")
+    return ""
+
+
+async def _render_rejected(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
     lang = _lang_for(target)
-    events, total = audit_events_page(page, _AUDIT_PER_PAGE)
-    total_pages = max(1, math.ceil(total / _AUDIT_PER_PAGE))
+    reqs = _rejected_requests()
+    total = len(reqs)
+    total_pages = max(1, math.ceil(total / _REJECTED_PER_PAGE))
     page = max(0, min(page, total_pages - 1))
-    if not events and page > 0:
-        events, total = audit_events_page(0, _AUDIT_PER_PAGE)
-        page = 0
-    header = _tr(target, "admin_audit_title", current=page + 1, total=total_pages, count=total)
-    body = "\n\n".join(_fmt_audit_event(e) for e in events) if events else _tr(target, "admin_audit_empty")
+    page_items = reqs[page * _REJECTED_PER_PAGE:(page + 1) * _REJECTED_PER_PAGE]
+    items = [(_request_label(r), str(r.get("id"))) for r in page_items]
+    if reqs:
+        header = _tr(target, "admin_rejected_title", current=page + 1, total=total_pages, count=total)
+    else:
+        header = _tr(target, "admin_rejected_empty")
     await state.set_state(AdminFlow.menu)
-    await answer(target, f"{header}\n\n{body}", admin_audit_kb(page, total_pages, lang=lang), "admin")
+    await answer(target, header, admin_rejected_kb(items, page, total_pages, lang=lang), "admin")
 
 
 @router.callback_query(F.data.regexp(r"^adm:audit:\d+$"))
@@ -2570,10 +2563,169 @@ async def on_admin_audit(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     page = int(cb.data.split(":")[2])
-    await _nav_push(state, f"adm:audit:{page}")
-    await _render_audit(cb, state, page)
+    await _render_rejected(cb, state, page)
     try:
         await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^adm:rejreq:[^:]+$"))
+async def on_admin_rejected_detail(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "plugins"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if not entry:
+        await cb.answer(_tr(cb, "admin_request_not_found"), show_alert=True)
+        await _render_rejected(cb, state, 0)
+        return
+    draft = _render_request_draft(entry)
+    comment = _reject_comment(entry)
+    text = draft
+    if comment:
+        text += "\n\n" + _tr(cb, "admin_rejected_reason", comment=strip_blockquote_tags(telegram_html(comment)))
+    if vote_counts(entry)[2]:
+        text += "\n\n" + vote_summary(entry)
+    await answer(cb, text, admin_rejected_detail_kb(request_id, _lang_for(cb)), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^adm:rejdel:[^:]+$"))
+async def on_admin_rejected_delete(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "plugins"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    delete_request_and_file(request_id)
+    add_audit_event("moderation.request_deleted", actor_id=cb.from_user.id if cb.from_user else None,
+                    actor=_admin_actor_label(cb), request_id=str(request_id))
+    await _render_rejected(cb, state, 0)
+    try:
+        await cb.answer(_tr(cb, "admin_rejected_deleted"), show_alert=True)
+    except Exception:
+        pass
+
+
+def _rejected_appeals() -> list[dict]:
+    reqs = [r for r in get_requests(status="rejected") if r.get("type") == "unban_appeal"]
+    reqs.sort(key=lambda r: str(r.get("updated_at") or r.get("submitted_at") or ""), reverse=True)
+    return reqs
+
+
+def _appeal_label(entry: dict) -> str:
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    name = payload.get("username") or payload.get("user_id") or entry.get("id") or "—"
+    prefix = "🚫 " if _reject_comment(entry).endswith("окончательный") else "🔒 "
+    return f"{prefix}@{name}" if payload.get("username") else f"{prefix}{name}"
+
+
+async def _render_rejected_appeals(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
+    lang = _lang_for(target)
+    reqs = _rejected_appeals()
+    total = len(reqs)
+    total_pages = max(1, math.ceil(total / _REJECTED_PER_PAGE))
+    page = max(0, min(page, total_pages - 1))
+    page_items = reqs[page * _REJECTED_PER_PAGE:(page + 1) * _REJECTED_PER_PAGE]
+    items = [(_appeal_label(r), str(r.get("id"))) for r in page_items]
+    if reqs:
+        header = _tr(target, "admin_rejected_appeals_title", current=page + 1, total=total_pages, count=total)
+    else:
+        header = _tr(target, "admin_rejected_appeals_empty")
+    await state.set_state(AdminFlow.menu)
+    await answer(target, header, admin_rejected_appeals_kb(items, page, total_pages, lang=lang), "admin")
+
+
+@router.callback_query(F.data.regexp(r"^adm:rejapp:\d+$"))
+async def on_admin_rejected_appeals(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    page = int(cb.data.split(":")[2])
+    await _render_rejected_appeals(cb, state, page)
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^adm:appd:[^:]+$"))
+async def on_admin_rejected_appeal_detail(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if not entry or entry.get("type") != "unban_appeal":
+        await cb.answer(_tr(cb, "admin_request_not_found"), show_alert=True)
+        await _render_rejected_appeals(cb, state, 0)
+        return
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    user_id = int(payload.get("user_id") or 0)
+    mention = user_mention(user_id, payload.get("username"))
+    appeal_text = strip_blockquote_tags(telegram_html(payload.get("appeal_text") or "")) or "—"
+    text = _tr(cb, "admin_rejected_appeal_detail", user=mention, uid=user_id, text=appeal_text)
+    comment = _reject_comment(entry)
+    if comment:
+        text += "\n\n" + _tr(cb, "admin_rejected_reason", comment=strip_blockquote_tags(telegram_html(comment)))
+    await answer(cb, text, admin_rejected_appeal_detail_kb(request_id, _lang_for(cb)), "admin")
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^adm:appunb:[^:]+$"))
+async def on_admin_rejected_appeal_unban(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    entry = get_request_by_id(request_id)
+    if not entry or entry.get("type") != "unban_appeal":
+        await cb.answer(_tr(cb, "admin_request_not_found"), show_alert=True)
+        await _render_rejected_appeals(cb, state, 0)
+        return
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    user_id = int(payload.get("user_id") or 0)
+    if user_id:
+        unban_user(user_id)
+    update_request_status(request_id, "published", comment="Апелляция одобрена (пересмотр)")
+    add_audit_event("moderation.appeal_approved", actor_id=cb.from_user.id if cb.from_user else None,
+                    actor=_admin_actor_label(cb), request_id=str(request_id), details={"user_id": user_id})
+    if user_id:
+        try:
+            await cb.bot.send_message(
+                user_id,
+                t("appeal_approved", get_lang(user_id)),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            logger.exception("event=appeal.notify_user_failed user_id=%s", user_id)
+    await _render_rejected_appeals(cb, state, 0)
+    try:
+        await cb.answer(_tr(cb, "appeal_done_unban"), show_alert=True)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.regexp(r"^adm:appdel:[^:]+$"))
+async def on_admin_rejected_appeal_delete(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin_role(cb, "super"):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    request_id = cb.data.split(":")[2]
+    delete_request_and_file(request_id)
+    add_audit_event("moderation.request_deleted", actor_id=cb.from_user.id if cb.from_user else None,
+                    actor=_admin_actor_label(cb), request_id=str(request_id))
+    await _render_rejected_appeals(cb, state, 0)
+    try:
+        await cb.answer(_tr(cb, "admin_rejected_deleted"), show_alert=True)
     except Exception:
         pass
 

@@ -8,7 +8,7 @@ from aiogram import Bot
 from aiogram.types import Document, FSInputFile
 
 from plugin_parser import PluginParseError, parse_plugin_file
-from bot.helpers import download_document, get_uploads_dir, sanitize_filename
+from bot.helpers import download_document, get_uploads_subdir, sanitize_filename
 from bot.cache import get_config
 
 
@@ -71,9 +71,9 @@ class IconPackData:
 async def process_plugin_file(bot: Bot, document: Document) -> PluginData:
     if not document.file_name or not document.file_name.endswith(".plugin"):
         raise ValueError("invalid_file")
-    
-    uploads = get_uploads_dir()
-    
+
+    uploads = get_uploads_subdir("plugins")
+
     try:
         temp_path = await download_document(bot, document.file_id, uploads)
     except Exception as e:
@@ -109,7 +109,7 @@ async def process_icon_file(bot: Bot, document: Document) -> IconPackData:
     if not document.file_name or not document.file_name.endswith(".icons"):
         raise ValueError("invalid_icon_file")
 
-    uploads = get_uploads_dir()
+    uploads = get_uploads_subdir("icons")
 
     try:
         temp_path = await download_document(bot, document.file_id, uploads)

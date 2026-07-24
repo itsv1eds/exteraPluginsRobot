@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 from dataclasses import dataclass, field
@@ -133,8 +134,8 @@ def _strip_literal(raw_value: str) -> Optional[str]:
             return parts[1]
     if raw_value.startswith("("):
         try:
-            return eval(raw_value, {})
-        except Exception:
+            return ast.literal_eval(raw_value)
+        except (ValueError, SyntaxError):
             return raw_value
     try:
         return json.loads(raw_value)

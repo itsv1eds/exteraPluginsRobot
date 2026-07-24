@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -24,12 +25,12 @@ from bot.cache import (
     invalidate,
 )
 from bot.constants import PAGE_SIZE
-from bot.context import get_language, get_lang
+from bot.context import get_lang
 from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import answer
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
-from bot.services.audit import add_audit_event, audit_events_page, recent_audit_events
+from bot.services.audit import add_audit_event, recent_audit_events
 from bot.keyboards import (
     admin_actions_kb,
     admin_banned_kb,
@@ -108,8 +109,7 @@ from bot.services.moderation import (
     vote_counts,
     vote_summary,
 )
-from bot.routers.catalog_flow import build_inline_preview, build_plugin_preview
-from bot.services.submission import PluginData, process_icon_file, process_plugin_file
+from bot.services.submission import process_plugin_file
 from bot.states import AdminFlow
 from bot.icons import emoji_html
 from bot.texts import TEXTS, t
@@ -119,12 +119,13 @@ from request_store import (
     delete_request_and_file,
     delete_requests_by_plugin_id,
     get_request_by_id,
+    get_all_requests,
     get_requests,
     update_request_payload,
     update_request_status,
 )
 from storage import DATA_DIR, SQLITE_PATH, load_plugins, save_config, save_plugins
-from user_store import ban_user, get_banned_users, get_user_language, is_broadcast_enabled, list_users, unban_user
+from user_store import ban_user, get_banned_users, is_broadcast_enabled, list_users, unban_user
 from subscription_store import list_subscribers
 from catalog import invalidate_catalog_cache
 
@@ -700,6 +701,11 @@ _CONFIG_FIELD_LABEL_KEYS: dict[str, str] = {
     "moderation.vote_threshold": "admin_cfg_moderation_vote_threshold",
     "moderation.notification_chat_ids": "admin_cfg_moderation_notification_chat_ids",
     "moderation.delete_review_notifications_on_decision": "admin_cfg_moderation_delete_review_notifications_on_decision",
+    "moderation.min_supported_version": "admin_cfg_moderation_min_supported_version",
+}
+
+_CONFIG_VERSION_FIELDS = {
+    "moderation.min_supported_version",
 }
 
 _CONFIG_INT_FIELDS = {
@@ -736,6 +742,10 @@ def _config_current_value(config: dict[str, Any], path: str) -> Any:
     value = _config_get_path(config, path)
     if value is not None:
         return value
+    if path == "moderation.min_supported_version":
+        from bot.services.versioning import get_min_supported_version
+
+        return get_min_supported_version()
     if path.startswith("moderation."):
         moderation = moderation_config()
         return {
@@ -772,6 +782,13 @@ def _format_config_value(value: Any) -> str:
 
 def _parse_config_value(path: str, raw: str) -> Any:
     text = raw.strip()
+    if path in _CONFIG_VERSION_FIELDS:
+        from bot.services.versioning import normalize_version
+
+        value = normalize_version(text)
+        if not value:
+            raise ValueError(text)
+        return value
     if path in _CONFIG_LIST_FIELDS:
         items = [item.strip() for item in text.split(",") if item.strip()]
         if path == "moderation.notification_chat_ids":
@@ -820,6 +837,7 @@ def _config_section_text(section: str, lang: str) -> str:
             "moderation.vote_threshold",
             "moderation.notification_chat_ids",
             "moderation.delete_review_notifications_on_decision",
+            "moderation.min_supported_version",
         ]
         title = t("admin_cfg_section_moderation", lang)
     elif section == "admins":
@@ -1063,8 +1081,9 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await _render_banned(cb, state, page)
     elif token.startswith("adm:audit:"):
         parts = token.split(":")
-        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-        await _render_rejected(cb, state, page)
+        status = parts[2] if len(parts) > 3 else "all"
+        page = int(parts[-1]) if parts[-1].isdigit() else 0
+        await _render_rejected(cb, state, page, status)
     else:
         await _render_menu(cb, state)
 
@@ -1381,6 +1400,26 @@ async def cmd_admin(message: Message, state: FSMContext) -> None:
         await remember_menu_owner(message, state, sent)
 
 
+_FORUM_RESEND_DELAY = 1.0
+_FORUM_RETRY_MAX_ATTEMPTS = 5
+_FORUM_RETRY_MAX_WAIT = 120
+
+
+async def _send_forum_request_with_retry(bot, entry: dict, text: str, file_path) -> None:
+    for attempt in range(_FORUM_RETRY_MAX_ATTEMPTS):
+        try:
+            await send_request_to_forum(bot, entry, text, file_path)
+            return
+        except TelegramRetryAfter as exc:
+            wait = min(int(getattr(exc, "retry_after", 1)) + 1, _FORUM_RETRY_MAX_WAIT)
+            logger.warning(
+                "event=admin.resend_forum_request.floodwait request_id=%s attempt=%s wait=%s",
+                entry.get("id"), attempt + 1, wait,
+            )
+            await asyncio.sleep(wait)
+    raise RuntimeError(f"floodwait retries exhausted for {entry.get('id')}")
+
+
 @router.message(Command("new"))
 async def cmd_resend_forum_requests(message: Message) -> None:
     if not _ensure_admin_role(message, "super"):
@@ -1410,15 +1449,17 @@ async def cmd_resend_forum_requests(message: Message) -> None:
 
     sent = 0
     failed = 0
-    for entry in requests:
+    for index, entry in enumerate(requests):
         try:
             await delete_forum_request_message(message.bot, entry)
             text, file_path = _forum_request_text_and_file(entry)
-            await send_request_to_forum(message.bot, entry, text, file_path)
+            await _send_forum_request_with_retry(message.bot, entry, text, file_path)
             sent += 1
         except Exception:
             failed += 1
             logger.warning("event=admin.resend_forum_request.failed request_id=%s", entry.get("id"), exc_info=True)
+        if index + 1 < len(requests):
+            await asyncio.sleep(_FORUM_RESEND_DELAY)
 
     await answer_in_moderation_topic(message, f"Отправлено заявок: {sent}\nОшибок: {failed}")
 
@@ -2518,19 +2559,40 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
 
 _REJECTED_PER_PAGE = 8
 
+_AUDIT_FILTERS = ("all", "published", "rejected", "pending", "rework", "scheduled")
 
-def _rejected_requests() -> list[dict]:
-    reqs = [r for r in get_requests(status="rejected") if r.get("type") != "unban_appeal"]
+_STATUS_ICONS = {
+    "published": "✅",
+    "rejected": "❌",
+    "pending": "⏳",
+    "rework": "✏️",
+    "scheduled": "🕓",
+    "draft": "📝",
+    "deleted": "🗑",
+    "error": "⚠️",
+}
+
+
+def _audit_requests(status: str = "all") -> list[dict]:
+    reqs = [r for r in get_all_requests() if r.get("type") != "unban_appeal"]
+    if status != "all":
+        reqs = [r for r in reqs if r.get("status") == status]
     reqs.sort(key=lambda r: str(r.get("updated_at") or r.get("submitted_at") or ""), reverse=True)
     return reqs
 
 
-def _request_label(entry: dict) -> str:
+def _rejected_requests() -> list[dict]:
+    return _audit_requests("rejected")
+
+
+def _request_label(entry: dict, with_status: bool = False) -> str:
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     item = payload.get("plugin") or payload.get("icon") or {}
     name = item.get("name") or payload.get("delete_slug") or entry.get("id") or "—"
     typ = entry.get("type")
     prefix = "🔄 " if typ == "update" else "🗑 " if typ == "delete" else ""
+    if with_status:
+        prefix = f"{_STATUS_ICONS.get(str(entry.get('status')), '•')} {prefix}"
     return f"{prefix}{name}"[:48]
 
 
@@ -2541,29 +2603,46 @@ def _reject_comment(entry: dict) -> str:
     return ""
 
 
-async def _render_rejected(target: CallbackQuery | Message, state: FSMContext, page: int) -> None:
+def _last_status_comment(entry: dict) -> str:
+    for h in reversed(entry.get("history") or []):
+        if isinstance(h, dict) and h.get("comment"):
+            return str(h.get("comment") or "")
+    return ""
+
+
+async def _render_rejected(
+    target: CallbackQuery | Message, state: FSMContext, page: int, status: str = "all"
+) -> None:
     lang = _lang_for(target)
-    reqs = _rejected_requests()
+    if status not in _AUDIT_FILTERS:
+        status = "all"
+    reqs = _audit_requests(status)
     total = len(reqs)
     total_pages = max(1, math.ceil(total / _REJECTED_PER_PAGE))
     page = max(0, min(page, total_pages - 1))
     page_items = reqs[page * _REJECTED_PER_PAGE:(page + 1) * _REJECTED_PER_PAGE]
-    items = [(_request_label(r), str(r.get("id"))) for r in page_items]
+    items = [(_request_label(r, with_status=True), str(r.get("id"))) for r in page_items]
+    filter_label = _tr(target, f"admin_audit_filter_{status}")
     if reqs:
-        header = _tr(target, "admin_rejected_title", current=page + 1, total=total_pages, count=total)
+        header = _tr(
+            target, "admin_audit_title",
+            filter=filter_label, current=page + 1, total=total_pages, count=total,
+        )
     else:
-        header = _tr(target, "admin_rejected_empty")
+        header = _tr(target, "admin_audit_empty", filter=filter_label)
     await state.set_state(AdminFlow.menu)
-    await answer(target, header, admin_rejected_kb(items, page, total_pages, lang=lang), "admin")
+    await answer(target, header, admin_rejected_kb(items, page, total_pages, status=status, lang=lang), "admin")
 
 
-@router.callback_query(F.data.regexp(r"^adm:audit:\d+$"))
+@router.callback_query(F.data.regexp(r"^adm:audit:(?:[a-z]+:)?\d+$"))
 async def on_admin_audit(cb: CallbackQuery, state: FSMContext) -> None:
     if not _ensure_admin_role(cb, "plugins"):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-    page = int(cb.data.split(":")[2])
-    await _render_rejected(cb, state, page)
+    parts = cb.data.split(":")
+    status = parts[2] if len(parts) > 3 else "all"
+    page = int(parts[-1])
+    await _render_rejected(cb, state, page, status)
     try:
         await cb.answer()
     except Exception:
@@ -2581,9 +2660,10 @@ async def on_admin_rejected_detail(cb: CallbackQuery, state: FSMContext) -> None
         await cb.answer(_tr(cb, "admin_request_not_found"), show_alert=True)
         await _render_rejected(cb, state, 0)
         return
-    draft = _render_request_draft(entry)
-    comment = _reject_comment(entry)
-    text = draft
+    status = str(entry.get("status") or "—")
+    status_label = f"{_STATUS_ICONS.get(status, '•')} {_tr(cb, f'admin_audit_filter_{status}') if status in _AUDIT_FILTERS else status}"
+    text = _tr(cb, "admin_audit_status", status=status_label) + "\n\n" + _render_request_draft(entry)
+    comment = _last_status_comment(entry)
     if comment:
         text += "\n\n" + _tr(cb, "admin_rejected_reason", comment=strip_blockquote_tags(telegram_html(comment)))
     if vote_counts(entry)[2]:
@@ -4749,8 +4829,12 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
         )
     else:
         draft_text = _render_request_draft(entry)
+        header = {
+            "update": "Обновление",
+            "delete": "Удаление плагина",
+        }.get(str(entry.get("type")), "Новый плагин")
         text = (
-            f"<b>Новый плагин</b>\n\n"
+            f"<b>{header}</b>\n\n"
             f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n\n"
             f"{draft_text}\n\n"
             f"<b>От:</b> {user_link}"
@@ -4915,7 +4999,7 @@ async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
                 checked_on_set=checked_on_set,
                 lang=lang,
             ),
-            "plugins",
+            "new",
         )
     try:
         await cb.answer()
@@ -5076,7 +5160,7 @@ async def on_admin_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
                 checked_on_set=checked_on_set,
                 lang=lang,
             ),
-            "plugins",
+            "new",
         )
         try:
             await cb.answer()
@@ -5572,7 +5656,7 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
                         include_schedule=include_schedule,
                         lang=lang,
                     ),
-                    "plugins",
+                    "new",
                 )
                 if sent:
                     await state.update_data(draft_message_id=sent.message_id)
@@ -5587,7 +5671,7 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
                     include_schedule=include_schedule,
                     lang=lang,
                 ),
-                "plugins",
+                "new",
             )
             if sent:
                 await state.update_data(draft_message_id=sent.message_id)
@@ -6305,6 +6389,12 @@ async def on_admin_enter_rework_comment(message: Message, state: FSMContext) -> 
         return
 
     if entry:
+        from bot.services.validation import submission_fingerprint
+
+        update_request_payload(
+            request_id,
+            {"rework_fingerprint": submission_fingerprint(entry.get("payload") or {})},
+        )
         update_request_status(request_id, "rework", comment=comment)
         add_audit_event(
             "moderation.rework",

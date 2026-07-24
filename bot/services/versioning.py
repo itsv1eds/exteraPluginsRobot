@@ -1,8 +1,7 @@
-
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from typing import Tuple
 
 try:
     from packaging.version import InvalidVersion, Version
@@ -58,6 +57,27 @@ def compare_versions(left: object, right: object) -> int:
 
 def is_valid_version(value: object) -> bool:
     return bool(normalize_version(value))
+
+
+DEFAULT_MIN_SUPPORTED_VERSION = "12.1.1"
+
+
+def get_min_supported_version() -> str:
+    try:
+        from bot.cache import get_config
+
+        cfg = get_config()
+        raw = (cfg.get("moderation") or {}).get("min_supported_version") if isinstance(cfg, dict) else None
+    except Exception:
+        return DEFAULT_MIN_SUPPORTED_VERSION
+    return normalize_version(raw) or DEFAULT_MIN_SUPPORTED_VERSION
+
+
+def meets_min_supported(value: object) -> bool:
+    norm = normalize_version(value)
+    if not norm:
+        return False
+    return compare_versions(norm, get_min_supported_version()) >= 0
 
 
 def satisfies(candidate: object, spec: object, *, default_operator: str = ">=") -> bool:

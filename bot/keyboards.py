@@ -666,13 +666,40 @@ def admin_plugins_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     ])
 
 
-def admin_rejected_kb(items: List[Tuple[str, str]], page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
+_AUDIT_FILTER_BUTTONS = (
+    ("all", "admin_audit_filter_all"),
+    ("published", "admin_audit_filter_published"),
+    ("rejected", "admin_audit_filter_rejected"),
+    ("pending", "admin_audit_filter_pending"),
+    ("rework", "admin_audit_filter_rework"),
+    ("scheduled", "admin_audit_filter_scheduled"),
+)
+
+
+def admin_rejected_kb(
+    items: List[Tuple[str, str]],
+    page: int,
+    total_pages: int,
+    status: str = "all",
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
     rows = [[_btn(label, callback_data=f"adm:rejreq:{rid}", icon="file")] for label, rid in items]
+
+    filters: List[InlineKeyboardButton] = []
+    for key, text_key in _AUDIT_FILTER_BUTTONS:
+        label = t(text_key, lang)
+        if key == status:
+            filters.append(_btn(f"· {label} ·", callback_data=f"adm:audit:{key}:0", style="success"))
+        else:
+            filters.append(_btn(label, callback_data=f"adm:audit:{key}:0"))
+    for i in range(0, len(filters), 3):
+        rows.append(filters[i:i + 3])
+
     nav = []
     if page > 0:
-        nav.append(_btn("<", callback_data=f"adm:audit:{page-1}", icon="back"))
+        nav.append(_btn("<", callback_data=f"adm:audit:{status}:{page-1}", icon="back"))
     if page < total_pages - 1:
-        nav.append(_btn(">", callback_data=f"adm:audit:{page+1}", icon="forward"))
+        nav.append(_btn(">", callback_data=f"adm:audit:{status}:{page+1}", icon="forward"))
     if nav:
         rows.append(nav)
     rows.append([_btn(t("btn_back", lang), callback_data="adm:section:plugins", style="danger", icon="back")])
@@ -785,6 +812,7 @@ def admin_config_moderation_kb(lang: str = "ru") -> InlineKeyboardMarkup:
             _btn(t("admin_cfg_reject_templates", lang), callback_data="adm:rejtpl_cfg", icon="file"),
             _btn(t("admin_cfg_moderation_delete_review_notifications_on_decision", lang), callback_data="adm:config:moderation.delete_review_notifications_on_decision", icon="delete"),
         ],
+        [_btn(t("admin_cfg_moderation_min_supported_version", lang), callback_data="adm:config:moderation.min_supported_version", icon="updates")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 

@@ -1,15 +1,13 @@
 import json
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from aiogram import Bot
-from aiogram.types import Document, FSInputFile
+from aiogram.types import Document
 
 from plugin_parser import PluginParseError, parse_plugin_file
 from bot.helpers import download_document, get_uploads_subdir, sanitize_filename
-from bot.cache import get_config
 
 
 @dataclass

@@ -3,9 +3,41 @@ import logging
 from typing import Any, Awaitable, Callable, Optional
 
 from aiogram import BaseMiddleware
-from aiogram.types import CallbackQuery, Message
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
+from aiogram.types import CallbackQuery, ErrorEvent, Message
 
 logger = logging.getLogger(__name__)
+
+_STALE_QUERY_MARKERS = (
+    "query is too old",
+    "query id is invalid",
+    "response timeout expired",
+)
+
+
+def is_stale_query_error(exc: BaseException) -> bool:
+    return isinstance(exc, TelegramBadRequest) and any(m in str(exc).lower() for m in _STALE_QUERY_MARKERS)
+
+
+async def on_transient_error(event: ErrorEvent) -> bool:
+    exc = event.exception
+    update_id = getattr(event.update, "update_id", None)
+
+    if is_stale_query_error(exc):
+        logger.warning("event=callback.stale_query update_id=%s", update_id)
+        return True
+
+    if isinstance(exc, (TelegramNetworkError, TelegramServerError, TelegramRetryAfter)):
+        text = str(exc)
+        logger.warning(
+            "event=telegram.transient_error update_id=%s type=%s error=%s",
+            update_id,
+            type(exc).__name__,
+            text[:200],
+        )
+        return True
+
+    return False
 
 _log_queue: Optional[asyncio.Queue] = None
 _log_task: Optional[asyncio.Task] = None

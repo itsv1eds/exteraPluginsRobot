@@ -5,7 +5,7 @@ from typing import Dict, Optional
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
@@ -104,6 +104,10 @@ def _is_entities_error(exc: Exception) -> bool:
         return False
     text = str(exc).lower()
     return "can't parse entities" in text or "unsupported start tag" in text
+
+
+def _is_transient_network_error(exc: Exception) -> bool:
+    return isinstance(exc, (TelegramNetworkError, TelegramServerError, TelegramRetryAfter))
 
 
 def _link_preview_url(image: Optional[str]) -> Optional[str]:
@@ -317,6 +321,16 @@ async def answer(
                     await target.answer()
                 except Exception:
                     pass
+                return msg
+
+            if _is_transient_network_error(exc):
+                logger.warning(
+                    "event=answer.callback_edit_transient chat_id=%s message_id=%s type=%s error=%s",
+                    chat_id,
+                    getattr(msg, "message_id", None),
+                    type(exc).__name__,
+                    _short_error(exc),
+                )
                 return msg
 
             logger.exception(

@@ -1011,7 +1011,7 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
 
     pending = []
     for req in get_user_requests(user.id):
-        if req.get("status") != "pending":
+        if req.get("status") not in {"pending", "rework"}:
             continue
         if req.get("type") not in {"new", "update"}:
             continue

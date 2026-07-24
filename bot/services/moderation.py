@@ -177,6 +177,14 @@ def set_vote_reason(request_id: str, user_id: int, reason: str) -> dict | None:
     return update_request_payload(request_id, {"moderation_votes": votes})
 
 
+_FORUM_IMG_BY_TYPE = {"unban_appeal": "appeal", "update": "update", "delete": "update"}
+
+
+def _forum_image_key(entry: dict | None) -> str:
+    entry = entry or {}
+    return _FORUM_IMG_BY_TYPE.get(str(entry.get("type")), "new")
+
+
 async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | None = None) -> None:
     cfg = moderation_config()
     request_id = str(entry.get("id") or "")
@@ -189,7 +197,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     reply_markup = _forum_reply_markup(entry, request_id, yes, no)
     chat_id = cfg["chat_id"]
     topic_id = cfg["topic_id"]
-    img_key = "appeal" if entry.get("type") == "unban_appeal" else "new"
+    img_key = _forum_image_key(entry)
 
     msg = await bot.send_message(
         chat_id,
@@ -263,7 +271,7 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
                 message_id=int(text_message_id),
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=False,
-                link_preview_options=link_preview_options("new"),
+                link_preview_options=link_preview_options(_forum_image_key(entry)),
             )
         except Exception:
             pass
@@ -281,7 +289,7 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
             parse_mode=ParseMode.HTML,
             reply_markup=reply_markup,
             disable_web_page_preview=False,
-            link_preview_options=link_preview_options("new"),
+            link_preview_options=link_preview_options(_forum_image_key(entry)),
         )
         return
     except Exception:

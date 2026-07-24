@@ -4,7 +4,7 @@ import html
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 from urllib.parse import unquote
 
 from aiogram import F, Router
@@ -19,7 +19,6 @@ from aiogram.types import (
     PreCheckoutQuery,
     SuccessfulPayment,
 )
-from aiogram.exceptions import TelegramBadRequest
 
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
@@ -41,7 +40,7 @@ from bot.keyboards import (
     user_plugins_kb,
 )
 from storage import load_stenka, save_stenka
-from bot.cache import get_admins, get_admins_icons, get_admins_plugins, get_admins_super, get_categories, get_config
+from bot.cache import get_admins, get_admins_plugins, get_categories
 from bot.services.submission import (
     PluginData,
     build_submission_payload,
@@ -50,9 +49,11 @@ from bot.services.submission import (
 from bot.services.publish import build_channel_post, update_plugin
 from bot.services.admin_notifications import refresh_admin_notify_messages, send_review_notifications
 from bot.services.moderation import can_vote_in_context, send_request_to_forum, set_vote
-from bot.services.versioning import is_valid_version, normalize_version
+from bot.services.versioning import get_min_supported_version, is_valid_version, meets_min_supported, normalize_version
 from bot.services.validation import (
     check_duplicate_pending,
+    missing_draft_fields,
+    submission_fingerprint,
     validate_new_submission,
     validate_update_submission,
 )
@@ -279,7 +280,7 @@ async def _render_profile_message(message: Message, state: FSMContext, lang: str
 
     pending = []
     for req in get_user_requests(user.id):
-        if req.get("status") != "pending":
+        if req.get("status") not in {"pending", "rework"}:
             continue
         if req.get("type") not in {"new", "update"}:
             continue
@@ -366,6 +367,7 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
             except Exception:
                 include_update = False
         await state.set_state(UserFlow.choosing_submission_type)
+        await _send_submission_rules(message, lang)
         sent = await answer(message, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
         if sent:
             await remember_menu_owner(message, state, sent)
@@ -431,6 +433,26 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
     return False
 
 
+async def _send_submission_rules(target: Message | CallbackQuery, lang: str) -> None:
+    if isinstance(target, Message):
+        chat_id = target.chat.id
+        bot = target.bot
+    else:
+        if not target.message:
+            return
+        chat_id = target.message.chat.id
+        bot = target.bot
+    try:
+        await bot.send_message(
+            chat_id,
+            t("rules_before_submit", lang),
+            disable_web_page_preview=True,
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        logger.exception("event=submission.rules_send_failed chat_id=%s", chat_id)
+
+
 async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
     user = cb.from_user
     include_update = False
@@ -440,6 +462,7 @@ async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str) -
         except Exception:
             include_update = False
     await state.set_state(UserFlow.choosing_submission_type)
+    await _send_submission_rules(cb, lang)
     await answer(cb, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
 
 
@@ -1017,7 +1040,7 @@ async def on_submit_plugin(cb: CallbackQuery, state: FSMContext) -> None:
         discard_user_drafts(cb.from_user.id)
     await state.update_data(draft_request_id=None)
     await state.set_state(UserFlow.uploading_file)
-    await answer(cb, t("upload_plugin", lang), cancel_kb(lang), "plugins")
+    await answer(cb, t("upload_plugin", lang), cancel_kb(lang), "new")
     try:
         await cb.answer()
     except Exception:
@@ -1038,7 +1061,7 @@ async def on_submit_update(cb: CallbackQuery, state: FSMContext) -> None:
 
     plugins_list = [(p.get("ru", {}).get("name") or p.get("slug"), p.get("slug")) for p in user_plugins]
     await state.set_state(UserFlow.choosing_plugin_to_update)
-    await answer(cb, t("choose_plugin_to_update", lang), user_plugins_kb(plugins_list, lang), "plugins")
+    await answer(cb, t("choose_plugin_to_update", lang), user_plugins_kb(plugins_list, lang), "update")
     try:
         await cb.answer()
     except Exception:
@@ -1058,7 +1081,7 @@ async def on_choose_plugin_update(cb: CallbackQuery, state: FSMContext) -> None:
     current_version = plugin.get("ru", {}).get("version") or "?"
     await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version)
     await state.set_state(UserFlow.uploading_update_file)
-    await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "plugins")
+    await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "update")
     try:
         await cb.answer()
     except Exception:
@@ -1182,7 +1205,7 @@ async def on_profile_update(cb: CallbackQuery, state: FSMContext) -> None:
     current_version = plugin.get("ru", {}).get("version") or "?"
     await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version)
     await state.set_state(UserFlow.uploading_update_file)
-    await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "plugins")
+    await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "update")
     try:
         await cb.answer()
     except Exception:
@@ -1215,17 +1238,12 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
         return
 
     if not is_admin:
-        is_valid, error = validate_update_submission(plugin.to_dict(), old_plugin)
+        new_dict = plugin.to_dict()
+        is_valid, error = validate_update_submission(new_dict, old_plugin)
         if not is_valid:
-            if error == "version_not_higher":
-                await message.answer(t("version_not_higher", lang, current=old_version))
-            elif error == "version_lower":
-                suggested = old_version
-                if old_version and old_version.count(".") == 1:
-                    suggested = f"{old_version}0"
-                await message.answer(t("version_lower", lang, current=old_version, suggested=suggested))
-            else:
-                await message.answer(t(error, lang))
+            await message.answer(_submission_error_text(
+                error, lang, old_version=old_version, plugin_min=new_dict.get("min_version") or "",
+            ))
             return
 
     new_plugin = plugin.to_dict()
@@ -1249,7 +1267,7 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
 
     await state.update_data(plugin=merged_plugin)
     await state.set_state(UserFlow.entering_changelog)
-    await answer(message, t("enter_changelog", lang), cancel_kb(lang), "plugins")
+    await answer(message, t("enter_changelog", lang), cancel_kb(lang), "update")
 
 
 @router.message(UserFlow.uploading_update_file)
@@ -1396,7 +1414,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
                 include_file=(prefix == "pendupd"),
                 lang=lang,
             ),
-            "plugins",
+            "update",
         )
         await cb.answer()
         return
@@ -1416,7 +1434,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
                 include_file=(prefix == "pendupd"),
                 lang=lang,
             ),
-            "plugins",
+            "update",
         )
         await cb.answer()
         return
@@ -1456,7 +1474,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             pending_reply_key="update_sent",
         )
         await state.set_state(UserFlow.entering_admin_comment)
-        await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "plugins")
+        await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "update")
         await cb.answer()
         return
 
@@ -1577,15 +1595,9 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
 
     is_valid, error = validate_update_submission(new_plugin, old_plugin)
     if not is_valid:
-        if error == "version_not_higher":
-            await message.answer(t("version_not_higher", lang, current=old_version or "—"))
-        elif error == "version_lower":
-            suggested = old_version or "—"
-            if old_version and old_version.count(".") == 1:
-                suggested = f"{old_version}0"
-            await message.answer(t("version_lower", lang, current=old_version or "—", suggested=suggested))
-        else:
-            await message.answer(t(error, lang))
+        await message.answer(_submission_error_text(
+            error, lang, old_version=old_version or "", plugin_min=new_plugin.get("min_version") or "",
+        ))
         return
 
     old_path = (existing.get("file_path") or "").strip()
@@ -1656,9 +1668,12 @@ async def on_file(message: Message, state: FSMContext) -> None:
             await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
         return
 
-    is_valid, error = validate_new_submission(plugin.to_dict())
+    new_dict = plugin.to_dict()
+    is_valid, error = validate_new_submission(new_dict)
     if not is_valid:
-        await message.answer(t(error, lang))
+        await message.answer(_submission_error_text(
+            error, lang, plugin_min=new_dict.get("min_version") or "",
+        ))
         return
 
     is_duplicate, _ = check_duplicate_pending(
@@ -1674,10 +1689,12 @@ async def on_file(message: Message, state: FSMContext) -> None:
         description_raw=plugin.description,
     )
 
-    if not is_valid_version(plugin_dict.get("min_version")):
+    raw_min = plugin_dict.get("min_version")
+    if not is_valid_version(raw_min) or not meets_min_supported(raw_min):
         await state.set_state(UserFlow.entering_min_version)
+        prompt_key = "require_min_version" if not is_valid_version(raw_min) else "min_version_too_low"
         await message.answer(
-            t("require_min_version", lang),
+            t(prompt_key, lang, min=get_min_supported_version(), current=normalize_version(raw_min) or "—"),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
             reply_markup=cancel_kb(lang),
@@ -1696,12 +1713,36 @@ async def _continue_after_plugin_parsed(message: Message, state: FSMContext, lan
     await answer(message, t("choose_description_language", lang), description_lang_kb(), None)
 
 
+def _submission_error_text(error: str, lang: str, *, old_version: str = "", plugin_min: str = "") -> str:
+    if error == "min_version_too_low":
+        return t(
+            "min_version_too_low", lang,
+            min=get_min_supported_version(),
+            current=normalize_version(plugin_min) or "—",
+        )
+    if error == "version_not_higher":
+        return t("version_not_higher", lang, current=old_version or "—")
+    if error == "version_lower":
+        suggested = old_version or "—"
+        if old_version and old_version.count(".") == 1:
+            suggested = f"{old_version}0"
+        return t("version_lower", lang, current=old_version or "—", suggested=suggested)
+    return t(error, lang)
+
+
 @router.message(UserFlow.entering_min_version)
 async def on_min_version_input(message: Message, state: FSMContext) -> None:
     lang = await get_language(message, state)
     raw = (message.text or "").strip()
     if not is_valid_version(raw):
         await message.answer(t("invalid_min_version", lang), reply_markup=cancel_kb(lang))
+        return
+    if not meets_min_supported(raw):
+        await message.answer(
+            t("min_version_too_low", lang, min=get_min_supported_version(), current=normalize_version(raw)),
+            parse_mode=ParseMode.HTML,
+            reply_markup=cancel_kb(lang),
+        )
         return
 
     data = await state.get_data()
@@ -1826,7 +1867,7 @@ async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
             include_checked_on=False,
             lang=lang,
         ),
-        "plugins",
+        "new",
     )
     try:
         await cb.answer()
@@ -1932,7 +1973,7 @@ async def on_draft_not_before_value(message: Message, state: FSMContext) -> None
             include_file=(prefix == "pend"),
             lang=lang,
         ),
-        "plugins",
+        "new",
     )
     await message.answer(t("publish_not_before_saved", lang), parse_mode=ParseMode.HTML)
 
@@ -1989,7 +2030,7 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
             include_file=(prefix == "pend"),
             lang=lang,
         ),
-        "plugins",
+        "new",
     )
     try:
         await cb.answer()
@@ -2013,7 +2054,7 @@ async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
             include_checked_on=False,
             lang=lang,
         ),
-        "plugins",
+        "new",
     )
     try:
         await cb.answer()
@@ -2110,7 +2151,7 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
                     include_file=(prefix in {"pend", "pendupd"}),
                     lang=lang,
                 ),
-                "plugins",
+                "new",
             )
     else:
         await answer(
@@ -2125,7 +2166,7 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
                 include_file=(prefix in {"pend", "pendupd"}),
                 lang=lang,
             ),
-            "plugins",
+            "new",
         )
 
 
@@ -2230,12 +2271,18 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     user = cb.from_user
 
-    if cb.message:
-        await cb.message.answer(
-            t("rules_before_submit", lang),
-            disable_web_page_preview=True,
-            parse_mode=ParseMode.HTML,
-        )
+    missing = missing_draft_fields({
+        "plugin": data.get("plugin") or {},
+        "description_ru": data.get("description_ru"),
+        "description_en": data.get("description_en"),
+        "usage_ru": data.get("usage_ru"),
+        "usage_en": data.get("usage_en"),
+        "category_key": data.get("category_key"),
+    })
+    if missing:
+        labels = ", ".join(t(f"field_{f.replace('.', '_')}", lang) for f in missing)
+        await cb.answer(t("draft_missing_fields", lang, fields=labels), show_alert=True)
+        return
 
     plugin_dict = data.get("plugin", {})
     plugin = PluginData(
@@ -2270,7 +2317,7 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         pending_reply_key="submission_sent",
     )
     await state.set_state(UserFlow.entering_admin_comment)
-    await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "plugins")
+    await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "new")
     try:
         await cb.answer()
     except Exception:
@@ -2529,6 +2576,17 @@ async def on_resubmit_request(cb: CallbackQuery, state: FSMContext) -> None:
         or entry.get("payload", {}).get("user_id") != (cb.from_user.id if cb.from_user else None)
     ):
         await cb.answer(t("resubmit_expired", lang), show_alert=True)
+        return
+
+    payload = entry.get("payload") or {}
+    missing = missing_draft_fields(payload)
+    if missing:
+        await cb.answer(t("resubmit_missing_fields", lang), show_alert=True)
+        return
+
+    snapshot = str(payload.get("rework_fingerprint") or "")
+    if snapshot and submission_fingerprint(payload) == snapshot:
+        await cb.answer(t("resubmit_no_changes", lang), show_alert=True)
         return
 
     update_request_status(request_id, "pending")

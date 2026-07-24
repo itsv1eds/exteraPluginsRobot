@@ -10,6 +10,7 @@ from bot.routers import admin_flow, catalog_flow, dialog_flow, user_flow, joinly
 from bot.middlewares import (
     CallbackAckWatchdogMiddleware,
     UserActionLoggingMiddleware,
+    on_transient_error,
     start_log_worker,
     stop_log_worker,
 )
@@ -168,7 +169,9 @@ async def main() -> None:
     dp.include_router(user_flow.router)
     dp.include_router(catalog_flow.router)
     dp.include_router(joinly_flow.router)
-    
+
+    dp.errors.register(on_transient_error)
+
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 

@@ -1,9 +1,8 @@
 import re
 import logging
-import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
@@ -808,7 +807,6 @@ async def remove_user_content(user_id: int, username: str = "") -> dict:
         message_id = icon.get("channel_message", {}).get("message_id")
         try:
             if userbot and message_id:
-                from userbot.client import UserbotClient
                 ub = await get_userbot()
                 if ub:
                     entity = await ub.get_icons_publish_entity()

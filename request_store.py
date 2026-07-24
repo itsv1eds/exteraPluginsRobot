@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from storage import load_config, load_requests, save_requests
+from storage import load_requests, save_requests
 
 logger = logging.getLogger(__name__)
 _requests_cache: Optional[List[Dict[str, Any]]] = None
@@ -124,6 +124,13 @@ def get_requests(status: str = "pending", request_type: Optional[str] = None) ->
     if request_type:
         result = [req for req in result if req.get("type") == request_type]
     return result
+
+
+def get_all_requests(request_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    requests = list(_get_requests_list())
+    if request_type:
+        requests = [req for req in requests if req.get("type") == request_type]
+    return requests
 
 
 def get_user_requests(user_id: int) -> List[Dict[str, Any]]:

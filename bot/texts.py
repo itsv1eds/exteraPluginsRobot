@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Dict
 
 from bot.icons import ICONS, emoji_html
 
@@ -264,7 +264,22 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_btn_requests": {"ru": "Заявки", "en": "Requests"},
     "admin_btn_updates": {"ru": "Обновления", "en": "Updates"},
     "admin_btn_edit_plugins": {"ru": "Каталог", "en": "Catalog"},
-    "admin_btn_audit": {"ru": "Отклонённые заявки", "en": "Rejected requests"},
+    "admin_btn_audit": {"ru": "Все заявки", "en": "All requests"},
+    "admin_audit_title": {
+        "ru": "<b>📋 Все заявки</b> — {filter}  (стр. {current}/{total}, всего {count})\n\nНажмите на заявку, чтобы посмотреть детали, пересмотреть решение или удалить.",
+        "en": "<b>📋 All requests</b> — {filter}  (page {current}/{total}, total {count})\n\nTap a request to view details, change the decision or delete it.",
+    },
+    "admin_audit_empty": {
+        "ru": "<b>📋 Все заявки</b> — {filter}\n\nПусто.",
+        "en": "<b>📋 All requests</b> — {filter}\n\nEmpty.",
+    },
+    "admin_audit_status": {"ru": "<b>Статус:</b> {status}", "en": "<b>Status:</b> {status}"},
+    "admin_audit_filter_all": {"ru": "Все", "en": "All"},
+    "admin_audit_filter_published": {"ru": "✅ Приняты", "en": "✅ Published"},
+    "admin_audit_filter_rejected": {"ru": "❌ Отклонены", "en": "❌ Rejected"},
+    "admin_audit_filter_pending": {"ru": "⏳ Ожидают", "en": "⏳ Pending"},
+    "admin_audit_filter_rework": {"ru": "✏️ Доработка", "en": "✏️ Rework"},
+    "admin_audit_filter_scheduled": {"ru": "🕓 Отложены", "en": "🕓 Scheduled"},
     "admin_rejected_title": {
         "ru": "<b>❌ Отклонённые заявки</b>  (стр. {current}/{total}, всего {count})\n\nНажмите на заявку, чтобы пересмотреть решение или удалить.",
         "en": "<b>❌ Rejected requests</b>  (page {current}/{total}, total {count})\n\nTap a request to change the decision or delete it.",
@@ -317,6 +332,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_cfg_moderation_forum_chat_id": {"ru": "ID форума", "en": "Forum ID"},
     "admin_cfg_moderation_forum_topic_id": {"ru": "ID топика", "en": "Topic ID"},
     "admin_cfg_moderation_vote_threshold": {"ru": "Порог голосов", "en": "Vote threshold"},
+    "admin_cfg_moderation_min_supported_version": {"ru": "Мин. версия клиента", "en": "Min client version"},
     "admin_cfg_moderation_notification_chat_ids": {"ru": "Чаты уведомлений", "en": "Notification chats"},
     "admin_cfg_moderation_delete_review_notifications_on_decision": {
         "ru": "Удалять заявки после решения",
@@ -1157,13 +1173,37 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Version is missing",
     },
     "require_min_version": {
-        "ru": "В файле плагина не указана <b>минимальная версия</b> (<code>__min_version__</code>).\n\nВведите её вручную (например, <code>11.12.0</code>):",
-        "en": "The plugin file has no <b>minimum version</b> (<code>__min_version__</code>).\n\nPlease enter it manually (e.g. <code>11.12.0</code>):",
+        "ru": "В файле плагина не указана <b>минимальная версия</b> (<code>__min_version__</code>).\n\nВведите её вручную (например, <code>12.1.1</code>):",
+        "en": "The plugin file has no <b>minimum version</b> (<code>__min_version__</code>).\n\nPlease enter it manually (e.g. <code>12.1.1</code>):",
     },
     "invalid_min_version": {
-        "ru": "Это не похоже на версию. Введите номер версии, например <code>11.12.0</code>.",
-        "en": "That doesn't look like a version. Enter a version number, e.g. <code>11.12.0</code>.",
+        "ru": "Это не похоже на версию. Введите номер версии, например <code>12.1.1</code>.",
+        "en": "That doesn't look like a version. Enter a version number, e.g. <code>12.1.1</code>.",
     },
+    "min_version_too_low": {
+        "ru": "❗️ Минимальная версия <b>{current}</b> больше не поддерживается.\n\nМинимум — <b>{min}</b>. Укажите <code>__min_version__</code> не ниже <code>{min}</code> и отправьте файл заново.",
+        "en": "❗️ Minimum version <b>{current}</b> is no longer supported.\n\nThe lowest allowed is <b>{min}</b>. Set <code>__min_version__</code> to <code>{min}</code> or higher and upload the file again.",
+    },
+    "draft_missing_fields": {
+        "ru": "Заполните все поля перед отправкой.\n\nНе хватает: {fields}",
+        "en": "Fill in all fields before submitting.\n\nMissing: {fields}",
+    },
+    "resubmit_missing_fields": {
+        "ru": "Перед повторной отправкой заполните все поля заявки.",
+        "en": "Fill in all request fields before resubmitting.",
+    },
+    "resubmit_no_changes": {
+        "ru": "Вы ничего не изменили. Исправьте замечание — обновите файл или отредактируйте поля заявки в профиле, затем отправьте снова.",
+        "en": "Nothing has changed. Address the review note — upload a new file or edit the request fields in your profile, then resubmit.",
+    },
+    "field_description_ru": {"ru": "описание (RU)", "en": "description (RU)"},
+    "field_description_en": {"ru": "описание (EN)", "en": "description (EN)"},
+    "field_usage_ru": {"ru": "использование (RU)", "en": "usage (RU)"},
+    "field_usage_en": {"ru": "использование (EN)", "en": "usage (EN)"},
+    "field_category_key": {"ru": "категория", "en": "category"},
+    "field_plugin_name": {"ru": "название плагина", "en": "plugin name"},
+    "field_plugin_version": {"ru": "версия", "en": "version"},
+    "field_plugin_min_version": {"ru": "минимальная версия", "en": "minimum version"},
     "need_text": {
         "ru": "Введите текст",
         "en": "Enter text",

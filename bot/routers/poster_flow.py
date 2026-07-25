@@ -312,11 +312,18 @@ async def on_preview_updated_plugins(cb: CallbackQuery, state: FSMContext) -> No
     if cb.from_user.id not in get_admins():
         await cb.answer(t("admin_denied", _lang(cb)), show_alert=True)
         return
-    text = poster.build_updated_plugins_text()
-    if not text:
+    block = poster.build_updated_plugins_text()
+    if not block:
         await cb.answer(t("poster_updated_empty", _lang(cb)), show_alert=True)
         return
-    await state.update_data(poster_html=text)
+    data = await state.get_data()
+    existing = (data.get("poster_html") or "").strip()
+    title = poster.updated_block_title()
+    if title and title in existing:
+        await cb.answer(t("poster_updated_already", _lang(cb)), show_alert=True)
+        return
+    combined = f"{existing}\n\n{block}" if existing else block
+    await state.update_data(poster_html=combined)
     await _render_preview(cb, state)
     try:
         await cb.answer()

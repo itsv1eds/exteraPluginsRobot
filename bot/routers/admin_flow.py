@@ -106,6 +106,7 @@ from bot.services.moderation import (
     moderation_config,
     rejection_reasons,
     send_request_to_forum,
+    previous_rounds_text,
     vote_counts,
     vote_summary,
 )
@@ -324,7 +325,12 @@ def _review_meta_block(entry: dict) -> str:
                 "<b>Последняя ошибка публикации"
                 f"{suffix}:</b>\n<blockquote expandable>{html.escape(last_error)}</blockquote>"
             )
+    if isinstance(payload, dict) and payload.get("resubmitted_after_rework"):
+        parts.append("♻️ <b>Отправлено после доработки</b> (плагин уже был на модерации)")
     parts.append(vote_summary(entry))
+    prev = previous_rounds_text(entry)
+    if prev:
+        parts.append(prev)
     return "\n\n".join(parts)
 
 

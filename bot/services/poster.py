@@ -26,12 +26,17 @@ def normalize_custom_emoji(html: str) -> str:
     return _TG_EMOJI_ANCHOR_RE.sub(r'<tg-emoji emoji-id="\1">\2</tg-emoji>', html)
 
 
+def updated_block_title() -> str:
+    from bot.texts import t
+    return t("admin_updated_block_title", "ru")
+
+
 def build_updated_plugins_text(limit: int = 30) -> str:
     import html as _html
     from storage import load_updated
 
     items = load_updated().get("items") or []
-    lines = ["<b>Обновлённые плагины</b>", ""]
+    lines = [updated_block_title()]
     for item in items[:limit]:
         if not isinstance(item, dict):
             continue
@@ -43,7 +48,7 @@ def build_updated_plugins_text(limit: int = 30) -> str:
             lines.append(f'• <a href="{_html.escape(link, quote=True)}">{_html.escape(name)}</a>')
         else:
             lines.append(f"• {_html.escape(name)}")
-    return "\n".join(lines) if len(lines) > 2 else ""
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def _now() -> datetime:
@@ -318,6 +323,12 @@ async def _send_content_for_delivery(bot, chat_id: int, content: Dict[str, Any])
     return message
 
 
+def _content_has_updated_block(content: Dict[str, Any]) -> bool:
+    text = str((content or {}).get("html_text") or "")
+    title = updated_block_title()
+    return bool(title and title in text)
+
+
 async def deliver_post(bot, post: Dict[str, Any]) -> bool:
     post_id = post.get("id")
     content = post.get("content") or {}
@@ -338,6 +349,12 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
         _update_post(post_id, status="sent", sent_message_id=getattr(message, "message_id", None),
                      error=None, **extra)
         _schedule_repeat(post, content)
+        if _content_has_updated_block(content):
+            try:
+                from bot.services.publish import clear_updated_plugins
+                clear_updated_plugins()
+            except Exception:
+                logger.exception("poster: clear_updated_plugins failed post=%s", post_id)
         return True
     except Exception as exc:
         logger.exception("poster: delivery failed post=%s chat=%s", post_id, chat_id)

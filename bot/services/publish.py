@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import FSInputFile
 
 from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html
+from bot.helpers import sanitize_filename
 from storage import flush_all, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
 from request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
@@ -36,6 +37,7 @@ async def _send_channel_post(
     channel_id: int,
     post_text: str,
     file_path: Optional[str],
+    download_name: Optional[str] = None,
 ):
     has_file = bool(file_path and Path(file_path).exists())
     if not has_file:
@@ -44,7 +46,7 @@ async def _send_channel_post(
             disable_web_page_preview=True,
         )
 
-    document = FSInputFile(file_path)
+    document = FSInputFile(file_path, filename=download_name) if download_name else FSInputFile(file_path)
     try:
         return await bot.send_document(
             channel_id, document, caption=post_text,
@@ -54,7 +56,7 @@ async def _send_channel_post(
         if "caption is too long" not in str(exc).lower():
             raise
         logger.warning("event=publish.caption_overflow channel_id=%s len=%s", channel_id, len(post_text))
-        message = await bot.send_document(channel_id, FSInputFile(file_path))
+        message = await bot.send_document(channel_id, FSInputFile(file_path, filename=download_name) if download_name else FSInputFile(file_path))
         try:
             await bot.send_message(
                 channel_id, post_text, parse_mode=ParseMode.HTML,
@@ -208,6 +210,7 @@ async def publish_plugin(entry: Dict[str, Any], bot: Bot) -> Dict[str, Any]:
     post_text = build_channel_post(entry)
     file_path = plugin.get("file_path")
     slug = make_slug(plugin.get("name") or plugin.get("id"))
+    download_name = f"{sanitize_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'))}.plugin"
 
     try:
         me = await bot.me()
@@ -218,7 +221,7 @@ async def publish_plugin(entry: Dict[str, Any], bot: Bot) -> Dict[str, Any]:
     if links_line:
         post_text = f"{post_text}\n\n{links_line}"
 
-    message = await _send_channel_post(bot, channel_id, post_text, file_path)
+    message = await _send_channel_post(bot, channel_id, post_text, file_path, download_name)
 
     update_request_status(entry.get("id"), "published")
 

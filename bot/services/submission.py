@@ -2,12 +2,17 @@ import json
 import zipfile
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 from aiogram import Bot
 from aiogram.types import Document
 
 from plugin_parser import PluginParseError, parse_plugin_file
 from bot.helpers import download_document, get_uploads_subdir, sanitize_filename
+
+
+def _unique_upload_name(base_id: str, ext: str) -> str:
+    return f"{sanitize_filename(base_id)}-{uuid4().hex[:8]}.{ext}"
 
 
 @dataclass
@@ -83,13 +88,13 @@ async def process_plugin_file(bot: Bot, document: Document) -> PluginData:
         temp_path.unlink(missing_ok=True)
         raise ValueError(f"parse_error:{e}") from e
     
-    final_name = f"{sanitize_filename(meta.id)}.plugin"
+    final_name = _unique_upload_name(meta.id, "plugin")
     final_path = uploads / final_name
-    
+
     if temp_path != final_path:
         final_path.unlink(missing_ok=True)
         temp_path.rename(final_path)
-    
+
     return PluginData(
         id=meta.id,
         name=meta.name,
@@ -142,7 +147,7 @@ async def process_icon_file(bot: Bot, document: Document) -> IconPackData:
     else:
         count = int(metadata.get("count") or 0)
 
-    final_name = f"{sanitize_filename(pack_id)}.icons"
+    final_name = _unique_upload_name(str(pack_id), "icons")
     final_path = uploads / final_name
 
     if temp_path != final_path:

@@ -2590,7 +2590,8 @@ async def on_resubmit_request(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     update_request_status(request_id, "pending")
-    update_request_payload(request_id, {"moderation_votes": {}})
+    from bot.services.moderation import archive_votes_for_rework
+    archive_votes_for_rework(request_id)
     entry = get_request_by_id(request_id)
     logger.info(
         "event=submission.resubmit request_id=%s user_id=%s",

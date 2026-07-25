@@ -167,6 +167,7 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "poster_btn_new_post": {"ru": "Новый пост", "en": "New post"},
     "poster_btn_updated_plugins": {"ru": "Пост: обновлённые плагины", "en": "Post: updated plugins"},
     "poster_updated_empty": {"ru": "Список обновлённых плагинов пуст.", "en": "The updated-plugins list is empty."},
+    "poster_updated_already": {"ru": "Блок обновлённых плагинов уже добавлен в пост.", "en": "The updated-plugins block is already in the post."},
     "poster_btn_remove_channel": {"ru": "Отвязать канал", "en": "Remove channel"},
     "poster_btn_skip": {"ru": "⏭ Пропустить", "en": "⏭ Skip"},
     "poster_time_1h": {"ru": "+1ч", "en": "+1h"},
@@ -584,8 +585,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Published!\n\n{link}",
     },
     "admin_updated_block_title": {
-        "ru": "<b>Обновленные плагины:</b>",
-        "en": "<b>Updated plugins:</b>",
+        "ru": "<b>Обновлённые плагины</b> (если не пользуетесь @exteraPluginsRobot):",
+        "en": "<b>Updated plugins</b> (if you don't use @exteraPluginsRobot):",
     },
     "admin_broadcast_done": {
         "ru": "Рассылка завершена. Отправлено: {sent}, ошибок: {failed}",

@@ -83,14 +83,13 @@ def rejection_reasons(entry: dict | None) -> list[str]:
     return out
 
 
-def vote_summary(entry: dict | None) -> str:
-    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
-    votes = payload.get("moderation_votes") if isinstance(payload, dict) else {}
-    yes, no, total = vote_counts(entry)
+def _format_votes_block(votes: dict, header_label: str = "Голоса") -> str:
     if not isinstance(votes, dict) or not votes:
-        return "<b>Голоса:</b> 0"
-
-    header = f"<b>Голоса:</b> {total}  |  За: {yes}  |  Отказано: {no}"
+        return f"<b>{header_label}:</b> 0"
+    yes = sum(1 for v in votes.values() if isinstance(v, dict) and v.get("vote") == "yes")
+    no = sum(1 for v in votes.values() if isinstance(v, dict) and v.get("vote") == "no")
+    total = yes + no
+    header = f"<b>{header_label}:</b> {total}  |  За: {yes}  |  Отказано: {no}"
     details: list[str] = []
     for item in votes.values():
         if not isinstance(item, dict):
@@ -101,12 +100,57 @@ def vote_summary(entry: dict | None) -> str:
         reason = str(item.get("reason") or "").strip()
         reason_text = strip_blockquote_tags(telegram_html(reason)) if reason else "без причины"
         details.append(f"• <b>{mark}</b> — {code_html(display)}:\n{reason_text}")
-
     if not details:
         return header
     if total > 3:
         return f"{header}\n{quote_html(chr(10).join(details), expandable=True)}"
     return "\n".join([header, *details])
+
+
+def vote_summary(entry: dict | None) -> str:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    votes = payload.get("moderation_votes") if isinstance(payload, dict) else {}
+    return _format_votes_block(votes if isinstance(votes, dict) else {})
+
+
+def previous_rounds_text(entry: dict | None) -> str:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    rounds = payload.get("previous_vote_rounds") if isinstance(payload, dict) else None
+    if not isinstance(rounds, list) or not rounds:
+        return ""
+    blocks: list[str] = []
+    for rnd in rounds:
+        if not isinstance(rnd, dict):
+            continue
+        votes = rnd.get("votes")
+        if not isinstance(votes, dict) or not votes:
+            continue
+        n = rnd.get("round") or (len(blocks) + 1)
+        blocks.append(_format_votes_block(votes, header_label=f"Раунд {n} (до доработки)"))
+    if not blocks:
+        return ""
+    return "🗳 <b>Прошлое голосование:</b>\n" + "\n\n".join(blocks)
+
+
+def archive_votes_for_rework(request_id: str) -> dict | None:
+    entry = get_request_by_id(request_id)
+    if not entry:
+        return None
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    votes = payload.get("moderation_votes")
+    rounds = payload.get("previous_vote_rounds")
+    rounds = list(rounds) if isinstance(rounds, list) else []
+    if isinstance(votes, dict) and votes:
+        rounds.append({
+            "round": len(rounds) + 1,
+            "votes": votes,
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+        })
+    return update_request_payload(request_id, {
+        "moderation_votes": {},
+        "previous_vote_rounds": rounds,
+        "resubmitted_after_rework": True,
+    })
 
 
 def forum_text_with_votes(entry: dict | None) -> str:
@@ -116,7 +160,15 @@ def forum_text_with_votes(entry: dict | None) -> str:
         base = str(payload.get("moderation_forum_text") or "").strip()
     if not base:
         base = f"<b>Заявка:</b> {telegram_html(request_title(entry))}"
-    return f"{base}\n\n{vote_summary(entry)}"
+
+    parts = [base]
+    if isinstance(payload, dict) and payload.get("resubmitted_after_rework"):
+        parts.append("♻️ <b>Отправлено после доработки</b> (плагин уже был на модерации)")
+    parts.append(vote_summary(entry))
+    prev = previous_rounds_text(entry)
+    if prev:
+        parts.append(prev)
+    return "\n\n".join(parts)
 
 
 def request_title(entry: dict | None) -> str:

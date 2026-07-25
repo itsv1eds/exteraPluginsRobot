@@ -229,7 +229,7 @@ def set_vote_reason(request_id: str, user_id: int, reason: str) -> dict | None:
     return update_request_payload(request_id, {"moderation_votes": votes})
 
 
-_FORUM_IMG_BY_TYPE = {"unban_appeal": "appeal", "update": "update", "delete": "update"}
+_FORUM_IMG_BY_TYPE = {"unban_appeal": "appeal", "update": "update", "delete": "delete"}
 
 
 def _forum_image_key(entry: dict | None) -> str:

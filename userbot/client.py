@@ -416,6 +416,7 @@ class UserbotClient:
         self,
         text: str,
         file_path: Optional[str] = None,
+        download_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_icons_publish_entity()
         parsed_text, entities = self._format_text_for_telegram(text)
@@ -426,6 +427,7 @@ class UserbotClient:
                 file=file_path,
                 caption=parsed_text,
                 formatting_entities=entities,
+                attributes=[DocumentAttributeFilename(download_name)] if download_name else None,
             )
         else:
             message = await self.client.send_message(
@@ -448,13 +450,14 @@ class UserbotClient:
         message_id: int,
         text: str,
         file_path: Optional[str] = None,
+        download_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
         parsed_text, entities = self._format_text_for_telegram(text)
 
         try:
             if file_path and Path(file_path).exists():
-                file_name = Path(file_path).name
+                file_name = download_name or Path(file_path).name
                 attributes = [DocumentAttributeFilename(file_name)]
                 await self.client.edit_message(
                     entity,

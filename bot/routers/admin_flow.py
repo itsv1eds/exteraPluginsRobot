@@ -4860,7 +4860,7 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
         kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish)
 
     text = f"{text}\n\n{_review_meta_block(entry)}"
-    review_img = "update" if entry.get("type") == "update" else "new"
+    review_img = {"update": "update", "delete": "delete"}.get(entry.get("type"), "new")
     review_msg = await answer(cb, text, kb, review_img)
 
     if file_path and Path(file_path).exists() and cb.message:

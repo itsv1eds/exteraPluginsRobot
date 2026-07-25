@@ -32,6 +32,7 @@ _LINK_PREVIEW_IMAGE_URLS = {
     "new": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/new.png?raw=true",
     "update": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/update.png?raw=true",
     "appeal": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/appeal.png?raw=true",
+    "delete": "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img/delete.png?raw=true",
 }
 
 

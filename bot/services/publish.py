@@ -257,8 +257,9 @@ async def publish_icon(entry: Dict[str, Any]) -> Dict[str, Any]:
 
     post_text = build_icon_channel_post(entry)
     file_path = icon.get("file_path")
+    download_name = f"{sanitize_filename(str(icon.get('id') or icon.get('name') or 'icons'))}.icons"
 
-    result = await userbot.publish_icon(post_text, file_path)
+    result = await userbot.publish_icon(post_text, file_path, download_name)
 
     update_request_status(entry.get("id"), "published")
 
@@ -334,8 +335,9 @@ async def update_plugin(entry: Dict[str, Any], old_catalog_entry: Dict[str, Any]
     if links_line and "Открыть в боте" not in post_text:
         post_text = f"{post_text}\n\n{links_line}"
 
-    result = await userbot.update_message(old_message_id, post_text, file_path)
-    
+    download_name = f"{sanitize_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'))}.plugin"
+    result = await userbot.update_message(old_message_id, post_text, file_path, download_name)
+
     update_request_status(entry.get("id"), "published")
     
     update_catalog_entry(

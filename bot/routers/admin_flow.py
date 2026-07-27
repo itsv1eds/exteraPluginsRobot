@@ -165,11 +165,15 @@ def _plugin_display_name(plugin_entry: Dict[str, Any]) -> str:
     return str(plugin_entry.get("slug") or "—")
 
 
-async def notify_plugin_authors_removed(bot, plugin_entry: Dict[str, Any]) -> int:
+async def notify_plugin_authors_removed(bot, plugin_entry: Dict[str, Any], reason: str = "") -> int:
     if not isinstance(plugin_entry, dict):
         return 0
 
+    from bot.keyboards import author_plugin_removed_kb
+
     name = plain_html(_plugin_display_name(plugin_entry))
+    slug = str(plugin_entry.get("slug") or "").strip()
+    reason = strip_blockquote_tags(telegram_html(str(reason or ""))).strip()
     submitters = plugin_entry.get("submitters") or []
     seen: set[int] = set()
     notified = 0
@@ -185,11 +189,16 @@ async def notify_plugin_authors_removed(bot, plugin_entry: Dict[str, Any]) -> in
             continue
         seen.add(uid)
         try:
+            author_lang = get_lang(uid)
+            body = t("notify_plugin_removed_author", author_lang, name=name)
+            if reason:
+                body += t("notify_plugin_removed_reason", author_lang, reason=reason)
             await bot.send_message(
                 uid,
-                t("notify_plugin_removed_author", get_lang(uid), name=name),
+                body,
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
+                reply_markup=author_plugin_removed_kb(slug, author_lang) if slug else None,
             )
             notified += 1
         except Exception:
@@ -4740,7 +4749,7 @@ async def on_admin_catalog_delete_confirm(cb: CallbackQuery, state: FSMContext) 
         return
 
     try:
-        await notify_plugin_authors_removed(cb.bot, plugin_entry)
+        await notify_plugin_authors_removed(cb.bot, plugin_entry, str(payload.get("admin_comment") or ""))
     except Exception:
         logger.exception("event=delete.notify_authors_failed slug=%s", slug)
 
@@ -5909,7 +5918,8 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
                 raise ValueError("Failed to remove plugin")
             update_request_status(request_id, "deleted")
             try:
-                await notify_plugin_authors_removed(cb.bot, plugin_entry)
+                await notify_plugin_authors_removed(
+                    cb.bot, plugin_entry, str(payload.get("admin_comment") or ""))
             except Exception:
                 logger.exception("event=delete.notify_authors_failed slug=%s", delete_slug)
             result = {"link": plugin_entry.get("channel_message", {}).get("link", "")}
@@ -6103,6 +6113,7 @@ async def _finalize_rejection(
     request_id: str,
     comment: str,
     show_votes: bool,
+    media: list | None = None,
 ) -> None:
     update_request_status(request_id, "rejected", comment=comment)
     actor_user = actor_target.from_user
@@ -6162,6 +6173,10 @@ async def _finalize_rejection(
             disable_web_page_preview=True,
             reply_markup=author_rejected_kb(str(request_id), can_appeal=not was_appeal, lang=author_lang),
         )
+        if media:
+            from bot.services.moderation import send_media_group
+
+            await send_media_group(bot, int(user_id), media)
     except Exception:
         logger.exception(
             "event=reject.notify_author_failed user_id=%s request_id=%s",
@@ -6169,10 +6184,37 @@ async def _finalize_rejection(
         )
 
 
+REJECT_MEDIA_LIMIT = 10
+
+
+def _reject_media_of(message: Message) -> dict | None:
+    if message.photo:
+        return {"type": "photo", "file_id": message.photo[-1].file_id}
+    if message.video:
+        return {"type": "video", "file_id": message.video.file_id}
+    return None
+
+
 @router.message(AdminFlow.entering_reject_comment)
 async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
-    comment = telegram_html(message.html_text or message.text or "")
+    data = await state.get_data()
+
+    item = _reject_media_of(message)
+    if item:
+        media = list(data.get("reject_media") or [])
+        if len(media) >= REJECT_MEDIA_LIMIT:
+            await message.answer(_tr(message, "comment_media_limit", max=REJECT_MEDIA_LIMIT))
+            return
+        media.append(item)
+        await state.update_data(reject_media=media)
+        caption = telegram_html(message.html_text or message.caption or "")
+        if caption:
+            await state.update_data(reject_comment_draft=caption)
+        await message.answer(_tr(message, "admin_reject_media_added", count=len(media), max=REJECT_MEDIA_LIMIT))
+        return
+
+    comment = telegram_html(message.html_text or message.text or "") or str(data.get("reject_comment_draft") or "")
     if not comment:
         await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
         return
@@ -6194,6 +6236,7 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
         await _finalize_rejection(
             message.bot, message, entry, request_id, comment,
             show_votes=bool(data.get("reject_show_votes")),
+            media=data.get("reject_media") or [],
         )
 
     await state.clear()

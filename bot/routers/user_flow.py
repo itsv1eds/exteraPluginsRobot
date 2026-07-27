@@ -1183,7 +1183,9 @@ async def on_profile_delete(cb: CallbackQuery, state: FSMContext) -> None:
         pending_reply_key="delete_sent",
     )
     await state.set_state(UserFlow.entering_admin_comment)
-    await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "profile")
+    await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=True)
+    await answer(cb, t("ask_delete_reason", lang, max=COMMENT_MEDIA_LIMIT),
+                 comment_skip_kb(lang, required=True), "delete")
     try:
         await cb.answer()
     except Exception:
@@ -1474,7 +1476,8 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             pending_reply_key="update_sent",
         )
         await state.set_state(UserFlow.entering_admin_comment)
-        await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "update")
+        await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=False)
+        await answer(cb, t("ask_admin_comment", lang, max=COMMENT_MEDIA_LIMIT), comment_skip_kb(lang), "update")
         await cb.answer()
         return
 
@@ -2317,32 +2320,119 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         pending_reply_key="submission_sent",
     )
     await state.set_state(UserFlow.entering_admin_comment)
-    await answer(cb, t("ask_admin_comment", lang), comment_skip_kb(lang), "new")
+    await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=False)
+    await answer(cb, t("ask_admin_comment", lang, max=COMMENT_MEDIA_LIMIT), comment_skip_kb(lang), "new")
     try:
         await cb.answer()
     except Exception:
         pass
 
 
+COMMENT_MEDIA_LIMIT = 10
+
+
+def _comment_media_of(message: Message) -> dict | None:
+    if message.photo:
+        return {"type": "photo", "file_id": message.photo[-1].file_id}
+    if message.video:
+        return {"type": "video", "file_id": message.video.file_id}
+    return None
+
+
+async def _render_comment_state(target, state: FSMContext, lang: str) -> None:
+    data = await state.get_data()
+    comment = str(data.get("pending_comment") or "").strip()
+    media = data.get("pending_comment_media") or []
+    required = bool(data.get("comment_required"))
+    has_content = bool(comment or media)
+    if required and not comment:
+        has_content = False
+    if not has_content:
+        text = t("ask_delete_reason" if required else "ask_admin_comment", lang, max=COMMENT_MEDIA_LIMIT)
+    else:
+        text = t(
+            "comment_state", lang,
+            comment=strip_blockquote_tags(comment) or t("comment_no_text", lang),
+            count=len(media), max=COMMENT_MEDIA_LIMIT,
+        )
+    await answer(target, text, comment_skip_kb(lang, has_content, len(media), required),
+                 "delete" if required else "new")
+
+
 @router.callback_query(UserFlow.entering_admin_comment, F.data == "comment:skip")
 async def on_admin_comment_skip(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
+    await state.update_data(pending_comment=None, pending_comment_media=[])
     await _finalize_submission(cb, state, comment=None)
+
+
+@router.callback_query(UserFlow.entering_admin_comment, F.data == "comment:reset")
+async def on_admin_comment_reset(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
+    lang = await get_language(cb, state)
+    await state.update_data(pending_comment=None, pending_comment_media=[])
+    await _render_comment_state(cb, state, lang)
+    try:
+        await cb.answer(t("comment_cleared", lang))
+    except Exception:
+        pass
+
+
+@router.callback_query(UserFlow.entering_admin_comment, F.data == "comment:send")
+async def on_admin_comment_send(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
+    data = await state.get_data()
+    comment = str(data.get("pending_comment") or "").strip()
+    if bool(data.get("comment_required")) and not comment:
+        await cb.answer(t("delete_reason_required", await get_language(cb, state)), show_alert=True)
+        return
+    await _finalize_submission(
+        cb, state,
+        comment=comment or None,
+        media=data.get("pending_comment_media") or [],
+    )
 
 
 @router.message(UserFlow.entering_admin_comment)
 async def on_admin_comment(message: Message, state: FSMContext) -> None:
     if not await _ensure_not_banned(message, state):
         return
+    lang = await get_language(message, state)
+    data = await state.get_data()
+    media = list(data.get("pending_comment_media") or [])
+
+    item = _comment_media_of(message)
+    if item:
+        if len(media) >= COMMENT_MEDIA_LIMIT:
+            await message.answer(t("comment_media_limit", lang, max=COMMENT_MEDIA_LIMIT))
+            return
+        media.append(item)
+        await state.update_data(pending_comment_media=media)
+        caption = extract_html_text(message).strip()
+        if caption:
+            await state.update_data(pending_comment=caption)
+        await _render_comment_state(message, state, lang)
+        return
+
+    if message.document or message.audio or message.animation or message.voice:
+        await message.answer(t("comment_media_unsupported", lang))
+        return
+
     text = extract_html_text(message).strip()
-    await _finalize_submission(message, state, comment=text or None)
+    if not text:
+        return
+    await state.update_data(pending_comment=text)
+    await _render_comment_state(message, state, lang)
 
 
 async def _finalize_submission(
     target: Message | CallbackQuery,
     state: FSMContext,
     comment: str | None,
+    media: list | None = None,
 ) -> None:
     if not await _ensure_not_banned(target, state):
         return
@@ -2354,6 +2444,8 @@ async def _finalize_submission(
 
     if comment:
         payload["admin_comment"] = comment
+    if media:
+        payload["comment_media"] = list(media)[:COMMENT_MEDIA_LIMIT]
 
     if request_type == "update":
         user_id = payload.get("user_id")

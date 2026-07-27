@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -11,6 +13,8 @@ from bot.cache import get_admins, get_config
 from bot.formatting import code_html, quote_html, strip_blockquote_tags, telegram_html
 from bot.helpers import link_preview_options
 from bot.keyboards import moderation_appeal_kb, moderation_vote_kb
+
+logger = logging.getLogger(__name__)
 
 
 def _forum_reply_markup(entry: dict | None, request_id: str, yes: int, no: int):
@@ -339,6 +343,36 @@ def _forum_image_key(entry: dict | None) -> str:
     return _FORUM_IMG_BY_TYPE.get(str(entry.get("type")), "new")
 
 
+async def send_media_group(bot, chat_id: int, media: list, *, topic_id: int | None = None,
+                           reply_to: int | None = None, caption: str | None = None) -> list:
+    """Отправляет до 10 фото/видео альбомом. Возвращает id отправленных сообщений."""
+    from aiogram.types import InputMediaPhoto, InputMediaVideo
+
+    items = [m for m in (media or []) if isinstance(m, dict) and m.get("file_id")][:10]
+    if not items:
+        return []
+    group = []
+    for idx, item in enumerate(items):
+        cls = InputMediaVideo if item.get("type") == "video" else InputMediaPhoto
+        kwargs = {"media": item["file_id"]}
+        if idx == 0 and caption:
+            kwargs["caption"] = caption[:1024]
+            kwargs["parse_mode"] = ParseMode.HTML
+        group.append(cls(**kwargs))
+    kw = {}
+    if topic_id:
+        kw["message_thread_id"] = topic_id
+    if reply_to:
+        kw["reply_to_message_id"] = reply_to
+        kw["allow_sending_without_reply"] = True
+    try:
+        sent = await bot.send_media_group(chat_id, group, **kw)
+        return [int(m.message_id) for m in sent]
+    except Exception:
+        logger.exception("send_media_group failed chat_id=%s count=%s", chat_id, len(group))
+        return []
+
+
 async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | None = None) -> None:
     cfg = moderation_config()
     request_id = str(entry.get("id") or "")
@@ -372,6 +406,15 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
             allow_sending_without_reply=True,
         )
 
+    payload_now = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    comment_media = payload_now.get("comment_media") if isinstance(payload_now, dict) else None
+    media_ids = []
+    if comment_media and msg:
+        media_ids = await send_media_group(
+            bot, chat_id, comment_media,
+            topic_id=topic_id, reply_to=msg.message_id,
+        )
+
     if msg:
         actual_topic_id = int(getattr(msg, "message_thread_id", None) or topic_id)
         info = {
@@ -380,6 +423,8 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
             "message_id": int(msg.message_id),
         }
         payload_update: dict[str, object] = {"moderation_forum_message": info}
+        if media_ids:
+            info["comment_media_message_ids"] = media_ids
         if file_msg:
             info["file_message_id"] = int(file_msg.message_id)
             document = getattr(file_msg, "document", None)

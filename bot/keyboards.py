@@ -237,10 +237,22 @@ def icon_draft_edit_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def comment_skip_kb(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        _btn(t("btn_skip", lang), callback_data="comment:skip", icon="forward"),
-    ]])
+def comment_skip_kb(lang: str, has_content: bool = False, media_count: int = 0,
+                    required: bool = False) -> InlineKeyboardMarkup:
+    rows = []
+    if has_content:
+        rows.append([_btn(t("btn_comment_send", lang, count=media_count),
+                          callback_data="comment:send", icon="send", style="success")])
+        rows.append([_btn(t("btn_comment_reset", lang), callback_data="comment:reset", icon="delete", style="danger")])
+    if not required:
+        rows.append([_btn(t("btn_skip", lang), callback_data="comment:skip", icon="forward")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def author_plugin_removed_kb(slug: str, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(t("kb_contact_moderation", lang), callback_data=f"usr:modremoved:{slug}", icon="support")],
+    ])
 
 
 def draft_edit_kb(

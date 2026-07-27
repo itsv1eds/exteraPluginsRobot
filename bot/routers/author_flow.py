@@ -60,13 +60,14 @@ async def on_contact_moderation(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_moderation_contact_text(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     request_id = str(data.get("modcontact_request_id") or "")
+    slug = str(data.get("modcontact_slug") or "")
     user = message.from_user
-    if not request_id or not user:
+    if not user or (not request_id and not slug):
         await state.set_state(UserFlow.idle)
         return
 
-    entry = get_request_by_id(request_id)
-    if not isinstance(entry, dict):
+    entry = get_request_by_id(request_id) if request_id else None
+    if request_id and not isinstance(entry, dict):
         await state.set_state(UserFlow.idle)
         return
 
@@ -79,7 +80,7 @@ async def on_moderation_contact_text(message: Message, state: FSMContext) -> Non
     cfg = moderation_config()
     body = t(
         "modcontact_forum", "ru",
-        name=plain_html(request_title(entry)),
+        name=plain_html(request_title(entry) if entry else slug),
         sender=user_mention(user.id, user.username),
         text=strip_blockquote_tags(text),
     )
@@ -98,17 +99,37 @@ async def on_moderation_contact_text(message: Message, state: FSMContext) -> Non
 
     register_dialog_message(
         int(cfg["chat_id"]), int(delivered.message_id),
-        peer_id=int(user.id), request_id=str(request_id),
+        peer_id=int(user.id), request_id=str(request_id or slug),
         author_id=int(user.id), admin_id=0,
     )
     add_audit_event(
         "moderation.author_question",
         actor_id=int(user.id),
         actor=user.username or user.full_name or "",
-        request_id=str(request_id),
+        request_id=str(request_id or slug),
     )
     await message.answer(t("modcontact_sent", lang), disable_web_page_preview=True)
     await state.set_state(UserFlow.idle)
+
+
+@router.callback_query(F.data.startswith("usr:modremoved:"))
+async def on_contact_moderation_removed(cb: CallbackQuery, state: FSMContext) -> None:
+    slug = cb.data.split(":", 2)[2]
+    lang = get_lang(cb.from_user.id if cb.from_user else None)
+    await state.set_state(UserFlow.entering_moderation_contact)
+    await state.update_data(modcontact_request_id="", modcontact_slug=slug)
+    try:
+        await cb.message.answer(
+            t("modremoved_prompt", lang, name=plain_html(slug)),
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        pass
+    try:
+        await cb.answer()
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("usr:appeal:"))

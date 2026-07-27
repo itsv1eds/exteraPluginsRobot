@@ -676,8 +676,45 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_user_info_reason": {"ru": "Причина", "en": "Reason"},
 
     "ask_admin_comment": {
-        "ru": "Добавьте комментарий для администратора (необязательно).\n\nМожно пропустить.",
-        "en": "Add a comment for the admin (optional).\n\nYou can skip.",
+        "ru": "Опишите идею для модерации (необязательно).\n\nМожно приложить до {max} фото или видео — например, как плагин выглядит.\nКогда закончите, нажмите «Отправить».",
+        "en": "Describe your idea for the moderators (optional).\n\nYou can attach up to {max} photos or videos — for example, how the plugin looks.\nWhen you're done, tap \"Send\".",
+    },
+    "btn_comment_send": {"ru": "Отправить заявку", "en": "Send request"},
+    "ask_delete_reason": {
+        "ru": "🗑 <b>Удаление плагина</b>\n\nОбязательно опишите причину удаления — модерация должна понимать, почему плагин снимается.\nМожно приложить до {max} фото или видео.",
+        "en": "🗑 <b>Plugin removal</b>\n\nYou must describe why the plugin is being removed — moderators need to understand the reason.\nYou can attach up to {max} photos or videos.",
+    },
+    "delete_reason_required": {
+        "ru": "Без причины удалить нельзя. Опишите, почему плагин снимается.",
+        "en": "A reason is required. Describe why the plugin is being removed.",
+    },
+    "btn_comment_reset": {"ru": "Очистить", "en": "Clear"},
+    "comment_state": {
+        "ru": "Опишите идею для модерации (необязательно).\n\n<b>Комментарий:</b> {comment}\n<b>Медиа:</b> {count}/{max}\n\nМожно добавить ещё или нажать «Отправить».",
+        "en": "Describe your idea for the moderators (optional).\n\n<b>Comment:</b> {comment}\n<b>Media:</b> {count}/{max}\n\nAdd more or tap \"Send\".",
+    },
+    "comment_media_limit": {"ru": "Максимум {max} файлов", "en": "Maximum {max} files"},
+    "admin_reject_media_added": {
+        "ru": "📎 Медиа добавлено: {count}/{max}\n\nОтправьте текст причины, чтобы завершить отклонение.",
+        "en": "📎 Media attached: {count}/{max}\n\nSend the reason text to complete the rejection.",
+    },
+    "comment_media_unsupported": {
+        "ru": "Можно приложить только фото или видео.",
+        "en": "You can only attach photos or videos.",
+    },
+    "comment_no_text": {"ru": "— пусто —", "en": "— empty —"},
+    "comment_cleared": {"ru": "Очищено", "en": "Cleared"},
+    "notify_plugin_removed_reason": {
+        "ru": "\n\n<b>Причина:</b>\n<blockquote expandable>{reason}</blockquote>",
+        "en": "\n\n<b>Reason:</b>\n<blockquote expandable>{reason}</blockquote>",
+    },
+    "modremoved_prompt": {
+        "ru": "Напишите вопрос модерации по удалённому плагину «{name}».\nОтветит один из модераторов — вы увидите, кто именно.",
+        "en": "Write your question about the removed plugin «{name}».\nA moderator will reply — you'll see who exactly.",
+    },
+    "admin_request_comment_media": {
+        "ru": "\n<b>Приложено медиа:</b> {count}",
+        "en": "\n<b>Attached media:</b> {count}",
     },
 
     "btn_add": {

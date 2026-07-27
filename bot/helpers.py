@@ -18,6 +18,7 @@ from aiogram.types import (
 from bot.cache import get_admins, get_categories, get_config
 from bot.context import get_lang
 from bot.formatting import telegram_html
+from bot.texts import t
 from storage import DATA_DIR
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -378,7 +379,7 @@ async def answer(
                         link_preview_options=preview_options,
                         **thread_kwargs,
                     )
-                    await target.answer("Текст слишком длинный для редактирования, открыл новым сообщением.", show_alert=True)
+                    await target.answer(t("err_text_too_long_resent", get_lang(getattr(target.from_user, "id", None))), show_alert=True)
                     return sent
                 except Exception as send_exc:
                     logger.exception(
@@ -388,7 +389,7 @@ async def answer(
                         _short_error(send_exc, 500),
                     )
             try:
-                await target.answer(f"Не удалось обновить сообщение: {_short_error(exc)}", show_alert=True)
+                await target.answer(t("err_update_message_failed", get_lang(getattr(target.from_user, "id", None)), error=_short_error(exc)), show_alert=True)
             except Exception:
                 pass
         return None

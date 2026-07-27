@@ -2,6 +2,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class PosterFlow(StatesGroup):
+    entering_utc_offset = State()
     entering_channel_ref = State()
     composing_text = State()
     composing_media = State()
@@ -31,6 +32,8 @@ class UserFlow(StatesGroup):
     entering_moderation_vote_reason = State()
     entering_joinly_chat = State()
     entering_appeal = State()
+    entering_moderation_contact = State()
+    entering_request_appeal = State()
 
     choosing_plugin_to_update = State()
     uploading_update_file = State()

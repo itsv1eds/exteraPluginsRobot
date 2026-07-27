@@ -57,6 +57,9 @@ def validate_new_submission(plugin: Dict[str, Any]) -> Tuple[bool, Optional[str]
     if not plugin_id or not plugin_name:
         return False, "missing_plugin_info"
 
+    if is_plugin_blocked(plugin_id):
+        return False, "plugin_blocked"
+
     if not meets_min_supported(plugin.get("min_version")):
         return False, "min_version_too_low"
 
@@ -136,3 +139,33 @@ def check_duplicate_pending(
     return False, None
 
 
+
+
+def _blocklist() -> list[str]:
+    from bot.cache import get_config
+
+    cfg = get_config()
+    raw = cfg.get("plugin_blocklist") if isinstance(cfg, dict) else None
+    return [str(x).strip().lower() for x in raw if str(x).strip()] if isinstance(raw, list) else []
+
+
+def is_plugin_blocked(plugin_id: str) -> bool:
+    target = str(plugin_id or "").strip().lower()
+    return bool(target) and target in _blocklist()
+
+
+def block_plugin(plugin_id: str) -> bool:
+    from storage import load_config, save_config
+    from bot.cache import invalidate
+
+    target = str(plugin_id or "").strip()
+    if not target or is_plugin_blocked(target):
+        return False
+    cfg = load_config()
+    items = cfg.get("plugin_blocklist")
+    items = list(items) if isinstance(items, list) else []
+    items.append(target)
+    cfg["plugin_blocklist"] = items
+    save_config(cfg)
+    invalidate("config")
+    return True

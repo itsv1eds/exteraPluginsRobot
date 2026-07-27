@@ -15,6 +15,7 @@ def _btn(
     url: str | None = None,
     style: str | None = None,
     icon: str | None = None,
+    switch_inline_query_current_chat: str | None = None,
 ) -> InlineKeyboardButton:
     emoji_id = ICONS.get(icon or "") or CATEGORY_ICONS.get(icon or "") or icon
     if emoji_id and text and not text.startswith((" ", "\n")):
@@ -25,6 +26,7 @@ def _btn(
         url=url,
         style=style,
         icon_custom_emoji_id=emoji_id,
+        switch_inline_query_current_chat=switch_inline_query_current_chat,
     )
 
 
@@ -765,6 +767,10 @@ def admin_config_kb(lang: str = "ru") -> InlineKeyboardMarkup:
             _btn(t("admin_btn_sources", lang), callback_data="adm:sources", icon="link"),
             _btn(t("admin_btn_maintenance", lang), callback_data="adm:maint", icon="settings"),
         ],
+        [
+            _btn(t("admin_btn_audit_log", lang), callback_data="adm:auditlog:0", icon="file"),
+            _btn(t("admin_btn_blocklist", lang), callback_data="adm:blocklist", icon="ban"),
+        ],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
@@ -809,10 +815,12 @@ def admin_config_moderation_kb(lang: str = "ru") -> InlineKeyboardMarkup:
             _btn(t("admin_cfg_moderation_notification_chat_ids", lang), callback_data="adm:config:moderation.notification_chat_ids", icon="bell"),
         ],
         [
-            _btn(t("admin_cfg_reject_templates", lang), callback_data="adm:rejtpl_cfg", icon="file"),
+            _btn(t("admin_cfg_reject_templates", lang), callback_data="adm:rejtpl_cfg:reject", icon="file"),
             _btn(t("admin_cfg_moderation_delete_review_notifications_on_decision", lang), callback_data="adm:config:moderation.delete_review_notifications_on_decision", icon="delete"),
         ],
         [_btn(t("admin_cfg_moderation_min_supported_version", lang), callback_data="adm:config:moderation.min_supported_version", icon="updates")],
+        [_btn(t("admin_cfg_moderation_require_vote_reason", lang), callback_data="adm:config:moderation.require_vote_reason", icon="vote")],
+        [_btn(t("admin_cfg_moderation_send_reasons_to_author", lang), callback_data="adm:config:moderation.send_reasons_to_author", icon="send")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
@@ -978,6 +986,53 @@ def moderation_vote_kb(request_id: str, yes_count: int = 0, no_count: int = 0, l
     ])
 
 
+def author_rejected_kb(request_id: str, can_appeal: bool = False, lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = []
+    if can_appeal:
+        rows.append([_btn(t("kb_submit_appeal", lang), callback_data=f"usr:appeal:{request_id}",
+                          icon="updates", style="success")])
+    rows.append([_btn(t("kb_contact_moderation", lang), callback_data=f"usr:modcontact:{request_id}", icon="support")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def dialog_author_reply_kb(request_id: str, author_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(t("kb_dialog_reject_appeal", lang), callback_data=f"dlg:rejapp:{author_id}:{request_id}",
+              icon="no", style="danger")],
+        [_btn(t("kb_dialog_ban_author", lang), callback_data=f"dlg:ban:{author_id}:{request_id}",
+              icon="ban", style="danger")],
+    ])
+
+
+def moderation_vote_reason_kb(
+    request_id: str,
+    owner_id: int,
+    anonymous: bool = False,
+    has_templates: bool = False,
+    allow_no_reason: bool = False,
+    lang: str = "ru",
+) -> InlineKeyboardMarkup:
+    anon_key = "kb_vote_anon_on" if anonymous else "kb_vote_anon_off"
+    rows = [[_btn(t(anon_key, lang), callback_data=f"mvr:anon:{owner_id}:{request_id}",
+                  icon="profile", style="success" if anonymous else None)]]
+    if has_templates:
+        rows.append([_btn(t("kb_vote_reason_tpl", lang), callback_data=f"mvr:tpl:{owner_id}:{request_id}", icon="file")])
+    rows.append([_btn(t("kb_vote_reason_own", lang), callback_data=f"mvr:own:{owner_id}:{request_id}", icon="edit")])
+    if allow_no_reason:
+        rows.append([_btn(t("kb_vote_reason_skip", lang), callback_data=f"mvr:none:{owner_id}:{request_id}", icon="yes")])
+    rows.append([_btn(t("kb_vote_cancel", lang), callback_data=f"mvr:cancel:{owner_id}:{request_id}", icon="no", style="danger")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def moderation_vote_template_kb(request_id: str, owner_id: int, templates: List[str], lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [
+        [_btn(f"{idx + 1}. {_tpl_label(tpl)}", callback_data=f"mvr:t:{owner_id}:{idx}:{request_id}", icon="file")]
+        for idx, tpl in enumerate(templates)
+    ]
+    rows.append([_btn(t("btn_back", lang), callback_data=f"mvr:back:{owner_id}:{request_id}", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def moderation_inline_vote_url_kb(bot_username: str, request_id: str, yes_count: int = 0, no_count: int = 0, lang: str = "ru") -> InlineKeyboardMarkup:
     token = quote(str(request_id), safe="")
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -1040,12 +1095,15 @@ def admin_reject_templates_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_reject_templates_cfg_kb(templates: List[str], lang: str = "ru") -> InlineKeyboardMarkup:
+def admin_reject_templates_cfg_kb(templates: List[str], kind: str = "reject", lang: str = "ru") -> InlineKeyboardMarkup:
     rows = [
-        [_btn(f"{idx + 1}. {_tpl_label(tpl)}", callback_data=f"adm:rejtpl_del:{idx}", icon="delete")]
+        [_btn(f"{idx + 1}. {_tpl_label(tpl)}", callback_data=f"adm:rejtpl_del:{kind}:{idx}", icon="delete")]
         for idx, tpl in enumerate(templates)
     ]
-    rows.append([_btn(t("kb_admin_rejtpl_add", lang), callback_data="adm:rejtpl_add", icon="edit", style="success")])
+    rows.append([_btn(t("kb_admin_rejtpl_add", lang), callback_data=f"adm:rejtpl_add:{kind}", icon="edit", style="success")])
+    other = "approve" if kind == "reject" else "reject"
+    rows.append([_btn(t(f"kb_admin_tpl_switch_{other}", lang), callback_data=f"adm:rejtpl_cfg:{other}",
+                      icon=("yes" if other == "approve" else "no"))])
     rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1121,4 +1179,24 @@ def admin_plugins_list_kb(
     
     rows.append([InlineKeyboardButton(text=t("btn_back", lang), callback_data=back_callback, style="danger")])
     
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_audit_log_kb(page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
+    nav = []
+    if page > 0:
+        nav.append(_btn("<", callback_data=f"adm:auditlog:{page-1}", icon="back"))
+    if page < total_pages - 1:
+        nav.append(_btn(">", callback_data=f"adm:auditlog:{page+1}", icon="forward"))
+    rows = [nav] if nav else []
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:config", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_blocklist_kb(items: List[str], lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [
+        [_btn(pid, callback_data=f"adm:unblock:{pid}", icon="ban", style="danger")]
+        for pid in items[:40]
+    ]
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:config", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)

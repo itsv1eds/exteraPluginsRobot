@@ -21,7 +21,10 @@ def _is_dialog_reply(message: Message) -> bool:
     if not message.from_user or not message.reply_to_message:
         return False
     if message.chat.type != "private":
-        return False
+        from bot.services.moderation import is_moderation_forum_chat
+
+        if not is_moderation_forum_chat(message.chat.id):
+            return False
     return get_dialog_ref(message.chat.id, message.reply_to_message.message_id) is not None
 
 
@@ -50,15 +53,49 @@ async def on_dialog_reply(message: Message) -> None:
     item = payload.get("plugin") or payload.get("icon") or {}
     plugin_name = plain_html(item.get("name") or "—")
 
-    template = "dialog_msg_to_author" if peer_id == author_id else "dialog_msg_to_admin"
-    peer_lang = get_lang(peer_id)
     sender_label = user_mention(sender.id, sender.username)
     body = strip_blockquote_tags(text)
+    author_is_sender = int(sender.id) == author_id
 
+    if author_is_sender:
+        from bot.keyboards import dialog_author_reply_kb
+        from bot.services.moderation import moderation_config
+
+        cfg = moderation_config()
+        moderator_label = user_mention(peer_id, "") if peer_id and peer_id != author_id else "—"
+        try:
+            delivered = await message.bot.send_message(
+                cfg["chat_id"],
+                t(
+                    "dialog_author_reply_forum", "ru",
+                    name=plugin_name, sender=sender_label,
+                    moderator=moderator_label, text=body,
+                ),
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+                message_thread_id=cfg["topic_id"],
+                reply_markup=dialog_author_reply_kb(request_id, author_id),
+            )
+        except Exception:
+            logger.exception(
+                "event=dialog.relay_forum_failed from=%s request_id=%s", sender.id, request_id,
+            )
+            await message.answer(t("dialog_deliver_failed", lang), disable_web_page_preview=True)
+            return
+
+        register_dialog_message(
+            int(cfg["chat_id"]), delivered.message_id,
+            peer_id=int(sender.id), request_id=request_id,
+            author_id=author_id, admin_id=admin_id,
+        )
+        await message.answer(t("dialog_delivered", lang), disable_web_page_preview=True)
+        return
+
+    peer_lang = get_lang(peer_id)
     try:
         delivered = await message.bot.send_message(
             peer_id,
-            t(template, peer_lang, name=plugin_name, sender=sender_label, text=body),
+            t("dialog_msg_to_author", peer_lang, name=plugin_name, sender=sender_label, text=body),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
@@ -73,6 +110,6 @@ async def on_dialog_reply(message: Message) -> None:
     register_dialog_message(
         peer_id, delivered.message_id,
         peer_id=sender.id, request_id=request_id,
-        author_id=author_id, admin_id=admin_id,
+        author_id=author_id, admin_id=sender.id,
     )
     await message.answer(t("dialog_delivered", lang), disable_web_page_preview=True)

@@ -343,9 +343,10 @@ def cleanup_orphan_plugin_files() -> int:
     active_paths = set()
     for entry in _get_requests_list():
         payload = entry.get("payload", {})
-        plugin_path = (payload.get("plugin") or {}).get("file_path")
-        if plugin_path:
-            active_paths.add(Path(plugin_path).resolve())
+        for key in ("plugin", "icon"):
+            item = payload.get(key)
+            if isinstance(item, dict) and item.get("file_path"):
+                active_paths.add(Path(item["file_path"]).resolve())
     removed = 0
     for file_path in attachments_dir.rglob("*.plugin"):
         if file_path.resolve() not in active_paths:
@@ -356,10 +357,61 @@ def cleanup_orphan_plugin_files() -> int:
     return removed
 
 
+REJECTED_RETENTION_DAYS = 7
+
+
+def _rejected_at(entry: Dict[str, Any]) -> Optional[datetime]:
+    for h in reversed(entry.get("history") or []):
+        if isinstance(h, dict) and h.get("status") == "rejected" and h.get("changed_at"):
+            try:
+                return datetime.fromisoformat(str(h["changed_at"]))
+            except ValueError:
+                return None
+    updated = entry.get("updated_at")
+    try:
+        return datetime.fromisoformat(str(updated)) if updated else None
+    except ValueError:
+        return None
+
+
+def cleanup_rejected_files(days: int = REJECTED_RETENTION_DAYS) -> int:
+    now = datetime.utcnow()
+    removed = 0
+    for entry in _get_requests_list():
+        if entry.get("status") != "rejected":
+            continue
+        stamp = _rejected_at(entry)
+        if not stamp or (now - stamp) < timedelta(days=days):
+            continue
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if not payload or payload.get("files_purged"):
+            continue
+        purged = False
+        for key in ("plugin", "icon"):
+            item = payload.get(key)
+            if not isinstance(item, dict):
+                continue
+            raw = item.get("file_path")
+            if raw and Path(raw).exists():
+                Path(raw).unlink(missing_ok=True)
+                purged = True
+        if purged:
+            payload["files_purged"] = True
+            removed += 1
+    if removed:
+        _save_requests_list()
+        logger.info("Purged files of %s rejected request(s) older than %sd", removed, days)
+    return removed
+
+
 async def _cleanup_loop() -> None:
     while True:
         await asyncio.sleep(_cleanup_interval_seconds)
         cleanup_expired_drafts()
+        try:
+            cleanup_rejected_files()
+        except Exception:
+            logger.exception("cleanup_rejected_files failed")
 
 
 async def _reminder_loop(bot) -> None:

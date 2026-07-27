@@ -95,8 +95,11 @@ def _format_votes_block(votes: dict, header_label: str = "Голоса") -> str:
         if not isinstance(item, dict):
             continue
         mark = "За" if item.get("vote") == "yes" else "Отказано"
-        username = str(item.get("username") or "").strip()
-        display = f"@{username}" if username else str(item.get("name") or item.get("user_id") or "?")
+        if item.get("anonymous"):
+            display = "Аноним"
+        else:
+            username = str(item.get("username") or "").strip()
+            display = f"@{username}" if username else str(item.get("name") or item.get("user_id") or "?")
         reason = str(item.get("reason") or "").strip()
         reason_text = strip_blockquote_tags(telegram_html(reason)) if reason else "без причины"
         details.append(f"• <b>{mark}</b> — {code_html(display)}:\n{reason_text}")
@@ -162,6 +165,13 @@ def forum_text_with_votes(entry: dict | None) -> str:
         base = f"<b>Заявка:</b> {telegram_html(request_title(entry))}"
 
     parts = [base]
+    if isinstance(payload, dict) and payload.get("is_appeal"):
+        from bot.texts import t as _t
+
+        parts.append(_t(
+            "admin_appeal_badge", "ru",
+            comment=strip_blockquote_tags(telegram_html(str(payload.get("appeal_comment") or "—"))),
+        ))
     if isinstance(payload, dict) and payload.get("resubmitted_after_rework"):
         parts.append("♻️ <b>Отправлено после доработки</b> (плагин уже был на модерации)")
     parts.append(vote_summary(entry))
@@ -192,6 +202,7 @@ def set_vote(
     name: str,
     vote: VoteValue,
     reason: str | None = None,
+    anonymous: bool | None = None,
 ) -> dict | None:
     entry = get_request_by_id(request_id)
     if not entry:
@@ -208,9 +219,100 @@ def set_vote(
         "name": name or current.get("name", ""),
         "vote": vote,
         "reason": reason if reason is not None else current.get("reason", ""),
+        "anonymous": bool(current.get("anonymous")) if anonymous is None else bool(anonymous),
         "voted_at": datetime.now(timezone.utc).isoformat(),
     }
     return update_request_payload(request_id, {"moderation_votes": votes})
+
+
+def send_reasons_to_author_default() -> bool:
+    cfg = get_config()
+    raw = (cfg.get("moderation") or {}) if isinstance(cfg, dict) else {}
+    value = raw.get("send_reasons_to_author")
+    return True if value is None else bool(value)
+
+
+def require_vote_reason() -> bool:
+    cfg = get_config()
+    raw = (cfg.get("moderation") or {}) if isinstance(cfg, dict) else {}
+    value = raw.get("require_vote_reason")
+    return True if value is None else bool(value)
+
+
+def _pending_map(entry: dict | None) -> dict:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    pending = payload.get("moderation_pending_votes") if isinstance(payload, dict) else None
+    return pending if isinstance(pending, dict) else {}
+
+
+def get_pending_vote(request_id: str, user_id: int) -> dict | None:
+    item = _pending_map(get_request_by_id(request_id)).get(str(user_id))
+    return item if isinstance(item, dict) else None
+
+
+def start_pending_vote(
+    request_id: str,
+    user_id: int,
+    username: str,
+    name: str,
+    vote: VoteValue,
+) -> dict | None:
+    entry = get_request_by_id(request_id)
+    if not entry:
+        return None
+    pending = dict(_pending_map(entry))
+    prev = pending.get(str(user_id)) if isinstance(pending.get(str(user_id)), dict) else {}
+    pending[str(user_id)] = {
+        "user_id": int(user_id),
+        "username": username or prev.get("username", ""),
+        "name": name or prev.get("name", ""),
+        "vote": vote,
+        "anonymous": bool(prev.get("anonymous")),
+        "prompt_chat_id": int(prev.get("prompt_chat_id") or 0),
+        "prompt_message_id": int(prev.get("prompt_message_id") or 0),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return update_request_payload(request_id, {"moderation_pending_votes": pending})
+
+
+def update_pending_vote(request_id: str, user_id: int, **fields) -> dict | None:
+    entry = get_request_by_id(request_id)
+    if not entry:
+        return None
+    pending = dict(_pending_map(entry))
+    item = pending.get(str(user_id))
+    if not isinstance(item, dict):
+        return None
+    item.update(fields)
+    pending[str(user_id)] = item
+    return update_request_payload(request_id, {"moderation_pending_votes": pending})
+
+
+def clear_pending_vote(request_id: str, user_id: int) -> dict | None:
+    entry = get_request_by_id(request_id)
+    if not entry:
+        return None
+    pending = dict(_pending_map(entry))
+    if pending.pop(str(user_id), None) is None:
+        return entry
+    return update_request_payload(request_id, {"moderation_pending_votes": pending})
+
+
+def commit_pending_vote(request_id: str, user_id: int, reason: str) -> dict | None:
+    item = get_pending_vote(request_id, user_id)
+    if not item:
+        return None
+    entry = set_vote(
+        request_id,
+        int(user_id),
+        str(item.get("username") or ""),
+        str(item.get("name") or ""),
+        item.get("vote"),
+        reason=reason,
+        anonymous=bool(item.get("anonymous")),
+    )
+    clear_pending_vote(request_id, user_id)
+    return get_request_by_id(request_id) or entry
 
 
 def set_vote_reason(request_id: str, user_id: int, reason: str) -> dict | None:

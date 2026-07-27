@@ -113,7 +113,7 @@ def telegram_html(value: object) -> str:
 
 
 def strip_blockquote_tags(value: str) -> str:
-    return re.sub(r"</?blockquote(?:\s+expandable)?>", "\n", value, flags=re.IGNORECASE).strip()
+    return re.sub(r"</?blockquote\b[^>]*>", "\n", value, flags=re.IGNORECASE).strip()
 
 
 def quote_html(value: object, *, expandable: bool = False) -> str:

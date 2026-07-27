@@ -33,6 +33,41 @@ logger = logging.getLogger(__name__)
 router = Router(name="poster-flow")
 
 TZ_DISPLAY = timezone(timedelta(hours=5))
+DEFAULT_UTC_OFFSET = 5
+
+
+def _user_tz(user_id) -> timezone:
+    try:
+        from user_store import get_user
+
+        raw = (get_user(int(user_id)) or {}).get("utc_offset")
+        if raw is None:
+            return TZ_DISPLAY
+        return timezone(timedelta(hours=float(raw)))
+    except Exception:
+        return TZ_DISPLAY
+
+
+def _tz_of(target) -> timezone:
+    user = getattr(target, "from_user", None)
+    return _user_tz(getattr(user, "id", 0))
+
+
+def _tz_label(tz: timezone) -> str:
+    hours = tz.utcoffset(None).total_seconds() / 3600
+    return f"UTC{hours:+g}"
+
+
+def _channel_label(chat_id) -> str:
+    try:
+        ch = poster.get_channel(int(chat_id)) or {}
+    except Exception:
+        ch = {}
+    title = str(ch.get("title") or "").strip()
+    username = str(ch.get("username") or "").strip().lstrip("@")
+    if username:
+        return f"{title} (@{username})" if title else f"@{username}"
+    return title or str(chat_id)
 
 
 def _lang(target) -> str:
@@ -55,7 +90,7 @@ async def _delete_msg(bot, chat_id: int, msg_id) -> None:
             pass
 
 
-def _fmt_local(run_at_iso: str) -> str:
+def _fmt_local(run_at_iso: str, tz: timezone | None = None) -> str:
     from datetime import datetime as _dt
     try:
         dt = _dt.fromisoformat(str(run_at_iso).replace("Z", "+00:00"))
@@ -63,10 +98,11 @@ def _fmt_local(run_at_iso: str) -> str:
         return str(run_at_iso)[:16]
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(TZ_DISPLAY).strftime("%d.%m.%Y %H:%M")
+    tz = tz or TZ_DISPLAY
+    return f"{dt.astimezone(tz).strftime('%d.%m.%Y %H:%M')} {_tz_label(tz)}"
 
 
-def _home_kb(channels: list, lang: str, admin_mode: bool = False) -> InlineKeyboardMarkup:
+def _home_kb(channels: list, lang: str, admin_mode: bool = False, tz_label: str | None = None) -> InlineKeyboardMarkup:
     rows = []
     for ch in channels:
         title = str(ch.get("title") or ch.get("chat_id"))
@@ -75,6 +111,7 @@ def _home_kb(channels: list, lang: str, admin_mode: bool = False) -> InlineKeybo
         _btn(t("poster_btn_add_channel", lang), callback_data="pstr:ch:add", icon="add", style="success"),
         _btn(t("poster_btn_my_posts", lang), callback_data="pstr:posts", icon="clock"),
     ])
+    rows.append([_btn(t("poster_btn_tz", lang, value=tz_label or _tz_label(TZ_DISPLAY)), callback_data="pstr:tz", icon="clock")])
     back_cb = "adm:menu" if admin_mode else "profile"
     rows.append([_btn(t("btn_back", lang), callback_data=back_cb, style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -112,13 +149,13 @@ def _time_kb(lang: str) -> InlineKeyboardMarkup:
     ])
 
 
-def _posts_kb(posts: list, lang: str) -> InlineKeyboardMarkup:
+def _posts_kb(posts: list, lang: str, tz: timezone | None = None) -> InlineKeyboardMarkup:
     rows = []
     for p in posts:
         if p.get("status") != "scheduled":
             continue
         rows.append([_btn(
-            _fmt_local(p.get("run_at", "")),
+            f"{_fmt_local(p.get('run_at', ''), tz)} · {_channel_label(p.get('chat_id'))}",
             callback_data=f"pstr:post:{p.get('id')}", icon="clock",
         )])
     rows.append([_btn(t("btn_back", lang), callback_data="pstr:home", style="danger", icon="back")])
@@ -146,7 +183,7 @@ async def render_home(target, state: FSMContext) -> None:
     channels = poster.list_channels(uid)
     text = t("poster_home" if channels else "poster_home_empty", lang)
     await state.set_state(None)
-    await _exit_screen(target, state, text, _home_kb(channels, lang, admin_mode))
+    await _exit_screen(target, state, text, _home_kb(channels, lang, admin_mode, _tz_label(_tz_of(target))))
 
 
 @router.callback_query(F.data == "pstr:home")
@@ -468,6 +505,7 @@ def _preview_kb(lang: str, admin_mode: bool = False, autodel_label: str = "не�
     ]
     if admin_mode:
         rows.append([_btn(t("poster_btn_updated_plugins", lang), callback_data="pstr:preview:upd", icon="updates")])
+    rows.append([_btn(t("poster_btn_publish_now", lang), callback_data="pstr:publishnow", icon="send", style="success")])
     rows.append([_btn(t("poster_btn_schedule", lang), callback_data="pstr:schedule", icon="clock", style="success")])
     rows.append([_btn(t("btn_cancel", lang), callback_data="pstr:home", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -674,6 +712,97 @@ async def on_preview_schedule(cb: CallbackQuery, state: FSMContext) -> None:
         pass
 
 
+@router.callback_query(PosterFlow.previewing, F.data == "pstr:publishnow")
+async def on_preview_publish_now(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang(cb)
+    data = await state.get_data()
+    chat_id = data.get("poster_chat_id")
+    channel = poster.get_channel(chat_id) if chat_id else None
+    if not poster.can_manage(channel, cb.from_user.id):
+        await cb.answer(t("poster_err_not_found", lang), show_alert=True)
+        return
+
+    content = {
+        "html_text": data.get("poster_html") or "",
+        "media": data.get("poster_media") or [],
+        "buttons": data.get("poster_buttons") or [],
+        "delete_after_minutes": int(data.get("poster_delete_after") or 0),
+        "delete_at_iso": data.get("poster_delete_at_iso") or None,
+        "repeat_days": int(data.get("poster_repeat_days") or 0),
+    }
+    now_iso = datetime.now(timezone.utc).isoformat()
+    editing_id = data.get("editing_post_id")
+    if editing_id:
+        poster.update_post(editing_id, cb.from_user.id, content=content, run_at_iso=now_iso)
+        post = poster.get_post(editing_id)
+        await state.update_data(editing_post_id=None)
+    else:
+        post = poster.add_post(cb.from_user.id, chat_id, now_iso, content, kind="manual")
+
+    ok = False
+    try:
+        ok = await poster.deliver_post(cb.bot, post)
+    except Exception:
+        logger.exception("poster: publish_now failed chat=%s", chat_id)
+
+    if not ok:
+        await cb.answer(t("poster_publish_now_failed", lang), show_alert=True)
+        return
+
+    await _exit_screen(
+        cb, state,
+        t("poster_publish_now_done", lang, channel=_channel_label(chat_id)),
+        None,
+    )
+    uid = cb.from_user.id if cb.from_user else 0
+    channels = poster.list_channels(uid)
+    await state.set_state(None)
+    await cb.bot.send_message(
+        _chat_id(cb),
+        t("poster_home" if channels else "poster_home_empty", lang),
+        reply_markup=_home_kb(channels, lang, bool(data.get("poster_admin_mode")), _tz_label(_tz_of(cb))),
+        parse_mode=ParseMode.HTML,
+    )
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "pstr:tz")
+async def on_poster_tz(cb: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PosterFlow.entering_utc_offset)
+    await answer(cb, t("poster_tz_prompt", _lang(cb)), _cancel_only_kb(_lang(cb)))
+    try:
+        await cb.answer()
+    except Exception:
+        pass
+
+
+@router.message(PosterFlow.entering_utc_offset)
+async def on_poster_tz_value(message: Message, state: FSMContext) -> None:
+    lang = _lang(message)
+    raw = (message.text or "").strip().replace(",", ".").replace("UTC", "").replace("utc", "").strip()
+    try:
+        offset = float(raw)
+    except ValueError:
+        await message.answer(t("poster_tz_bad", lang))
+        return
+    if not (-12 <= offset <= 14):
+        await message.answer(t("poster_tz_bad", lang))
+        return
+
+    from user_store import update_user
+
+    update_user(int(message.from_user.id), utc_offset=offset)
+    await message.answer(
+        t("poster_tz_saved", lang, value=_tz_label(_user_tz(message.from_user.id))),
+        parse_mode=ParseMode.HTML,
+    )
+    await state.set_state(None)
+    await render_home(message, state)
+
+
 async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
     data = await state.get_data()
     chat_id = data.get("poster_chat_id")
@@ -695,15 +824,19 @@ async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
         await state.update_data(editing_post_id=None)
     else:
         poster.add_post(target.from_user.id, chat_id, run_at_utc.isoformat(), content, kind="manual")
-    local = run_at_utc.astimezone(TZ_DISPLAY).strftime("%d.%m.%Y %H:%M")
-    await _exit_screen(target, state, t("poster_scheduled", _lang(target), datetime=local), None)
+    tz = _tz_of(target)
+    local = f"{run_at_utc.astimezone(tz).strftime('%d.%m.%Y %H:%M')} {_tz_label(tz)}"
+    await _exit_screen(target, state, t(
+        "poster_scheduled", _lang(target),
+        datetime=local, channel=_channel_label(chat_id),
+    ), None)
     uid = target.from_user.id if target.from_user else 0
     channels = poster.list_channels(uid)
     text = t("poster_home" if channels else "poster_home_empty", _lang(target))
     await state.set_state(None)
     await target.bot.send_message(
         _chat_id(target), text,
-        reply_markup=_home_kb(channels, _lang(target), bool(data.get("poster_admin_mode"))),
+        reply_markup=_home_kb(channels, _lang(target), bool(data.get("poster_admin_mode")), _tz_label(_tz_of(target))),
         parse_mode=ParseMode.HTML)
 
 
@@ -725,7 +858,7 @@ async def on_time_manual(message: Message, state: FSMContext) -> None:
     except ValueError:
         await message.answer(t("poster_err_bad_time", _lang(message)))
         return
-    run_at_utc = naive.replace(tzinfo=TZ_DISPLAY).astimezone(timezone.utc)
+    run_at_utc = naive.replace(tzinfo=_tz_of(message)).astimezone(timezone.utc)
     if run_at_utc <= datetime.now(timezone.utc):
         await message.answer(t("poster_err_past_time", _lang(message)))
         return
@@ -736,7 +869,7 @@ async def _render_posts_list(target, state: FSMContext) -> None:
     await state.set_state(None)
     posts = poster.list_user_posts(target.from_user.id, statuses=("scheduled",))
     text = t("poster_my_posts" if posts else "poster_my_posts_empty", _lang(target))
-    await _exit_screen(target, state, text, _posts_kb(posts, _lang(target)))
+    await _exit_screen(target, state, text, _posts_kb(posts, _lang(target), _tz_of(target)))
 
 
 @router.callback_query(F.data == "pstr:posts")
@@ -750,7 +883,7 @@ async def on_my_posts(cb: CallbackQuery, state: FSMContext) -> None:
 
 def _post_detail_kb(post_id: str, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=t("poster_btn_post_inline", lang), switch_inline_query_current_chat=post_id)],
+        [_btn(t("poster_btn_post_inline", lang), switch_inline_query_current_chat=post_id, icon="send")],
         [_btn(t("poster_btn_post_edit", lang), callback_data=f"pstr:postedit:{post_id}", icon="edit", style="success")],
         [_btn(t("poster_btn_post_delete", lang), callback_data=f"pstr:postdel:{post_id}", icon="delete", style="danger")],
         [_btn(t("btn_back", lang), callback_data="pstr:posts", style="danger", icon="back")],
@@ -777,7 +910,7 @@ async def on_post_detail(cb: CallbackQuery, state: FSMContext) -> None:
         post_msg_id = getattr(post_msg, "message_id", None)
     except Exception:
         logger.exception("poster: post detail render failed")
-    when = _fmt_local(post.get("run_at", ""))
+    when = _fmt_local(post.get("run_at", ""), _tz_of(cb))
     repeat = _REPEAT_SHORT.get(int((post.get("content") or {}).get("repeat_days") or 0), "нет")
     try:
         bot_username = (await bot.me()).username or ""
@@ -785,7 +918,8 @@ async def on_post_detail(cb: CallbackQuery, state: FSMContext) -> None:
         bot_username = ""
     ctrl = await bot.send_message(
         chat_id, t("poster_post_detail", lang, datetime=when, post_id=post_id,
-                   bot=bot_username, repeat=repeat),
+                   bot=bot_username, repeat=repeat,
+                   channel=_channel_label(post.get("chat_id"))),
         reply_markup=_post_detail_kb(post_id, lang), parse_mode=ParseMode.HTML)
     await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
     try:

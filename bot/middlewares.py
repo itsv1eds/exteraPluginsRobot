@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from typing import Any, Awaitable, Callable, Optional
 
 from aiogram import BaseMiddleware
@@ -71,6 +72,45 @@ async def stop_log_worker() -> None:
             await asyncio.wait_for(_log_task, timeout=2.0)
         except asyncio.TimeoutError:
             _log_task.cancel()
+
+
+BOT_COMMANDS = {"start", "admin", "lang", "new", "settings", "unlockchat", "help", "cancel"}
+
+_COMMAND_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s|$)")
+
+
+def parse_command(text: str | None) -> Optional[str]:
+    match = _COMMAND_RE.match((text or "").strip())
+    if not match:
+        return None
+    name = match.group(1).lower()
+    return name if name in BOT_COMMANDS else None
+
+
+class CommandStateResetMiddleware(BaseMiddleware):
+    """Команда отменяет незавершённый шаг ввода, а не попадает в него текстом."""
+
+    async def __call__(
+        self,
+        handler: Callable[[Any, dict[str, Any]], Awaitable[Any]],
+        event: Any,
+        data: dict[str, Any],
+    ) -> Any:
+        if isinstance(event, Message):
+            command = parse_command(event.text or event.caption)
+            if command:
+                state = data.get("state")
+                if state is not None:
+                    try:
+                        if await state.get_state() is not None:
+                            await state.set_state(None)
+                            logger.info(
+                                "event=command.state_reset command=%s user_id=%s",
+                                command, event.from_user.id if event.from_user else None,
+                            )
+                    except Exception:
+                        logger.exception("command state reset failed")
+        return await handler(event, data)
 
 
 class CallbackAckWatchdogMiddleware(BaseMiddleware):

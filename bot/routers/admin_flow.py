@@ -55,6 +55,7 @@ from bot.keyboards import (
     admin_menu_kb,
     admin_notification_settings_kb,
     admin_plugins_list_kb,
+    admin_appeal_decision_kb,
     admin_audit_log_kb,
     admin_blocklist_kb,
     admin_rejected_kb,
@@ -970,6 +971,17 @@ async def _render_broadcast_enter(cb: CallbackQuery, state: FSMContext) -> None:
         await state.update_data(broadcast_message_id=msg.message_id)
 
 
+def _my_vote(entry: dict, user_id: int) -> str | None:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    votes = payload.get("moderation_votes") if isinstance(payload, dict) else None
+    item = votes.get(str(user_id)) if isinstance(votes, dict) else None
+    return item.get("vote") if isinstance(item, dict) else None
+
+
+def _has_my_vote(entry: dict, user_id: int) -> bool:
+    return _my_vote(entry, user_id) is not None
+
+
 async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> None:
     lang = _lang_for(cb)
     parts = token.split(":")
@@ -977,12 +989,7 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     visible_requests = [r for r in (list(get_requests(status="pending")) + list(get_requests(status="error"))) if not _is_appeal(r)]
 
-    if queue_type == "icons":
-        requests = [
-            r for r in visible_requests
-            if r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon")
-        ]
-    elif queue_type == "update":
+    if queue_type == "update":
         requests = [
             r for r in visible_requests
             if r.get("type") == "update"
@@ -1003,6 +1010,12 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
     if not requests:
         await _render_menu(cb, state)
         return
+
+    viewer_id = cb.from_user.id if cb.from_user else 0
+    requests.sort(key=lambda r: (
+        1 if _has_my_vote(r, viewer_id) else 0,
+        str(r.get("submitted_at") or ""),
+    ))
 
     total = len(requests)
     total_pages = math.ceil(total / PAGE_SIZE)
@@ -1032,6 +1045,11 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
         else:
             prefix = ""
             row_icon = None
+        my = _my_vote(entry, viewer_id)
+        if my == "yes":
+            prefix = "✅ " + prefix
+        elif my == "no":
+            prefix = "❌ " + prefix
         if entry.get("status") == "error" or payload.get("last_publish_error"):
             prefix = f"Ошибка: {prefix}"
             row_icon = row_icon or "warning"
@@ -1039,9 +1057,7 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
         label = f"{prefix}{label}"
         items.append((label, entry["id"], row_icon))
 
-    if queue_type == "icons":
-        title = _tr(cb, "admin_queue_title_icons")
-    elif queue_type == "update":
+    if queue_type == "update":
         title = _tr(cb, "admin_queue_title_updates")
     elif queue_type == "new":
         title = _tr(cb, "admin_queue_title_new")
@@ -1067,6 +1083,13 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
     await state.update_data(current_request=request_id, draft_message_id=cb.message.message_id if cb.message else None)
 
     payload = entry.get("payload", {})
+    if _is_appeal(entry):
+        draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
+        kb = admin_appeal_decision_kb(request_id, lang=lang) if _is_super_admin(cb) else None
+        msg = await answer(cb, draft_text, kb, "appeal")
+        if msg:
+            await state.update_data(draft_message_id=msg.message_id)
+        return
     if payload.get("submission_type") == "icon" or payload.get("icon"):
         draft_text = f"{_render_request_draft(entry)}\n\n{_review_meta_block(entry)}"
         if _is_super_admin(cb):
@@ -1242,6 +1265,15 @@ def _validate_request_before_publish(entry: dict | None) -> list[str]:
 
 def _render_request_draft(entry: dict) -> str:
     payload = entry.get("payload", {})
+    if _is_appeal(entry):
+        username = str(payload.get("username") or "").strip()
+        who = f"@{username}" if username else str(payload.get("user_id") or "—")
+        return t(
+            "appeal_request_draft", "ru",
+            user=who,
+            uid=payload.get("user_id") or "—",
+            text=strip_blockquote_tags(telegram_html(str(payload.get("appeal_text") or "—"))),
+        )
     if payload.get("submission_type") == "icon" or payload.get("icon"):
         return build_icon_channel_post(entry)
 
@@ -2453,7 +2485,7 @@ async def on_admin_link_list_plugins(cb: CallbackQuery, state: FSMContext) -> No
     items = [(_localized_name(p, lang), p.get("slug")) for p in page_items]
     await answer(
         cb,
-        _tr(cb, "admin_search_results"),
+        _tr(cb, "admin_search_results_title"),
         admin_plugins_list_kb(items, page, total_pages, select_prefix="adm:link_select", list_prefix="adm:link_list", lang=lang),
         "admin",
     )
@@ -2483,7 +2515,7 @@ async def on_admin_icon_edit_list(cb: CallbackQuery, state: FSMContext) -> None:
     items = [(_localized_name(i, lang), i.get("slug")) for i in page_items]
     await answer(
         cb,
-        _tr(cb, "admin_search_results"),
+        _tr(cb, "admin_search_results_title"),
         admin_plugins_list_kb(items, page, total_pages, select_prefix="adm:icon_edit_select", list_prefix="adm:icon_edit_list", lang=lang),
         "admin",
     )
@@ -2561,7 +2593,7 @@ async def on_admin_search_icons(message: Message, state: FSMContext) -> None:
     items = [(_localized_name(i, lang), i.get("slug")) for i in filtered[:PAGE_SIZE]]
     await answer(
         message,
-        _tr(message, "admin_search_results"),
+        _tr(message, "admin_search_results_title"),
         admin_plugins_list_kb(items, 0, total_pages, select_prefix=select_prefix, list_prefix=list_prefix, lang=lang),
         "admin",
     )
@@ -2587,7 +2619,7 @@ async def on_admin_icon_link_list(cb: CallbackQuery, state: FSMContext) -> None:
     items = [(_localized_name(i, lang), i.get("slug")) for i in page_items]
     await answer(
         cb,
-        _tr(cb, "admin_search_results"),
+        _tr(cb, "admin_search_results_title"),
         admin_plugins_list_kb(items, page, total_pages, select_prefix="adm:icon_link_select", list_prefix="adm:icon_link_list", lang=lang),
         "admin",
     )
@@ -2685,10 +2717,6 @@ def _audit_requests(status: str = "all") -> list[dict]:
         reqs = [r for r in reqs if r.get("status") == status]
     reqs.sort(key=lambda r: str(r.get("updated_at") or r.get("submitted_at") or ""), reverse=True)
     return reqs
-
-
-def _rejected_requests() -> list[dict]:
-    return _audit_requests("rejected")
 
 
 def _request_label(entry: dict, with_status: bool = False) -> str:
@@ -4177,10 +4205,6 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
         if not _ensure_admin_role(cb, "plugins"):
             await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
             return
-    elif queue_type == "icons":
-        if not _ensure_admin_role(cb, "icons"):
-            await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-            return
     else:
         if not _ensure_admin(cb):
             await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
@@ -4189,14 +4213,9 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
 
     await _nav_push(state, f"adm:queue:{queue_type}:{page}")
 
-    visible_requests = list(get_requests(status="pending")) + list(get_requests(status="error"))
+    visible_requests = [r for r in (list(get_requests(status="pending")) + list(get_requests(status="error"))) if not _is_appeal(r)]
 
-    if queue_type == "icons":
-        requests = [
-            r for r in visible_requests
-            if r.get("payload", {}).get("submission_type") == "icon" or r.get("payload", {}).get("icon")
-        ]
-    elif queue_type == "update":
+    if queue_type == "update":
         requests = [
             r for r in visible_requests
             if r.get("type") == "update"
@@ -4218,6 +4237,12 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_queue_empty"), show_alert=True)
         return
 
+    viewer_id = cb.from_user.id if cb.from_user else 0
+    requests.sort(key=lambda r: (
+        1 if _has_my_vote(r, viewer_id) else 0,
+        str(r.get("submitted_at") or ""),
+    ))
+
     total = len(requests)
     total_pages = math.ceil(total / PAGE_SIZE)
     page = max(0, min(page, total_pages - 1))
@@ -4227,7 +4252,7 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
     items: List[tuple[str, str] | tuple[str, str, str | None]] = []
     for entry in page_items:
         payload = entry.get("payload", {})
-        if queue_type == "icons" or payload.get("submission_type") == "icon" or payload.get("icon"):
+        if payload.get("submission_type") == "icon" or payload.get("icon"):
             icon = payload.get("icon", {})
             name = icon.get("name", "?")
             version = icon.get("version", "")
@@ -4247,6 +4272,11 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
             row_icon = "updates"
         else:
             prefix = ""
+        my = _my_vote(entry, viewer_id)
+        if my == "yes":
+            prefix = "✅ " + prefix
+        elif my == "no":
+            prefix = "❌ " + prefix
         if entry.get("status") == "error" or payload.get("last_publish_error"):
             prefix = f"Ошибка: {prefix}"
             row_icon = row_icon or "warning"
@@ -4254,9 +4284,7 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
         label = f"{prefix}{label}"
         items.append((label, entry["id"], row_icon))
 
-    if queue_type == "icons":
-        title = _tr(cb, "admin_queue_title_icons")
-    elif queue_type == "update":
+    if queue_type == "update":
         title = _tr(cb, "admin_queue_title_updates")
     elif queue_type == "new":
         title = _tr(cb, "admin_queue_title_new")
@@ -4605,7 +4633,7 @@ async def on_admin_edit_list(cb: CallbackQuery, state: FSMContext) -> None:
     items = [(_localized_name(p, lang), p.get("slug")) for p in page_items]
     await answer(
         cb,
-        _tr(cb, "admin_search_results"),
+        _tr(cb, "admin_search_results_title"),
         admin_plugins_list_kb(
             items,
             page,
@@ -5888,6 +5916,11 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         pass
 
+    if _is_appeal(entry):
+        await cb.answer(_tr(cb, "appeal_not_a_plugin"), show_alert=True)
+        _release_request_lock(request_id)
+        return
+
     try:
         if request_type == "update":
             old_plugin = payload.get("old_plugin", {})
@@ -6356,14 +6389,6 @@ def _save_templates(templates: list[str], kind: str = "reject") -> None:
     invalidate("config")
 
 
-def _load_reject_templates() -> list[str]:
-    return _load_templates("reject")
-
-
-def _save_reject_templates(templates: list[str]) -> None:
-    _save_templates(templates, "reject")
-
-
 def _rejtpl_list_text(templates: list[str]) -> str:
     return "\n".join(
         f"{idx + 1}. {strip_blockquote_tags(telegram_html(tpl))}"
@@ -6469,7 +6494,7 @@ async def on_admin_rejtpl_pick(cb: CallbackQuery, state: FSMContext) -> None:
     if entry and not _ensure_request_role(cb, entry):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-    templates = _load_reject_templates()
+    templates = _load_templates("reject")
     if not templates:
         await cb.answer(_tr(cb, "admin_rejtpl_empty"), show_alert=True)
         return
@@ -6490,7 +6515,7 @@ async def on_admin_rejtpl_toggle(cb: CallbackQuery, state: FSMContext) -> None:
         return
     parts = cb.data.split(":")
     request_id, idx = parts[2], int(parts[3])
-    templates = _load_reject_templates()
+    templates = _load_templates("reject")
     if idx >= len(templates):
         await cb.answer()
         return
@@ -6526,7 +6551,7 @@ async def on_admin_rejtpl_go(cb: CallbackQuery, state: FSMContext) -> None:
     if not _ensure_request_role(cb, entry):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-    templates = _load_reject_templates()
+    templates = _load_templates("reject")
     data = await state.get_data()
     selected = [i for i in (data.get("reject_tpl_sel") or []) if isinstance(i, int) and 0 <= i < len(templates)]
     if not selected:
@@ -6957,7 +6982,7 @@ async def _render_audit_log(target, state: FSMContext, page: int) -> None:
 
 @router.callback_query(F.data.regexp(r"^adm:auditlog:\d+$"))
 async def on_admin_audit_log(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _ensure_admin_role(cb, "super"):
+    if not _ensure_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     await _render_audit_log(cb, state, int(cb.data.split(":")[2]))

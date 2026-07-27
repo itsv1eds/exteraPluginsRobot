@@ -6,7 +6,6 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from bot.cache import get_config
 from bot.context import get_language
 from bot.formatting import plain_html, telegram_html, user_mention
 from bot.keyboards import moderation_vote_reason_kb, moderation_vote_template_kb
@@ -44,10 +43,6 @@ def _vote_templates(vote: str | None) -> list[str]:
     from bot.routers.admin_flow import _load_templates
 
     return _load_templates("approve" if str(vote) == "yes" else "reject")
-
-
-def _reject_templates() -> list[str]:
-    return _vote_templates("no")
 
 
 async def _refresh_inline_vote_message(bot, inline_message_id: str | None, entry: dict | None, request_id: str) -> None:

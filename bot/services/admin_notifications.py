@@ -36,14 +36,16 @@ NOTIFICATION_PREF_LABEL_KEYS: dict[str, str] = {
     "new_plugins": "admin_notify_pref_new_plugins",
     "updates": "admin_notify_pref_updates",
     "deletions": "admin_notify_pref_deletions",
-    "icons": "admin_notify_pref_icons",
+    "appeals": "admin_notify_pref_appeals",
+    "author_replies": "admin_notify_pref_author_replies",
     "threshold": "admin_notify_pref_threshold",
 }
 NOTIFICATION_PREF_DEFAULTS: dict[str, bool] = {
     "new_plugins": True,
     "updates": True,
     "deletions": True,
-    "icons": True,
+    "appeals": True,
+    "author_replies": True,
     "threshold": True,
 }
 
@@ -61,6 +63,25 @@ def admin_notification_preferences(user_id: int | None) -> dict[str, bool]:
             if key in raw_user:
                 prefs[key] = bool(raw_user.get(key))
     return prefs
+
+
+async def notify_admins_event(bot, event: str, text: str) -> int:
+    from aiogram.enums import ParseMode
+
+    sent = 0
+    for admin_id in get_admins_super():
+        if not admin_notification_enabled(int(admin_id), event):
+            continue
+        try:
+            await bot.send_message(
+                int(admin_id), text,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            sent += 1
+        except Exception:
+            logger.exception("event=admin_notify.failed admin=%s type=%s", admin_id, event)
+    return sent
 
 
 def admin_notification_enabled(user_id: int | None, event: str) -> bool:

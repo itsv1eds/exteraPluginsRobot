@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.context import get_lang
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
+from bot.menu_owner import MenuOwnerMiddleware
 from bot.services.audit import add_audit_event
 from bot.services.dialogs import register_dialog_message
 from bot.services.moderation import moderation_config, request_title
@@ -17,6 +18,7 @@ from bot.texts import t
 from request_store import get_request_by_id, update_request_payload, update_request_status
 
 router = Router(name="author-flow")
+router.callback_query.middleware(MenuOwnerMiddleware())
 logger = logging.getLogger(__name__)
 
 _APPEAL_MIN_LEN = 40
@@ -102,6 +104,19 @@ async def on_moderation_contact_text(message: Message, state: FSMContext) -> Non
         peer_id=int(user.id), request_id=str(request_id or slug),
         author_id=int(user.id), admin_id=0,
     )
+    try:
+        from bot.services.admin_notifications import notify_admins_event
+
+        await notify_admins_event(
+            message.bot, "author_replies",
+            t("admin_notify_author_reply", "ru",
+              name=plain_html(request_title(entry) if entry else slug),
+              sender=user_mention(user.id, user.username),
+              text=strip_blockquote_tags(text)),
+        )
+    except Exception:
+        logger.exception("event=modcontact.notify_admins_failed user_id=%s", user.id)
+
     add_audit_event(
         "moderation.author_question",
         actor_id=int(user.id),
@@ -201,6 +216,19 @@ async def on_request_appeal_text(message: Message, state: FSMContext) -> None:
         await notify_admins_request(message.bot, entry)
     except Exception:
         logger.exception("event=appeal.notify_failed request_id=%s", request_id)
+
+    try:
+        from bot.services.admin_notifications import notify_admins_event
+
+        await notify_admins_event(
+            message.bot, "appeals",
+            t("admin_notify_appeal", "ru",
+              name=plain_html(request_title(entry)),
+              sender=user_mention(user.id, user.username),
+              comment=strip_blockquote_tags(text)),
+        )
+    except Exception:
+        logger.exception("event=appeal.notify_admins_failed request_id=%s", request_id)
 
     add_audit_event(
         "moderation.appeal_submitted",

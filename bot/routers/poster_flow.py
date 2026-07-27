@@ -25,12 +25,14 @@ from bot.context import get_lang
 from bot.formatting import plain_html
 from bot.helpers import answer, extract_html_text
 from bot.keyboards import _btn
+from bot.menu_owner import MenuOwnerMiddleware
 from bot.states import PosterFlow
 from bot.texts import t
 from bot.services import poster
 
 logger = logging.getLogger(__name__)
 router = Router(name="poster-flow")
+router.callback_query.middleware(MenuOwnerMiddleware())
 
 TZ_DISPLAY = timezone(timedelta(hours=5))
 DEFAULT_UTC_OFFSET = 5

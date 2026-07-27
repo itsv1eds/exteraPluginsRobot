@@ -517,8 +517,6 @@ def profile_kb(
     owned: list[InlineKeyboardButton] = []
     if has_plugins:
         owned.append(_btn(t("btn_my_plugins", lang), callback_data="my:plugins:0", icon="plugin"))
-    if has_icons:
-        owned.append(_btn(t("btn_my_packs", lang), callback_data="my:icons:0", icon="art"))
     if owned:
         rows.append(owned)
 
@@ -557,8 +555,12 @@ def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMa
             _btn(t("admin_btn_banned", lang), callback_data="adm:banned:0", icon="ban"),
             _btn(t("admin_btn_config", lang), callback_data="adm:config", icon="settings"),
         ])
-    if not is_super:
-        rows.append([_btn(t("admin_btn_stats", lang), callback_data="adm:stats", icon="stats")])
+    else:
+        rows.append([
+            _btn(t("admin_btn_stats", lang), callback_data="adm:stats", icon="stats"),
+            _btn(t("admin_btn_audit", lang), callback_data="adm:audit:all:0", icon="file"),
+        ])
+        rows.append([_btn(t("admin_btn_audit_log", lang), callback_data="adm:auditlog:0", icon="file")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -790,10 +792,7 @@ def admin_config_kb(lang: str = "ru") -> InlineKeyboardMarkup:
 def admin_config_admins_kb(lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("admin_cfg_superadmins", lang), callback_data="adm:config:admins_super", icon="admin")],
-        [
-            _btn(t("admin_cfg_admins_plugins", lang), callback_data="adm:config:admins_plugins", icon="plugin"),
-            _btn(t("admin_cfg_admins_icons", lang), callback_data="adm:config:admins_icons", icon="art"),
-        ],
+        [_btn(t("admin_cfg_admins_plugins", lang), callback_data="adm:config:admins_plugins", icon="plugin")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 

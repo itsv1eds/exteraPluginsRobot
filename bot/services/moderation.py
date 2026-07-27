@@ -169,6 +169,10 @@ def forum_text_with_votes(entry: dict | None) -> str:
         base = f"<b>Заявка:</b> {telegram_html(request_title(entry))}"
 
     parts = [base]
+    if is_unban_appeal(entry):
+        from bot.texts import t as _t
+
+        parts.append(_t("appeal_forum_badge", "ru"))
     if isinstance(payload, dict) and payload.get("is_appeal"):
         from bot.texts import t as _t
 
@@ -185,10 +189,20 @@ def forum_text_with_votes(entry: dict | None) -> str:
     return "\n\n".join(parts)
 
 
+def is_unban_appeal(entry: dict | None) -> bool:
+    return isinstance(entry, dict) and entry.get("type") == "unban_appeal"
+
+
 def request_title(entry: dict | None) -> str:
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     if not isinstance(payload, dict):
         return str((entry or {}).get("id") or "—")
+    if is_unban_appeal(entry):
+        from bot.texts import t as _t
+
+        username = str(payload.get("username") or "").strip()
+        who = f"@{username}" if username else str(payload.get("user_id") or "—")
+        return _t("appeal_request_title", "ru", user=who)
     plugin = payload.get("plugin") if isinstance(payload.get("plugin"), dict) else {}
     icon = payload.get("icon") if isinstance(payload.get("icon"), dict) else {}
     return (

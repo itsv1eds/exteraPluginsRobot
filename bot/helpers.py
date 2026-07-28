@@ -164,6 +164,40 @@ async def try_react_pray(message: Message) -> None:
         return
 
 
+BLANK_CHAR = "\u2800"
+
+
+async def blank_and_delete(bot, chat_id: int, message_id: int) -> bool:
+    if not chat_id or not message_id:
+        return False
+    try:
+        await bot.edit_message_text(
+            BLANK_CHAR, chat_id=int(chat_id), message_id=int(message_id), reply_markup=None,
+        )
+    except Exception:
+        try:
+            await bot.edit_message_caption(
+                chat_id=int(chat_id), message_id=int(message_id),
+                caption=BLANK_CHAR, reply_markup=None,
+            )
+        except Exception:
+            pass
+    try:
+        await bot.delete_message(int(chat_id), int(message_id))
+        return True
+    except Exception:
+        return False
+
+
+async def blank_and_delete_message(msg) -> bool:
+    if msg is None:
+        return False
+    try:
+        return await blank_and_delete(msg.bot, msg.chat.id, msg.message_id)
+    except Exception:
+        return False
+
+
 async def download_document(bot: Bot, file_id: str, dest_dir: Path) -> Path:
     file = await bot.get_file(file_id)
     name = Path(file.file_path).name if file.file_path else f"{file_id}.plugin"
@@ -220,7 +254,7 @@ async def answer(
         try:
             if msg.photo and len(strip_html(text or "")) > 1024:
                 try:
-                    await msg.delete()
+                    await blank_and_delete_message(msg)
                 except Exception:
                     pass
                 return await bot.send_message(
@@ -235,7 +269,7 @@ async def answer(
 
             if preview_options and msg.photo:
                 try:
-                    await msg.delete()
+                    await blank_and_delete_message(msg)
                 except Exception:
                     pass
                 return await bot.send_message(

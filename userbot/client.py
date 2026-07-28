@@ -18,6 +18,8 @@ from catalog import invalidate_catalog_cache
 
 logger = logging.getLogger(__name__)
 
+BLANK_CHAR = "\u2800"
+
 CONFIG = load_config()
 SYNC_CHANNEL_USERNAME = CONFIG.get("channel", {}).get("username", "exteraPluginsSup")
 SYNC_CHANNEL_ID = CONFIG.get("channel", {}).get("id", -1003869091631)
@@ -549,6 +551,10 @@ class UserbotClient:
 
     async def delete_message(self, message_id: int) -> None:
         entity = await self.get_publish_entity()
+        try:
+            await self.client.edit_message(entity, message_id, BLANK_CHAR, file=None)
+        except Exception:
+            logger.debug("userbot: blanking before delete failed message_id=%s", message_id)
         await self.client.delete_messages(entity, message_id)
     
     async def full_sync(self, limit: int = 0) -> Dict[str, int]:

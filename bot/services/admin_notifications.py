@@ -287,7 +287,7 @@ async def finalize_admin_notify_messages(
                 if not message_id:
                     continue
                 try:
-                    await bot.delete_message(chat_id, message_id)
+                    await blank_and_delete(bot, chat_id, message_id)
                 except Exception:
                     pass
             continue

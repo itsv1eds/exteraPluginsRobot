@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, Message
 
 from bot.context import get_language
 from bot.formatting import plain_html, telegram_html, user_mention
+from bot.helpers import blank_and_delete
 from bot.keyboards import moderation_vote_reason_kb, moderation_vote_template_kb
 from bot.services.audit import add_audit_event
 from bot.services.moderation import (
@@ -112,10 +113,7 @@ async def _delete_prompt(bot, item: dict | None) -> None:
     message_id = int(item.get("prompt_message_id") or 0)
     if not chat_id or not message_id:
         return
-    try:
-        await bot.delete_message(chat_id, message_id)
-    except Exception:
-        pass
+    await blank_and_delete(bot, chat_id, message_id)
 
 
 async def _finish_vote(bot, request_id: str, user_id: int, reason: str, cb: CallbackQuery | None = None) -> bool:
@@ -251,7 +249,7 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(t("vote_timeout", lang), show_alert=True)
         try:
             if cb.message:
-                await cb.bot.delete_message(cb.message.chat.id, cb.message.message_id)
+                await blank_and_delete(cb.bot, cb.message.chat.id, cb.message.message_id)
         except Exception:
             pass
         return

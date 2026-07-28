@@ -11,7 +11,7 @@ from aiogram.types import FSInputFile
 
 from bot.cache import get_admins, get_config
 from bot.formatting import code_html, quote_html, strip_blockquote_tags, telegram_html
-from bot.helpers import link_preview_options
+from bot.helpers import blank_and_delete, link_preview_options
 from bot.keyboards import moderation_appeal_kb, moderation_vote_kb
 
 logger = logging.getLogger(__name__)
@@ -548,7 +548,7 @@ async def delete_forum_request_message(bot, entry: dict | None) -> None:
 
     for message_id in message_ids:
         try:
-            await bot.delete_message(int(chat_id), message_id)
+            await blank_and_delete(bot, int(chat_id), message_id)
         except Exception:
             pass
 

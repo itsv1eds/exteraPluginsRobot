@@ -23,7 +23,7 @@ from aiogram.types import (
 from bot.cache import get_admins
 from bot.context import get_lang
 from bot.formatting import plain_html
-from bot.helpers import answer, extract_html_text
+from bot.helpers import answer, blank_and_delete, extract_html_text
 from bot.keyboards import _btn
 from bot.menu_owner import MenuOwnerMiddleware
 from bot.states import PosterFlow
@@ -86,10 +86,7 @@ def _chat_id(target) -> int:
 
 async def _delete_msg(bot, chat_id: int, msg_id) -> None:
     if msg_id:
-        try:
-            await bot.delete_message(chat_id, int(msg_id))
-        except Exception:
-            pass
+        await blank_and_delete(bot, chat_id, int(msg_id))
 
 
 def _fmt_local(run_at_iso: str, tz: timezone | None = None) -> str:

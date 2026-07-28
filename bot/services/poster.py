@@ -400,7 +400,9 @@ async def delete_sent_post(bot, post: Dict[str, Any]) -> None:
     message_id = post.get("sent_message_id")
     if message_id:
         try:
-            await bot.delete_message(chat_id, message_id)
+            from bot.helpers import blank_and_delete
+
+            await blank_and_delete(bot, chat_id, message_id)
         except Exception:
             logger.exception("poster: auto-delete failed post=%s chat=%s", post.get("id"), chat_id)
     _update_post(post.get("id"), status="deleted", delete_at=None)

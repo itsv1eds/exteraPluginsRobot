@@ -77,6 +77,7 @@ async def stop_log_worker() -> None:
 BOT_COMMANDS = {"start", "admin", "lang", "new", "settings", "unlockchat", "help", "cancel"}
 
 _COMMAND_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s|$)")
+_BARE_COMMAND_RE = re.compile(r"^/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?$")
 
 
 def parse_command(text: str | None) -> Optional[str]:
@@ -87,8 +88,11 @@ def parse_command(text: str | None) -> Optional[str]:
     return name if name in BOT_COMMANDS else None
 
 
+def is_bare_command(text: str | None) -> bool:
+    return bool(_BARE_COMMAND_RE.match((text or "").strip()))
+
+
 class CommandStateResetMiddleware(BaseMiddleware):
-    """Команда отменяет незавершённый шаг ввода, а не попадает в него текстом."""
 
     async def __call__(
         self,
@@ -97,19 +101,43 @@ class CommandStateResetMiddleware(BaseMiddleware):
         data: dict[str, Any],
     ) -> Any:
         if isinstance(event, Message):
-            command = parse_command(event.text or event.caption)
+            raw = event.text or event.caption
+            command = parse_command(raw)
+            state = data.get("state")
+            in_input = False
+            if state is not None:
+                try:
+                    in_input = await state.get_state() is not None
+                except Exception:
+                    in_input = False
+
             if command:
-                state = data.get("state")
-                if state is not None:
+                if in_input:
                     try:
-                        if await state.get_state() is not None:
-                            await state.set_state(None)
-                            logger.info(
-                                "event=command.state_reset command=%s user_id=%s",
-                                command, event.from_user.id if event.from_user else None,
-                            )
+                        await state.set_state(None)
+                        data["raw_state"] = None
+                        logger.info(
+                            "event=command.state_reset command=%s user_id=%s",
+                            command, event.from_user.id if event.from_user else None,
+                        )
                     except Exception:
                         logger.exception("command state reset failed")
+            elif in_input and is_bare_command(raw):
+                logger.info(
+                    "event=command.ignored_in_input text=%s user_id=%s",
+                    str(raw)[:32], event.from_user.id if event.from_user else None,
+                )
+                try:
+                    from bot.context import get_lang
+                    from bot.texts import t
+
+                    await event.answer(
+                        t("command_ignored_in_input", get_lang(event.from_user.id if event.from_user else None)),
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    pass
+                return None
         return await handler(event, data)
 
 

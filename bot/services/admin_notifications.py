@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import FSInputFile
 
 from bot.cache import (
@@ -17,7 +18,7 @@ from bot.cache import (
     invalidate,
 )
 from bot.context import get_lang
-from bot.helpers import link_preview_options
+from bot.helpers import blank_and_delete, link_preview_options
 from bot.keyboards import admin_appeal_decision_kb, admin_review_kb
 from bot.services.moderation import (
     forum_text_with_votes,
@@ -141,6 +142,21 @@ def request_notification_event(entry: dict[str, Any]) -> str:
     return "new_plugins"
 
 
+_UNREACHABLE_MARKERS = (
+    "bot can't initiate conversation",
+    "bot was blocked by the user",
+    "user is deactivated",
+    "chat not found",
+)
+
+
+def is_unreachable_chat(exc: BaseException) -> bool:
+    if not isinstance(exc, TelegramForbiddenError):
+        return False
+    text = str(exc).lower()
+    return any(marker in text for marker in _UNREACHABLE_MARKERS)
+
+
 async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], text: str, file_path: str | None) -> None:
     request_id = str(entry.get("id") or "")
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
@@ -175,7 +191,13 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
         mapping[str(chat_id)] = info
         payload["admin_notify_messages"] = mapping
         update_request_payload(request_id, {"admin_notify_messages": mapping})
-    except Exception:
+    except Exception as exc:
+        if is_unreachable_chat(exc):
+            logger.warning(
+                "event=submission.notify_review_target.unreachable request_id=%s chat_id=%s reason=%s",
+                request_id, chat_id, str(exc).split(" - ")[-1],
+            )
+            return
         logger.warning("event=submission.notify_review_target.failed request_id=%s chat_id=%s", request_id, chat_id, exc_info=True)
 
 

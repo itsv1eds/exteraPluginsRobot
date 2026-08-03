@@ -151,7 +151,9 @@ async def main() -> None:
     if not token:
         raise RuntimeError("BOT_TOKEN not set")
 
-    asyncio.create_task(start_userbot())
+    from bot.helpers import spawn_background
+
+    spawn_background(start_userbot())
 
     bot = Bot(
         token,

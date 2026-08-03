@@ -22,10 +22,13 @@ from aiogram.types import (
 
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
+from bot import limits
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
-from bot.helpers import answer, extract_html_text, try_react_pray
+from bot.helpers import ack, answer, extract_html_text, spawn_background, try_react_pray
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
 from bot.keyboards import (
+    quiz_kb,
+    quiz_start_kb,
     banned_appeal_kb,
     cancel_kb,
     comment_skip_kb,
@@ -108,7 +111,7 @@ async def on_successful_payment(message: Message) -> None:
     set_paid_broadcast_disable(user_id, True)
     set_broadcast_enabled(user_id, False)
 
-    asyncio.create_task(notify_admins_broadcast_paid_disable(message.bot, message.from_user, payment))
+    spawn_background(notify_admins_broadcast_paid_disable(message.bot, message.from_user, payment))
 
     lang = get_lang(user_id)
     await message.answer(t("broadcast_payment_thanks", lang), parse_mode=ParseMode.HTML)
@@ -421,7 +424,9 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
         user_id = message.from_user.id if message.from_user else None
         if user_id and user_id in get_admins():
             await state.set_state(AdminFlow.menu)
-            sent = await answer(message, _tr(message, "admin_title"), admin_menu_kb(_admin_menu_role(message), lang=lang), "profile")
+            from bot.routers.admin_flow import _admin_menu_role
+
+            sent = await answer(message, t("admin_title", lang), admin_menu_kb(_admin_menu_role(message), lang=lang), "profile")
             if sent:
                 await remember_menu_owner(message, state, sent)
         else:
@@ -453,7 +458,7 @@ async def _send_submission_rules(target: Message | CallbackQuery, lang: str) -> 
         logger.exception("event=submission.rules_send_failed chat_id=%s", chat_id)
 
 
-async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
+async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str, *, show_rules: bool = True) -> None:
     user = cb.from_user
     include_update = False
     if user:
@@ -462,7 +467,9 @@ async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str) -
         except Exception:
             include_update = False
     await state.set_state(UserFlow.choosing_submission_type)
-    await _send_submission_rules(cb, lang)
+    if show_rules and not (await state.get_data()).get("rules_shown"):
+        await _send_submission_rules(cb, lang)
+        await state.update_data(rules_shown=True)
     await answer(cb, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
 
 
@@ -680,10 +687,7 @@ async def on_appeal_start(cb: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(UserFlow.entering_appeal)
     await answer(cb, t("appeal_prompt", lang), None, "appeal")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(UserFlow.entering_appeal)
@@ -940,10 +944,7 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
         ),
         "update",
     )
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data == "home")
@@ -964,10 +965,7 @@ async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
         await try_react_pray(cb.message)
     elif msg:
         await try_react_pray(msg)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data == "cancel")
@@ -995,18 +993,12 @@ async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
         "entering_changelog",
         "choosing_plugin_to_update",
     }:
-        await _render_submit_type(cb, state, lang)
+        await _render_submit_type(cb, state, lang, show_rules=False)
     else:
         await _render_home(cb, state, lang)
 
-    try:
-        await cb.answer(t("submission_cancelled", lang))
-    except Exception:
-        pass
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb, t("submission_cancelled", lang))
+    await ack(cb)
 
 
 @router.callback_query(F.data == "submit")
@@ -1016,19 +1008,64 @@ async def on_submit(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(t("user_banned_short", lang), show_alert=True)
         return
     lang = await get_language(cb, state)
-    user = cb.from_user
-    include_update = False
-    if user:
-        try:
-            include_update = bool(find_user_plugins(user.id, user.username or ""))
-        except Exception:
-            include_update = False
-    await state.set_state(UserFlow.choosing_submission_type)
-    await answer(cb, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
-    try:
+    await _render_submit_type(cb, state, lang)
+    await ack(cb)
+
+
+async def _start_quiz(target, state: FSMContext, lang: str) -> None:
+    from bot.services.quiz import QUESTIONS_PER_QUIZ, build_quiz
+
+    quiz = build_quiz(lang, QUESTIONS_PER_QUIZ)
+    await state.set_state(UserFlow.passing_quiz)
+    await state.update_data(quiz=quiz, quiz_index=0)
+    await _render_quiz_question(target, state, lang)
+
+
+async def _render_quiz_question(target, state: FSMContext, lang: str) -> None:
+    data = await state.get_data()
+    quiz = data.get("quiz") or []
+    idx = int(data.get("quiz_index") or 0)
+    if idx >= len(quiz):
+        return
+    q = quiz[idx]
+    await answer(
+        target,
+        t("quiz_question", lang, current=idx + 1, total=len(quiz), text=plain_html(q["text"])),
+        quiz_kb(q["options"], idx, lang),
+        "new",
+    )
+
+
+@router.callback_query(UserFlow.passing_quiz, F.data.regexp(r"^quiz:a:\d+:\d+$"))
+async def on_quiz_answer(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    _, _, idx_raw, choice_raw = cb.data.split(":")
+    data = await state.get_data()
+    quiz = data.get("quiz") or []
+    idx = int(data.get("quiz_index") or 0)
+    if int(idx_raw) != idx or idx >= len(quiz):
         await cb.answer()
-    except Exception:
-        pass
+        return
+
+    if int(choice_raw) != int(quiz[idx]["correct"]):
+        await cb.answer(t("quiz_wrong", lang), show_alert=True)
+        await _start_quiz(cb, state, lang)
+        return
+
+    idx += 1
+    await state.update_data(quiz_index=idx)
+    if idx < len(quiz):
+        await _render_quiz_question(cb, state, lang)
+        await ack(cb)
+        return
+
+    await state.update_data(quiz=None, quiz_index=0)
+    if cb.from_user:
+        discard_user_drafts(cb.from_user.id)
+    await state.update_data(draft_request_id=None)
+    await state.set_state(UserFlow.uploading_file)
+    await answer(cb, t("upload_plugin", lang), cancel_kb(lang), "new")
+    await ack(cb, t("quiz_passed", lang))
 
 
 @router.callback_query(UserFlow.choosing_submission_type, F.data == "submit:plugin")
@@ -1036,15 +1073,19 @@ async def on_submit_plugin(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
     lang = await get_language(cb, state)
-    if cb.from_user:
-        discard_user_drafts(cb.from_user.id)
-    await state.update_data(draft_request_id=None)
-    await state.set_state(UserFlow.uploading_file)
-    await answer(cb, t("upload_plugin", lang), cancel_kb(lang), "new")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    from bot.services.quiz import QUESTIONS_PER_QUIZ
+
+    await state.set_state(UserFlow.passing_quiz)
+    await answer(cb, t("quiz_intro", lang, count=QUESTIONS_PER_QUIZ), quiz_start_kb(lang), "new")
+    await ack(cb)
+
+
+@router.callback_query(UserFlow.passing_quiz, F.data == "quiz:start")
+async def on_quiz_start(cb: CallbackQuery, state: FSMContext) -> None:
+    if not await _ensure_not_banned(cb, state):
+        return
+    await _start_quiz(cb, state, await get_language(cb, state))
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.choosing_submission_type, F.data == "submit:update")
@@ -1062,10 +1103,7 @@ async def on_submit_update(cb: CallbackQuery, state: FSMContext) -> None:
     plugins_list = [(p.get("ru", {}).get("name") or p.get("slug"), p.get("slug")) for p in user_plugins]
     await state.set_state(UserFlow.choosing_plugin_to_update)
     await answer(cb, t("choose_plugin_to_update", lang), user_plugins_kb(plugins_list, lang), "update")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.choosing_plugin_to_update, F.data.startswith("upd:"))
@@ -1082,10 +1120,7 @@ async def on_choose_plugin_update(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version)
     await state.set_state(UserFlow.uploading_update_file)
     await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "update")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.startswith("pendreq:"))
@@ -1145,10 +1180,7 @@ async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
         ),
         "profile",
     )
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.startswith("profile:delete:"))
@@ -1186,10 +1218,7 @@ async def on_profile_delete(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=True)
     await answer(cb, t("ask_delete_reason", lang, max=COMMENT_MEDIA_LIMIT),
                  comment_skip_kb(lang, required=True), "delete")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.startswith("profile:update:"))
@@ -1208,10 +1237,7 @@ async def on_profile_update(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version)
     await state.set_state(UserFlow.uploading_update_file)
     await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "update")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(UserFlow.uploading_update_file, F.document)
@@ -1219,13 +1245,14 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
     if not await _ensure_not_banned(message, state):
         return
     lang = await get_language(message, state)
+    await state.update_data(author_message_id=message.message_id)
     data = await state.get_data()
     old_plugin = data.get("old_plugin", {})
     old_version = data.get("old_version", "")
     is_admin = message.from_user.id in get_admins_plugins() if message.from_user else False
 
     if message.document and message.document.file_size:
-        if message.document.file_size > 8 * 1024 * 1024:
+        if message.document.file_size > limits.PLUGIN_FILE_BYTES:
             await message.answer(t("file_too_large", lang))
             return
 
@@ -1239,8 +1266,15 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
             await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
         return
 
+    new_dict = plugin.to_dict()
+    if not meets_min_supported(new_dict.get("min_version")):
+        await message.answer(_submission_error_text(
+            "min_version_too_low", lang, old_version=old_version,
+            plugin_min=new_dict.get("min_version") or "",
+        ))
+        return
+
     if not is_admin:
-        new_dict = plugin.to_dict()
         is_valid, error = validate_update_submission(new_dict, old_plugin)
         if not is_valid:
             await message.answer(_submission_error_text(
@@ -1369,7 +1403,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
 
         await state.update_data(edit_field=field)
         await state.set_state(UserFlow.editing_draft_field)
-        await answer(cb, prompt, None, None)
+        await answer(cb, prompt, cancel_kb(lang), None)
         await cb.answer()
         return
 
@@ -1379,7 +1413,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(UserFlow.editing_draft_field)
 
         prompt = t("admin_prompt_enter_text_ru", lang) if lang_choice == "ru" else t("admin_prompt_enter_text_en", lang)
-        msg = await answer(cb, prompt, None, None)
+        msg = await answer(cb, prompt, cancel_kb(lang), None)
         if msg:
             await state.update_data(draft_message_id=msg.message_id)
         await cb.answer()
@@ -1449,7 +1483,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
                 await _sync_pending_update_request(state, req_id)
                 entry = get_request_by_id(req_id)
                 if isinstance(entry, dict):
-                    asyncio.create_task(_notify_admins_request_updated(cb.bot, entry))
+                    spawn_background(_notify_admins_request_updated(cb.bot, entry))
             await cb.answer(t("pending_saved", lang), show_alert=True)
             return
 
@@ -1481,10 +1515,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer()
         return
 
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.confirming_submission, F.data == "pend:delete")
@@ -1499,10 +1530,7 @@ async def on_pending_delete(cb: CallbackQuery, state: FSMContext) -> None:
         ]
     )
     await answer(cb, t("pending_delete_confirm", lang), kb, None)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.confirming_submission, F.data == "pend:delete_confirm")
@@ -1517,10 +1545,7 @@ async def on_pending_delete_confirm(cb: CallbackQuery, state: FSMContext) -> Non
     await state.clear()
     await state.set_state(UserFlow.idle)
     await answer(cb, t("pending_deleted", lang), main_menu_kb(lang), "welcome")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete")
@@ -1535,10 +1560,7 @@ async def on_pending_update_delete(cb: CallbackQuery, state: FSMContext) -> None
         ]
     )
     await answer(cb, t("pending_delete_confirm", lang), kb, None)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete_confirm")
@@ -1553,10 +1575,7 @@ async def on_pending_update_delete_confirm(cb: CallbackQuery, state: FSMContext)
     await state.clear()
     await state.set_state(UserFlow.idle)
     await answer(cb, t("pending_deleted", lang), main_menu_kb(lang), "welcome")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(UserFlow.uploading_pending_update_file, F.document)
@@ -1577,7 +1596,7 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
     old_version = data.get("old_version", "")
 
     if message.document and message.document.file_size:
-        if message.document.file_size > 8 * 1024 * 1024:
+        if message.document.file_size > limits.PLUGIN_FILE_BYTES:
             await message.answer(t("file_too_large", lang))
             return
 
@@ -1621,7 +1640,7 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
     await _sync_pending_update_request(state, req_id)
     entry = get_request_by_id(req_id)
     if isinstance(entry, dict):
-        asyncio.create_task(_notify_admins_request_updated(message.bot, entry))
+        spawn_background(_notify_admins_request_updated(message.bot, entry))
 
     await state.set_state(UserFlow.confirming_update)
     draft_text = _render_update_text(await state.get_data())
@@ -1655,9 +1674,10 @@ async def on_file(message: Message, state: FSMContext) -> None:
     lang = await get_language(message, state)
 
     await try_react_pray(message)
+    await state.update_data(author_message_id=message.message_id)
 
     if message.document and message.document.file_size:
-        if message.document.file_size > 8 * 1024 * 1024:
+        if message.document.file_size > limits.PLUGIN_FILE_BYTES:
             await message.answer(t("file_too_large", lang))
             return
 
@@ -1778,11 +1798,8 @@ async def on_description_language(cb: CallbackQuery, state: FSMContext) -> None:
     await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
 
     await state.set_state(UserFlow.editing_description_translation)
-    await answer(cb, prompt, None, None)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await answer(cb, prompt, cancel_kb(lang), None)
+    await ack(cb)
 
 
 @router.message(UserFlow.editing_description_translation)
@@ -1872,10 +1889,7 @@ async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
         ),
         "new",
     )
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):edit:"))
@@ -1911,11 +1925,8 @@ async def on_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
 
     await state.update_data(edit_field=field)
     await state.set_state(UserFlow.editing_draft_field)
-    await answer(cb, prompt, None, None)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await answer(cb, prompt, cancel_kb(lang), None)
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):not_before$"))
@@ -1927,10 +1938,7 @@ async def on_draft_not_before(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(draft_prefix=prefix)
     await state.set_state(UserFlow.entering_publish_not_before)
     await answer(cb, t("publish_not_before_prompt", lang), cancel_kb(lang), None)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(UserFlow.entering_publish_not_before)
@@ -1958,7 +1966,7 @@ async def on_draft_not_before_value(message: Message, state: FSMContext) -> None
             await _sync_pending_plugin_request(state, req_id)
             entry = get_request_by_id(req_id)
             if isinstance(entry, dict):
-                asyncio.create_task(_notify_admins_request_updated(message.bot, entry))
+                spawn_background(_notify_admins_request_updated(message.bot, entry))
     else:
         await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
 
@@ -1990,13 +1998,10 @@ async def on_draft_language(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     prompt = t("admin_prompt_enter_text_ru", lang) if lang_choice == "ru" else t("admin_prompt_enter_text_en", lang)
 
-    msg = await answer(cb, prompt, None, None)
+    msg = await answer(cb, prompt, cancel_kb(lang), None)
     if msg:
         await state.update_data(draft_message_id=msg.message_id)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):cat:"))
@@ -2035,10 +2040,7 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
         ),
         "new",
     )
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(UserFlow.confirming_submission, F.data.regexp(r"^(draft|pend):back$"))
@@ -2059,10 +2061,7 @@ async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
         ),
         "new",
     )
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(UserFlow.editing_draft_field)
@@ -2189,7 +2188,7 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
     expected_id = (existing.get("id") or "").strip()
 
     if message.document and message.document.file_size:
-        if message.document.file_size > 8 * 1024 * 1024:
+        if message.document.file_size > limits.PLUGIN_FILE_BYTES:
             await message.answer(t("file_too_large", lang))
             return
 
@@ -2226,7 +2225,7 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
     await _sync_pending_plugin_request(state, req_id)
     entry = get_request_by_id(req_id)
     if isinstance(entry, dict):
-        asyncio.create_task(_notify_admins_request_updated(message.bot, entry))
+        spawn_background(_notify_admins_request_updated(message.bot, entry))
 
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
@@ -2267,7 +2266,7 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
             await _sync_pending_plugin_request(state, req_id)
             entry = get_request_by_id(req_id)
             if isinstance(entry, dict):
-                asyncio.create_task(_notify_admins_request_updated(cb.bot, entry))
+                spawn_background(_notify_admins_request_updated(cb.bot, entry))
         await cb.answer(t("pending_saved", lang), show_alert=True)
         return
 
@@ -2322,13 +2321,10 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(UserFlow.entering_admin_comment)
     await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=False)
     await answer(cb, t("ask_admin_comment", lang, max=COMMENT_MEDIA_LIMIT), comment_skip_kb(lang), "new")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
-COMMENT_MEDIA_LIMIT = 10
+COMMENT_MEDIA_LIMIT = limits.ALBUM_ITEMS
 
 
 def _comment_media_of(message: Message) -> dict | None:
@@ -2374,10 +2370,7 @@ async def on_admin_comment_reset(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await state.update_data(pending_comment=None, pending_comment_media=[])
     await _render_comment_state(cb, state, lang)
-    try:
-        await cb.answer(t("comment_cleared", lang))
-    except Exception:
-        pass
+    await ack(cb, t("comment_cleared", lang))
 
 
 @router.callback_query(UserFlow.entering_admin_comment, F.data == "comment:send")
@@ -2438,6 +2431,8 @@ async def _finalize_submission(
         return
     data = await state.get_data()
     payload = data.get("pending_payload", {})
+    if isinstance(payload, dict) and data.get("author_message_id"):
+        payload.setdefault("author_message_id", int(data["author_message_id"]))
     request_type = data.get("pending_request_type", "new")
     reply_key = data.get("pending_reply_key", "submission_sent")
     lang = await get_language(target, state)
@@ -2521,7 +2516,7 @@ async def _finalize_submission(
                             delete_request_and_file(extra_id)
 
                     entry = get_request_by_id(str(keep_id)) or keep
-                    asyncio.create_task(notify_admins_request(target.bot, entry))
+                    spawn_background(notify_admins_request(target.bot, entry))
 
                     await state.set_state(UserFlow.idle)
                     await state.update_data(draft_request_id=None)
@@ -2550,7 +2545,7 @@ async def _finalize_submission(
         bool(comment),
     )
 
-    asyncio.create_task(notify_admins_request(target.bot, entry))
+    spawn_background(notify_admins_request(target.bot, entry))
 
     await state.set_state(UserFlow.idle)
     await state.update_data(draft_request_id=None)
@@ -2703,7 +2698,4 @@ async def on_resubmit_request(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.message.answer(t("resubmit_done", lang), parse_mode=ParseMode.HTML)
     except Exception:
         pass
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)

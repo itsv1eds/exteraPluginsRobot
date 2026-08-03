@@ -211,12 +211,25 @@ def _relocate_request_files(entry: Dict[str, Any], subdir: str) -> None:
             logger.exception("Failed to relocate %s to %s", src, dest)
 
 
-def update_request_status(request_id: str, status: str, comment: Optional[str] = None) -> bool:
+DECISION_STATUSES = {"published", "rejected", "rework", "deleted", "scheduled"}
+
+
+def update_request_status(
+    request_id: str,
+    status: str,
+    comment: Optional[str] = None,
+    actor: Optional[str] = None,
+    actor_id: Optional[int] = None,
+) -> bool:
     entry = get_request_by_id(request_id)
     if not entry:
         return False
 
     entry["status"] = status
+    if status in DECISION_STATUSES and (actor or actor_id):
+        entry["decided_by"] = actor or ""
+        entry["decided_by_id"] = int(actor_id) if actor_id else 0
+        entry["decided_at"] = datetime.utcnow().isoformat()
     if status == "rejected":
         _relocate_request_files(entry, "rejected")
     elif status == "published" and entry.get("type") != "unban_appeal":
@@ -228,6 +241,8 @@ def update_request_status(request_id: str, status: str, comment: Optional[str] =
     history.append({
         "status": status,
         "comment": comment,
+        "actor": actor or "",
+        "actor_id": int(actor_id) if actor_id else 0,
         "changed_at": datetime.utcnow().isoformat(),
     })
     

@@ -8,11 +8,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from bot import limits
+from bot.helpers import BLANK_CHAR
+
 from storage import load_poster, save_poster
 
 logger = logging.getLogger(__name__)
 
-POST_STATUSES = ("scheduled", "sent", "failed", "canceled")
+POST_STATUSES = ("scheduled", "sending", "sent", "failed", "canceled")
 _RETRY_CAP_SECONDS = 5.0
 
 _TG_EMOJI_ANCHOR_RE = re.compile(
@@ -184,6 +187,24 @@ def cancel_post(post_id: str, owner_user_id: int) -> bool:
     return changed
 
 
+_in_flight: set = set()
+
+
+def _claim_post(post_id: str) -> bool:
+    if not post_id or post_id in _in_flight:
+        return False
+    doc = load_poster()
+    for post in doc.get("posts", []):
+        if isinstance(post, dict) and post.get("id") == post_id:
+            if post.get("status") != "scheduled":
+                return False
+            post["status"] = "sending"
+            save_poster(doc)
+            _in_flight.add(post_id)
+            return True
+    return False
+
+
 def _update_post(post_id: str, **fields: Any) -> None:
     doc = load_poster()
     for post in doc.get("posts", []):
@@ -263,31 +284,87 @@ async def _safe_send(factory, *, retries: int = 1):
             raise
 
 
+CAPTION_LIMIT = limits.CAPTION
+RICH_TEXT_LIMIT = limits.RICH_TEXT
+
+RICH_MEDIA_BLOCKS = {
+    "photo": ("photo", '<img src="tg://photo?id={id}"/>'),
+    "video": ("video", '<video src="tg://video?id={id}"></video>'),
+    "animation": ("video", '<video src="tg://video?id={id}"></video>'),
+    "audio": ("audio", '<audio src="tg://audio?id={id}"></audio>'),
+}
+
+MEDIA_SEND_METHODS = {
+    "photo": "send_photo",
+    "video": "send_video",
+    "animation": "send_animation",
+    "audio": "send_audio",
+    "document": "send_document",
+}
+
+
+def rich_unsupported_media(content: Dict[str, Any]) -> list:
+    return [
+        str(item.get("type") or "?")
+        for item in (content.get("media") or [])
+        if item.get("type") not in RICH_MEDIA_BLOCKS
+    ]
+
+
+def build_rich_message(content: Dict[str, Any]):
+    from aiogram.types import (
+        InputMediaAnimation, InputMediaAudio, InputMediaPhoto, InputMediaVideo,
+        InputRichMessage, InputRichMessageMedia,
+    )
+
+    media_classes = {
+        "photo": InputMediaPhoto,
+        "video": InputMediaVideo,
+        "animation": InputMediaAnimation,
+        "audio": InputMediaAudio,
+    }
+
+    text = normalize_custom_emoji(content.get("html_text") or "")
+    blocks: list[str] = []
+    attachments = []
+
+    for index, item in enumerate(content.get("media") or []):
+        kind = item.get("type")
+        block = RICH_MEDIA_BLOCKS.get(kind)
+        if not block:
+            continue
+        media_id = f"m{index}"
+        blocks.append(block[1].format(id=media_id))
+        attachments.append(InputRichMessageMedia(
+            id=media_id,
+            media=media_classes[kind](media=item["file_id"]),
+        ))
+
+    html = "\n".join(blocks + ([text] if text else [])) or "—"
+    return InputRichMessage(html=html, media=attachments or None)
+
+
 async def send_content(bot, chat_id: int, content: Dict[str, Any]):
     from aiogram.enums import ParseMode
 
     text = normalize_custom_emoji(content.get("html_text") or "")
     media = content.get("media") or []
     kb = _build_keyboard(content.get("buttons") or [])
-    visible_len = len(re.sub(r"<[^>]+>", "", text))
+    visible_len = visible_length(text)
 
     async def _send():
+        if content.get("rich"):
+            return await bot.send_rich_message(
+                chat_id=chat_id, rich_message=build_rich_message(content), reply_markup=kb)
         if media:
             item = media[0]
-            is_video = item.get("type") == "video"
-            if visible_len > 1024:
-                if is_video:
-                    await bot.send_video(chat_id, item["file_id"])
-                else:
-                    await bot.send_photo(chat_id, item["file_id"])
+            send_media = getattr(bot, MEDIA_SEND_METHODS.get(item.get("type"), "send_photo"))
+            if visible_len > CAPTION_LIMIT:
+                await send_media(chat_id, item["file_id"])
                 return await bot.send_message(
                     chat_id, text, parse_mode=ParseMode.HTML,
                     reply_markup=kb, disable_web_page_preview=True)
-            if is_video:
-                return await bot.send_video(
-                    chat_id, item["file_id"], caption=(text or None),
-                    parse_mode=ParseMode.HTML, reply_markup=kb)
-            return await bot.send_photo(
+            return await send_media(
                 chat_id, item["file_id"], caption=(text or None),
                 parse_mode=ParseMode.HTML, reply_markup=kb)
         return await bot.send_message(
@@ -308,18 +385,118 @@ async def _try_userbot_edit(chat_id: int, message_id: int, text: str) -> bool:
     return await ub.edit_channel_text(ref, message_id, text)
 
 
-async def _send_content_for_delivery(bot, chat_id: int, content: Dict[str, Any]):
-    message = await send_content(bot, chat_id, content)
-    text = normalize_custom_emoji(content.get("html_text") or "")
-    message_id = getattr(message, "message_id", None)
-    if "tg-emoji" in text and message_id:
+async def _apply_custom_emoji(bot, chat_id: int, message_id: int, text: str, kb) -> None:
+    try:
+        if await _try_userbot_edit(chat_id, message_id, text):
+            logger.info("poster: custom emoji applied via userbot edit chat=%s msg=%s",
+                        chat_id, message_id)
+            return
+    except Exception:
+        logger.warning("poster: userbot edit for custom emoji failed chat=%s msg=%s",
+                       chat_id, message_id, exc_info=True)
+
+    if not kb:
+        return
+
+    try:
+        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+    except Exception:
+        logger.warning("poster: cannot detach markup for emoji retry chat=%s msg=%s",
+                       chat_id, message_id, exc_info=True)
+        return
+
+    try:
+        if await _try_userbot_edit(chat_id, message_id, text):
+            logger.info("poster: custom emoji applied after markup detach chat=%s msg=%s",
+                        chat_id, message_id)
+    except Exception:
+        logger.warning("poster: userbot edit retry failed chat=%s msg=%s",
+                       chat_id, message_id, exc_info=True)
+    finally:
         try:
-            if await _try_userbot_edit(chat_id, message_id, text):
-                logger.info("poster: custom emoji applied via userbot edit chat=%s msg=%s",
-                            chat_id, message_id)
+            await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=kb)
         except Exception:
-            logger.warning("poster: userbot edit for custom emoji failed chat=%s msg=%s",
-                           chat_id, message_id, exc_info=True)
+            logger.error("poster: FAILED to restore markup chat=%s msg=%s",
+                         chat_id, message_id, exc_info=True)
+
+
+def visible_length(text: str) -> int:
+    return len(re.sub(r"<[^>]+>", "", text or ""))
+
+
+async def _userbot_available() -> bool:
+    from userbot.client import get_userbot
+
+    try:
+        return bool(await get_userbot())
+    except Exception:
+        logger.warning("poster: userbot unavailable", exc_info=True)
+        return False
+
+
+async def _send_via_premium_userbot(bot, chat_id: int, content: Dict[str, Any], text: str):
+    from aiogram.enums import ParseMode
+
+    media = content.get("media") or []
+    kb = _build_keyboard(content.get("buttons") or [])
+    visible = visible_length(text)
+
+    if media:
+        if not CAPTION_LIMIT < visible <= limits.PREMIUM_CAPTION:
+            return None
+    elif not limits.MESSAGE_TEXT < visible <= limits.PREMIUM_MESSAGE_TEXT:
+        return None
+
+    if not await _userbot_available():
+        return None
+
+    if media:
+        item = media[0]
+        send_media = getattr(bot, MEDIA_SEND_METHODS.get(item.get("type"), "send_photo"))
+        message = await _safe_send(lambda: send_media(chat_id, item["file_id"], reply_markup=kb))
+    else:
+        message = await _safe_send(lambda: bot.send_message(
+            chat_id, BLANK_CHAR, parse_mode=ParseMode.HTML,
+            reply_markup=kb, disable_web_page_preview=True))
+
+    message_id = getattr(message, "message_id", None)
+    try:
+        if message_id and await _try_userbot_edit(chat_id, message_id, text):
+            logger.info("poster: long text delivered via userbot chat=%s msg=%s len=%s",
+                        chat_id, message_id, visible)
+            return message
+    except Exception:
+        logger.warning("poster: userbot long-text edit failed chat=%s msg=%s",
+                       chat_id, message_id, exc_info=True)
+
+    if media:
+        return await _safe_send(lambda: bot.send_message(
+            chat_id, text, parse_mode=ParseMode.HTML,
+            reply_markup=kb, disable_web_page_preview=True))
+
+    if message_id:
+        from bot.helpers import blank_and_delete
+
+        await blank_and_delete(bot, chat_id, message_id)
+    raise RuntimeError(f"text of {visible} chars needs the userbot, but it is unavailable")
+
+
+async def _send_content_for_delivery(bot, chat_id: int, content: Dict[str, Any]):
+    text = normalize_custom_emoji(content.get("html_text") or "")
+
+    if not content.get("rich"):
+        message = await _send_via_premium_userbot(bot, chat_id, content, text)
+        if message is not None:
+            return message
+
+    message = await send_content(bot, chat_id, content)
+    message_id = getattr(message, "message_id", None)
+    if content.get("rich"):
+        return message
+    if "tg-emoji" in text and message_id:
+        await _apply_custom_emoji(
+            bot, chat_id, message_id, text, _build_keyboard(content.get("buttons") or [])
+        )
     return message
 
 
@@ -333,6 +510,11 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
     post_id = post.get("id")
     content = post.get("content") or {}
     chat_id = post.get("chat_id")
+
+    if not _claim_post(post_id):
+        logger.warning("poster: skip duplicate delivery post=%s", post_id)
+        return False
+
     try:
         message = await _send_content_for_delivery(bot, chat_id, content)
         extra: Dict[str, Any] = {}
@@ -360,6 +542,8 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
         logger.exception("poster: delivery failed post=%s chat=%s", post_id, chat_id)
         _update_post(post_id, status="failed", error=str(exc)[:300])
         return False
+    finally:
+        _in_flight.discard(post_id)
 
 
 def _schedule_repeat(post: Dict[str, Any], content: Dict[str, Any]) -> None:
@@ -424,8 +608,25 @@ async def _worker_loop(bot) -> None:
             logger.exception("poster: worker loop error")
 
 
+def recover_stuck_posts() -> int:
+    doc = load_poster()
+    fixed = 0
+    for post in doc.get("posts", []):
+        if isinstance(post, dict) and post.get("status") == "sending":
+            post["status"] = "scheduled"
+            fixed += 1
+    if fixed:
+        save_poster(doc)
+        logger.warning("poster: recovered %s stuck post(s) after restart", fixed)
+    return fixed
+
+
 def start_poster_worker(bot) -> None:
     global _worker_task
+    try:
+        recover_stuck_posts()
+    except Exception:
+        logger.exception("poster: recover_stuck_posts failed")
     if _worker_task and not _worker_task.done():
         return
     try:

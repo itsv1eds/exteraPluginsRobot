@@ -8,6 +8,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from bot.context import get_lang
+from bot.helpers import ack
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.menu_owner import MenuOwnerMiddleware
 from bot.services.audit import add_audit_event
@@ -52,10 +53,7 @@ async def on_contact_moderation(cb: CallbackQuery, state: FSMContext) -> None:
         )
     except Exception:
         pass
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(UserFlow.entering_moderation_contact)
@@ -141,10 +139,7 @@ async def on_contact_moderation_removed(cb: CallbackQuery, state: FSMContext) ->
         )
     except Exception:
         pass
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.startswith("usr:appeal:"))
@@ -173,10 +168,7 @@ async def on_request_appeal(cb: CallbackQuery, state: FSMContext) -> None:
         )
     except Exception:
         pass
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(UserFlow.entering_request_appeal)

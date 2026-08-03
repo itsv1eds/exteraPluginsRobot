@@ -197,8 +197,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     },
     "poster_autodel_custom_btn": {"ru": "Своя дата", "en": "Custom date"},
     "poster_autodel_date_prompt": {
-        "ru": "📅 <b>Дата удаления</b>\n\nВведите дату и время, когда удалить пост, в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (по вашему времени, UTC+5).",
-        "en": "📅 <b>Deletion date</b>\n\nEnter the date and time to delete the post as <code>DD.MM.YYYY HH:MM</code> (your time, UTC+5).",
+        "ru": "📅 <b>Дата удаления</b>\n\nВведите дату и время, когда удалить пост, в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (по вашему времени, {tz}).",
+        "en": "📅 <b>Deletion date</b>\n\nEnter the date and time to delete the post as <code>DD.MM.YYYY HH:MM</code> (your time, {tz}).",
     },
     "poster_preview_meta": {
         "ru": "<b>Медиа:</b> {media}\n<b>Кнопки:</b> {buttons}",
@@ -217,16 +217,16 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Send the post <b>text</b> (formatting and custom emoji supported):",
     },
     "poster_compose_media": {
-        "ru": "Прикрепите <b>фото</b> или <b>видео</b>, либо пропустите.",
-        "en": "Attach a <b>photo</b> or <b>video</b>, or skip.",
+        "ru": "Прикрепите <b>фото</b>, <b>видео</b>, <b>гиф</b>, <b>аудио</b> или <b>файл</b>, либо пропустите.",
+        "en": "Attach a <b>photo</b>, <b>video</b>, <b>GIF</b>, <b>audio</b> or <b>file</b>, or skip.",
     },
     "poster_compose_buttons": {
         "ru": "Отправьте кнопки — по одной на строку в формате <code>Текст | https://ссылка</code>.\n\nЦвет кнопки — добавьте в конце <code>::red</code> (красная), <code>::green</code> (зелёная) или <code>::blue</code> (синяя), например <code>Текст | https://ссылка::red</code>. Или пропустите.",
         "en": "Send buttons — one per line as <code>Text | https://link</code>.\n\nColor a button by appending <code>::red</code>, <code>::green</code> or <code>::blue</code>, e.g. <code>Text | https://link::red</code>. Or skip.",
     },
     "poster_compose_time": {
-        "ru": "Когда опубликовать? Выберите быстрый вариант или отправьте дату <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> (UTC+5).",
-        "en": "When to publish? Pick a quick option or send a date <code>DD.MM.YYYY HH:MM</code> (UTC+5).",
+        "ru": "Когда опубликовать? Выберите быстрый вариант или отправьте дату <code>ДД.ММ.ГГГГ ЧЧ:ММ</code> ({tz}).",
+        "en": "When to publish? Pick a quick option or send a date <code>DD.MM.YYYY HH:MM</code> ({tz}).",
     },
     "poster_scheduled": {
         "ru": "✅ Пост запланирован на <b>{datetime}</b>\nКанал: <b>{channel}</b>",
@@ -266,7 +266,17 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "poster_err_not_channel": {"ru": "Это не канал.", "en": "That's not a channel."},
     "poster_err_bot_not_admin": {"ru": "Бот не админ канала (нужно право публикации).", "en": "The bot is not a channel admin (post rights required)."},
     "poster_err_user_not_admin": {"ru": "Вы не админ этого канала.", "en": "You are not an admin of this channel."},
-    "poster_err_not_media": {"ru": "Пришлите фото или видео, либо пропустите.", "en": "Send a photo or video, or skip."},
+    "poster_err_not_media": {"ru": "Пришлите фото, видео, гиф, аудио или файл, либо пропустите.", "en": "Send a photo, video, GIF, audio or file, or skip."},
+    "poster_btn_rich_off": {"ru": "Rich-режим: выкл", "en": "Rich mode: off"},
+    "poster_btn_rich_on": {"ru": "Rich-режим: вкл", "en": "Rich mode: on"},
+    "poster_err_rich_too_long": {
+        "ru": "Текст длиннее {limit} символов — rich-сообщение столько не вмещает.",
+        "en": "Text is longer than {limit} characters — a rich message can't hold that.",
+    },
+    "poster_warn_rich_media": {
+        "ru": "Rich-сообщение не показывает вложения этих типов: {types}. Оно уйдёт без них — поддерживаются фото, видео, гиф и аудио.",
+        "en": "Rich messages can't display these attachments: {types}. They will be dropped — photo, video, GIF and audio are supported.",
+    },
     "poster_err_bad_buttons": {"ru": "Не распознал кнопки. Формат: <code>Текст | https://ссылка</code>.", "en": "Couldn't parse buttons. Format: <code>Text | https://link</code>."},
     "poster_err_bad_time": {"ru": "Неверная дата. Формат: <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>.", "en": "Invalid date. Format: <code>DD.MM.YYYY HH:MM</code>."},
     "poster_err_past_time": {"ru": "Время уже прошло, укажите будущее.", "en": "That time is in the past."},
@@ -293,6 +303,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "<b>❌ Rejected requests</b>  (page {current}/{total}, total {count})\n\nTap a request to change the decision or delete it.",
     },
     "admin_rejected_empty": {"ru": "<b>❌ Отклонённые заявки</b>\n\nПусто.", "en": "<b>❌ Rejected requests</b>\n\nEmpty."},
+    "admin_decided_by": {
+        "ru": "<b>Решение принял:</b> {actor}{when}",
+        "en": "<b>Decided by:</b> {actor}{when}",
+    },
     "admin_rejected_reason": {
         "ru": "<b>Причина отклонения:</b>\n<blockquote expandable>{comment}</blockquote>",
         "en": "<b>Rejection reason:</b>\n<blockquote expandable>{comment}</blockquote>",
@@ -517,6 +531,14 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_submit_publish": {"ru": "Опубликовать", "en": "Publish"},
     "admin_submit_update": {"ru": "Обновить", "en": "Update"},
     "admin_submit_delete": {"ru": "Удалить", "en": "Delete"},
+    "admin_delete_ask_reason": {
+        "ru": "🗑 <b>Удаление плагина</b>\n\n{name}\n\nОпишите причину — она уйдёт автору вместе с уведомлением.",
+        "en": "🗑 <b>Plugin removal</b>\n\n{name}\n\nDescribe the reason — it will be sent to the author.",
+    },
+    "admin_delete_confirm_with_reason": {
+        "ru": "Удалить плагин {name}?\n\n<b>Причина:</b>\n<blockquote expandable>{reason}</blockquote>",
+        "en": "Delete plugin {name}?\n\n<b>Reason:</b>\n<blockquote expandable>{reason}</blockquote>",
+    },
     "admin_delete_confirm": {
         "ru": "Удалить плагин?",
         "en": "Delete plugin?",
@@ -536,10 +558,6 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "admin_channel_message_not_found": {
         "ru": "Сообщение канала не найдено",
         "en": "Channel message not found",
-    },
-    "admin_userbot_unavailable": {
-        "ru": "Userbot недоступен",
-        "en": "Userbot unavailable",
     },
     "admin_btn_post": {"ru": "Посты", "en": "Posts"},
     "admin_post_prompt": {
@@ -623,6 +641,35 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Describe your idea for the moderators (optional).\n\nYou can attach up to {max} photos or videos — for example, how the plugin looks.\nWhen you're done, tap \"Send\".",
     },
     "btn_comment_send": {"ru": "Отправить заявку", "en": "Send request"},
+    "quiz_intro": {
+        "ru": "📝 <b>Мини-тест по правилам</b>\n\nПеред отправкой ответьте на {count} вопроса по правилам публикации.\nОшиблись — тест начнётся заново с новыми вопросами.\n\nПравила: https://t.me/exteraPluginsSup/93",
+        "en": "📝 <b>Rules quiz</b>\n\nBefore submitting, answer {count} questions about the publishing rules.\nA wrong answer restarts the quiz with new questions.\n\nRules: https://t.me/exteraPluginsSup/93",
+    },
+    "quiz_btn_start": {"ru": "Начать тест", "en": "Start the quiz"},
+    "quiz_question": {
+        "ru": "📝 <b>Вопрос {current} из {total}</b>\n\n{text}",
+        "en": "📝 <b>Question {current} of {total}</b>\n\n{text}",
+    },
+    "quiz_wrong": {
+        "ru": "❌ Неверно. Перечитайте правила — тест начнётся заново.",
+        "en": "❌ Wrong. Re-read the rules — the quiz will restart.",
+    },
+    "quiz_passed": {
+        "ru": "✅ Тест пройден. Продолжаем отправку заявки.",
+        "en": "✅ Quiz passed. Continuing with your submission.",
+    },
+    "profile_pending_title": {
+        "ru": "<b>⏳ На проверке ({count}):</b>",
+        "en": "<b>⏳ Under review ({count}):</b>",
+    },
+    "profile_pending_new": {"ru": "новый плагин", "en": "new plugin"},
+    "profile_pending_update": {"ru": "обновление", "en": "update"},
+    "profile_pending_delete": {"ru": "удаление", "en": "removal"},
+    "profile_pending_rework": {"ru": "на доработке", "en": "needs changes"},
+    "command_ignored_in_input": {
+        "ru": "Это команда, а не текст — она не будет отправлена. Введите текст или нажмите «Отмена».",
+        "en": "That's a command, not text — it won't be submitted. Type your text or tap \"Cancel\".",
+    },
     "ask_delete_reason": {
         "ru": "🗑 <b>Удаление плагина</b>\n\nОбязательно опишите причину удаления — модерация должна понимать, почему плагин снимается.\nМожно приложить до {max} фото или видео.",
         "en": "🗑 <b>Plugin removal</b>\n\nYou must describe why the plugin is being removed — moderators need to understand the reason.\nYou can attach up to {max} photos or videos.",
@@ -746,10 +793,6 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "appeal_comment_too_short": {
         "ru": "Опишите причину подробнее — минимум {min} символов.",
         "en": "Please explain in more detail — at least {min} characters.",
-    },
-    "appeal_sent": {
-        "ru": "✅ Апелляция отправлена на пересмотр.",
-        "en": "✅ Your appeal has been submitted for review.",
     },
     "appeal_not_a_plugin": {
         "ru": "Это апелляция бана — решайте её кнопками апелляции, а не публикацией.",

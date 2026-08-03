@@ -20,12 +20,13 @@ from aiogram.types import (
 )
 from aiogram.exceptions import TelegramBadRequest
 
+from bot import limits
 from bot.cache import get_admins_super, get_categories, get_icons
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
 from bot.formatting import quote_html
-from bot.helpers import answer, link_preview_options, strip_html
+from bot.helpers import ack, answer, link_preview_options, strip_html
 from bot.icons import CATEGORY_FALLBACKS, CATEGORY_ICONS, ICONS
 from bot.menu_owner import MenuOwnerMiddleware
 from bot.keyboards import (
@@ -273,11 +274,11 @@ def _request_inline_file(payload: dict[str, Any]) -> tuple[str, str, str] | None
 
 def _request_inline_file_caption(request_id: str, file_kind: str, message_text: str) -> str:
     text = str(message_text or "").strip()
-    if len(strip_html(text)) <= 1024:
+    if len(strip_html(text)) <= limits.CAPTION:
         return text
 
     suffix = "\n\nПолный текст есть в отдельной карточке заявки."
-    budget = max(200, 1024 - len(strip_html(suffix)) - 3)
+    budget = max(200, limits.CAPTION - len(strip_html(suffix)) - 3)
     body, truncated = _truncate_caption_html(text, budget)
     if not truncated:
         return body
@@ -394,7 +395,6 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
         or author_channels.get(lang)
         or author_channels.get("ru")
     )
-    link = entry.get("channel_message", {}).get("link")
     count = entry.get("count")
     if count is None:
         count = entry.get("icons_count") or entry.get("icon_count")
@@ -991,10 +991,24 @@ async def on_icon_detail(cb: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     back = data.get("catalog_back") or "icons:0"
     await answer(cb, text, plugin_detail_kb(link, back, lang), "iconpacks")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
+
+
+def _pending_kind(req: dict) -> str:
+    if req.get("status") == "rework":
+        return "rework"
+    kind = str(req.get("type") or "new")
+    return kind if kind in {"new", "update", "delete"} else "new"
+
+
+def _pending_name(req: dict) -> str:
+    payload = req.get("payload", {}) if isinstance(req.get("payload"), dict) else {}
+    plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
+    return str(plugin.get("name") or payload.get("delete_slug") or req.get("id") or "—").strip() or "—"
+
+
+def _pending_label(req: dict, lang: str) -> str:
+    return t(f"profile_pending_{_pending_kind(req)}", lang)
 
 
 @router.callback_query(F.data == "profile")
@@ -1013,11 +1027,13 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
     for req in get_user_requests(user.id):
         if req.get("status") not in {"pending", "rework"}:
             continue
-        if req.get("type") not in {"new", "update"}:
+        if req.get("type") not in {"new", "update", "delete"}:
             continue
         payload = req.get("payload", {})
         submission_type = (payload.get("submission_type") or payload.get("type") or "").strip()
-        if submission_type not in {"plugin", "update"} and not payload.get("plugin"):
+        if submission_type == "icon" or payload.get("icon"):
+            continue
+        if submission_type not in {"plugin", "update"} and not payload.get("plugin") and not payload.get("delete_slug"):
             continue
         pending.append(req)
 
@@ -1032,7 +1048,12 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
         text += f"@{user.username}\n"
     text += t("profile_stats", lang, plugins=len(user_plugins), icons=len(user_icons))
 
-    if not user_plugins and not user_icons:
+    if pending:
+        text += "\n\n" + t("profile_pending_title", lang, count=len(pending))
+        for req in pending:
+            text += f"\n• {html.escape(_pending_name(req))} — {_pending_label(req, lang)}"
+
+    if not user_plugins and not user_icons and not pending:
         text += f"\n\n{t('profile_empty', lang)}"
 
     notify_all_enabled = is_subscribed(user.id, ALL_SUBSCRIPTION_KEY)
@@ -1042,10 +1063,7 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
         profile_kb(lang, bool(user_plugins), bool(user_icons), notify_all_enabled=notify_all_enabled),
         "profile",
     )
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.startswith("subs:all_toggle:"))
@@ -1221,10 +1239,7 @@ async def on_profile_joinly_add(cb: CallbackQuery, state: FSMContext) -> None:
         [InlineKeyboardButton(text=t("btn_back", lang), callback_data="profile:joinly", style="danger")],
     ])
     await answer(cb, t("joinly_add_prompt", lang), kb, "joinly")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 def _parse_chat_ref(raw: str) -> str | int:
@@ -1290,7 +1305,6 @@ async def on_joinly_chat_input(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("profile:joinly_chat:"))
 async def on_profile_joinly_chat(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = await get_language(cb, state)
     user = cb.from_user
     if not user:
         await cb.answer()
@@ -1305,10 +1319,7 @@ async def on_profile_joinly_chat(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     await _render_joinly_chat_detail(cb, state, chat_id)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_id: int) -> None:
@@ -1474,7 +1485,8 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
             name = str(plugin.get("name") or req_id).strip() or req_id
             req_type = req.get("type") if isinstance(req, dict) else "new"
             cb_data = f"pendupd:{req_id}" if req_type == "update" else f"pendreq:{req_id}"
-            all_items.append((f"{name} ", cb_data))
+            label = _pending_label(req, lang) if isinstance(req, dict) else ""
+            all_items.append((f"{name} — {label}" if label else name, cb_data))
 
     total = len(all_items)
     total_pages = math.ceil(total / PAGE_SIZE)
@@ -1484,10 +1496,7 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
     title = t("icons_title" if kind == "icons" else "catalog_title", lang)
     caption = f"{title}\n{t('catalog_page', lang, current=page + 1, total=total_pages)}"
     await answer(cb, caption, paginated_list_kb(items, page, total_pages, f"my:{kind}", "profile", lang=lang), "profile")
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.inline_query()

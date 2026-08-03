@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from telethon import TelegramClient, __version__ as TELETHON_VERSION
-from telethon.errors.rpcerrorlist import MessageNotModifiedError
+from telethon.errors.rpcerrorlist import MessageIdInvalidError, MessageNotModifiedError
 from telethon.tl.types import DocumentAttributeFilename, Message, MessageEntityBlockquote
 from telethon.extensions import html as telethon_html
 
@@ -18,7 +18,7 @@ from catalog import invalidate_catalog_cache
 
 logger = logging.getLogger(__name__)
 
-BLANK_CHAR = "\u2800"
+BLANK_CHAR = "\u17b5"
 
 CONFIG = load_config()
 SYNC_CHANNEL_USERNAME = CONFIG.get("channel", {}).get("username", "exteraPluginsSup")
@@ -41,6 +41,17 @@ def _invalidate_all() -> None:
     invalidate("plugins")
     invalidate("icons")
     invalidate_catalog_cache()
+
+
+OPERATION_TIMEOUT = 180.0
+
+
+async def _guard(coro, what: str):
+    try:
+        return await asyncio.wait_for(coro, timeout=OPERATION_TIMEOUT)
+    except asyncio.TimeoutError as exc:
+        logger.error("Userbot operation timed out after %.0fs: %s", OPERATION_TIMEOUT, what)
+        raise TimeoutError(f"userbot {what} timed out") from exc
 
 
 class UserbotClient:
@@ -260,19 +271,19 @@ class UserbotClient:
         parsed_text, entities = self._format_text_for_telegram(text)
 
         if file_path and Path(file_path).exists():
-            message = await self.client.send_file(
+            message = await _guard(self.client.send_file(
                 entity,
                 file=file_path,
                 caption=parsed_text,
                 formatting_entities=entities,
-            )
+            ), "send_file")
         else:
-            message = await self.client.send_message(
+            message = await _guard(self.client.send_message(
                 entity,
                 parsed_text,
                 formatting_entities=entities,
                 link_preview=False,
-            )
+            ), "send_message")
         
         channel_username = CONFIG.get("publish_channel", "xzcvzxa")
         
@@ -286,12 +297,12 @@ class UserbotClient:
     async def publish_post(self, text: str) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
         parsed_text, entities = self._format_text_for_telegram(text)
-        message = await self.client.send_message(
+        message = await _guard(self.client.send_message(
             entity,
             parsed_text,
             formatting_entities=entities,
             link_preview=False,
-        )
+        ), "send_message")
 
         channel_username = CONFIG.get("publish_channel", "xzcvzxa")
 
@@ -304,36 +315,54 @@ class UserbotClient:
     async def send_channel_text(self, chat_ref, text: str) -> int:
         entity = await self.client.get_entity(chat_ref)
         parsed_text, entities = self._format_text_for_telegram(text or "")
-        message = await self.client.send_message(
+        message = await _guard(self.client.send_message(
             entity,
             parsed_text,
             formatting_entities=entities,
             link_preview=False,
-        )
+        ), "send_message")
         return message.id
 
     async def edit_channel_text(self, chat_ref, message_id: int, text: str) -> bool:
         entity = await self.client.get_entity(chat_ref)
         parsed_text, entities = self._format_text_for_telegram(text or "")
-        await self.client.edit_message(
-            entity,
-            int(message_id),
-            parsed_text,
-            formatting_entities=entities,
-            link_preview=False,
-        )
+        message_id = int(message_id)
+
+        markup = None
+        try:
+            existing = await _guard(self.client.get_messages(entity, ids=message_id), "get_messages")
+            markup = getattr(existing, "reply_markup", None)
+        except Exception:
+            logger.warning("Failed to read markup of message %s before edit", message_id, exc_info=True)
+
+        try:
+            await _guard(self.client.edit_message(
+                entity,
+                message_id,
+                parsed_text,
+                formatting_entities=entities,
+                link_preview=False,
+                buttons=markup,
+            ), "edit_message")
+        except MessageNotModifiedError:
+            logger.info("Message %s not modified; skipping edit", message_id)
+        except MessageIdInvalidError:
+            logger.warning(
+                "Userbot cannot edit message %s (reply markup owned by the bot)", message_id
+            )
+            return False
         return True
 
     async def schedule_post(self, text: str, schedule_date: datetime) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
         parsed_text, entities = self._format_text_for_telegram(text)
-        message = await self.client.send_message(
+        message = await _guard(self.client.send_message(
             entity,
             parsed_text,
             formatting_entities=entities,
             link_preview=False,
             schedule=schedule_date,
-        )
+        ), "send_message")
 
         channel_username = CONFIG.get("publish_channel", "xzcvzxa")
 
@@ -354,21 +383,21 @@ class UserbotClient:
         parsed_text, entities = self._format_text_for_telegram(text)
 
         if file_path and Path(file_path).exists():
-            message = await self.client.send_file(
+            message = await _guard(self.client.send_file(
                 entity,
                 file=file_path,
                 caption=parsed_text,
                 formatting_entities=entities,
                 schedule=schedule_date,
-            )
+            ), "send_file")
         else:
-            message = await self.client.send_message(
+            message = await _guard(self.client.send_message(
                 entity,
                 parsed_text,
                 formatting_entities=entities,
                 link_preview=False,
                 schedule=schedule_date,
-            )
+            ), "send_message")
 
         channel_username = CONFIG.get("publish_channel", "xzcvzxa")
 
@@ -389,21 +418,21 @@ class UserbotClient:
         parsed_text, entities = self._format_text_for_telegram(text)
 
         if file_path and Path(file_path).exists():
-            message = await self.client.send_file(
+            message = await _guard(self.client.send_file(
                 entity,
                 file=file_path,
                 caption=parsed_text,
                 formatting_entities=entities,
                 schedule=schedule_date,
-            )
+            ), "send_file")
         else:
-            message = await self.client.send_message(
+            message = await _guard(self.client.send_message(
                 entity,
                 parsed_text,
                 formatting_entities=entities,
                 link_preview=False,
                 schedule=schedule_date,
-            )
+            ), "send_message")
 
         channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
 
@@ -424,20 +453,20 @@ class UserbotClient:
         parsed_text, entities = self._format_text_for_telegram(text)
 
         if file_path and Path(file_path).exists():
-            message = await self.client.send_file(
+            message = await _guard(self.client.send_file(
                 entity,
                 file=file_path,
                 caption=parsed_text,
                 formatting_entities=entities,
                 attributes=[DocumentAttributeFilename(download_name)] if download_name else None,
-            )
+            ), "send_file")
         else:
-            message = await self.client.send_message(
+            message = await _guard(self.client.send_message(
                 entity,
                 parsed_text,
                 formatting_entities=entities,
                 link_preview=False,
-            )
+            ), "send_message")
 
         channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
 
@@ -461,21 +490,21 @@ class UserbotClient:
             if file_path and Path(file_path).exists():
                 file_name = download_name or Path(file_path).name
                 attributes = [DocumentAttributeFilename(file_name)]
-                await self.client.edit_message(
+                await _guard(self.client.edit_message(
                     entity,
                     message_id,
                     parsed_text,
                     file=file_path,
                     attributes=attributes,
                     formatting_entities=entities,
-                )
+                ), "edit_message")
             else:
-                await self.client.edit_message(
+                await _guard(self.client.edit_message(
                     entity,
                     message_id,
                     parsed_text,
                     formatting_entities=entities,
-                )
+                ), "edit_message")
 
             channel_username = CONFIG.get("publish_channel", "xzcvzxa")
 
@@ -512,21 +541,21 @@ class UserbotClient:
             if file_path and Path(file_path).exists():
                 file_name = Path(file_path).name
                 attributes = [DocumentAttributeFilename(file_name)]
-                await self.client.edit_message(
+                await _guard(self.client.edit_message(
                     entity,
                     message_id,
                     parsed_text,
                     file=file_path,
                     attributes=attributes,
                     formatting_entities=entities,
-                )
+                ), "edit_message")
             else:
-                await self.client.edit_message(
+                await _guard(self.client.edit_message(
                     entity,
                     message_id,
                     parsed_text,
                     formatting_entities=entities,
-                )
+                ), "edit_message")
 
             channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
 
@@ -552,10 +581,10 @@ class UserbotClient:
     async def delete_message(self, message_id: int) -> None:
         entity = await self.get_publish_entity()
         try:
-            await self.client.edit_message(entity, message_id, BLANK_CHAR, file=None)
+            await _guard(self.client.edit_message(entity, message_id, BLANK_CHAR, file=None), "edit_message")
         except Exception:
             logger.debug("userbot: blanking before delete failed message_id=%s", message_id)
-        await self.client.delete_messages(entity, message_id)
+        await _guard(self.client.delete_messages(entity, message_id), "delete_messages")
     
     async def full_sync(self, limit: int = 0) -> Dict[str, int]:
         stats = {"plugins": 0, "icons": 0, "skipped": 0, "errors": 0}

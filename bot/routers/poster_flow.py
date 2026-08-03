@@ -14,6 +14,9 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
+    InlineQueryResultCachedAudio,
+    InlineQueryResultCachedDocument,
+    InlineQueryResultCachedGif,
     InlineQueryResultCachedPhoto,
     InlineQueryResultCachedVideo,
     InputTextMessageContent,
@@ -22,8 +25,9 @@ from aiogram.types import (
 
 from bot.cache import get_admins
 from bot.context import get_lang
-from bot.formatting import plain_html
-from bot.helpers import answer, blank_and_delete, extract_html_text
+from bot import limits
+from bot.formatting import plain_html, rich_html, telegram_html
+from bot.helpers import ack, answer, blank_and_delete
 from bot.keyboards import _btn
 from bot.menu_owner import MenuOwnerMiddleware
 from bot.states import PosterFlow
@@ -188,40 +192,28 @@ async def render_home(target, state: FSMContext) -> None:
 @router.callback_query(F.data == "pstr:home")
 async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
     await render_home(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data == "pstr:start")
 async def on_start_user(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(poster_admin_mode=False)
     await render_home(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data == "pstr:admin")
 async def on_start_admin(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(poster_admin_mode=True)
     await render_home(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data == "pstr:ch:add")
 async def on_channel_add(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.entering_channel_ref)
     await answer(cb, t("poster_add_channel_prompt", _lang(cb)), _cancel_only_kb(_lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 def _admin_label(user) -> str:
@@ -311,10 +303,7 @@ async def on_channel_detail(cb: CallbackQuery, state: FSMContext) -> None:
              title=plain_html(channel.get("title")), username=plain_html(channel.get("username") or "—"))
     text += "\n\n" + t("poster_channel_access", _lang(cb), admins=access)
     await answer(cb, text, _channel_kb(chat_id, _lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.regexp(r"^pstr:ch:-?\d+:del$"))
@@ -335,12 +324,9 @@ async def on_new_post(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.composing_text)
     await state.update_data(poster_chat_id=chat_id, poster_media=[], poster_buttons=[],
                             poster_html="", poster_delete_after=0, poster_delete_at_iso=None,
-                            poster_repeat_days=0, editing_post_id=None)
+                            poster_repeat_days=0, editing_post_id=None, poster_rich=False)
     await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("text", _lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:upd")
@@ -361,10 +347,7 @@ async def on_preview_updated_plugins(cb: CallbackQuery, state: FSMContext) -> No
     combined = f"{existing}\n\n{block}" if existing else block
     await state.update_data(poster_html=combined)
     await _render_preview(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 async def _editing(state: FSMContext) -> bool:
@@ -380,19 +363,22 @@ async def on_skip_text(cb: CallbackQuery, state: FSMContext) -> None:
     else:
         await state.set_state(PosterFlow.composing_media)
         await answer(cb, t("poster_compose_media", _lang(cb)), _skip_kb("media", _lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
+
+
+def _render_post_text(raw: str, rich: bool) -> str:
+    return (rich_html(raw) if rich else telegram_html(raw)).strip()
 
 
 @router.message(PosterFlow.composing_text)
 async def on_compose_text(message: Message, state: FSMContext) -> None:
-    html = extract_html_text(message).strip()
+    raw = (message.html_text or message.text or "").strip()
+    data = await state.get_data()
+    html = _render_post_text(raw, bool(data.get("poster_rich")))
     if not html:
         await message.answer(t("need_text", _lang(message)))
         return
-    await state.update_data(poster_html=html)
+    await state.update_data(poster_html=html, poster_raw=raw)
     if await _editing(state):
         await state.update_data(from_preview=False)
         await _render_preview(message, state)
@@ -411,19 +397,26 @@ async def on_skip_media(cb: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(PosterFlow.composing_buttons)
     await answer(cb, t("poster_compose_buttons", _lang(cb)), _skip_kb("buttons", _lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
+
+
+def _extract_media(message: Message) -> dict | None:
+    if message.photo:
+        return {"type": "photo", "file_id": message.photo[-1].file_id}
+    for kind in ("video", "animation", "audio", "document"):
+        item = getattr(message, kind, None)
+        if item:
+            return {
+                "type": kind,
+                "file_id": item.file_id,
+                "name": getattr(item, "file_name", None) or "",
+            }
+    return None
 
 
 @router.message(PosterFlow.composing_media)
 async def on_compose_media(message: Message, state: FSMContext) -> None:
-    media = None
-    if message.photo:
-        media = {"type": "photo", "file_id": message.photo[-1].file_id}
-    elif message.video:
-        media = {"type": "video", "file_id": message.video.file_id}
+    media = _extract_media(message)
     if not media:
         await message.answer(t("poster_err_not_media", _lang(message)))
         return
@@ -469,7 +462,7 @@ def _parse_buttons(text: str) -> list:
             if style:
                 btn["style"] = style
             rows.append([btn])
-    return rows
+    return rows[: limits.INLINE_BUTTONS]
 
 
 _AUTODEL_PRESETS = [0, 60, 360, 1440, 10080]
@@ -488,9 +481,12 @@ _REPEAT_LABELS = {
 
 
 def _preview_kb(lang: str, admin_mode: bool = False, autodel_label: str = "нет",
-                repeat_label: str = "нет") -> InlineKeyboardMarkup:
+                repeat_label: str = "нет", rich: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [_btn(t("poster_btn_edit_text", lang), callback_data="pstr:edit:text", icon="edit")],
+        [_btn(t("poster_btn_rich_on" if rich else "poster_btn_rich_off", lang),
+              callback_data="pstr:preview:rich", icon="art",
+              style="success" if rich else None)],
         [
             _btn(t("poster_btn_edit_media", lang), callback_data="pstr:edit:media", icon="art"),
             _btn(t("poster_btn_edit_buttons", lang), callback_data="pstr:edit:buttons", icon="link"),
@@ -549,6 +545,7 @@ async def _render_preview(target, state: FSMContext) -> None:
         "html_text": data.get("poster_html") or "",
         "media": data.get("poster_media") or [],
         "buttons": data.get("poster_buttons") or [],
+        "rich": bool(data.get("poster_rich")),
     }
     await state.set_state(PosterFlow.previewing)
 
@@ -562,7 +559,8 @@ async def _render_preview(target, state: FSMContext) -> None:
     admin_mode = bool(data.get("poster_admin_mode"))
     ctrl = await bot.send_message(
         chat_id, t("poster_preview_control", lang),
-        reply_markup=_preview_kb(lang, admin_mode, _autodel_label(data, lang), _repeat_label(data, lang)),
+        reply_markup=_preview_kb(lang, admin_mode, _autodel_label(data, lang), _repeat_label(data, lang),
+                                 bool(data.get("poster_rich"))),
         parse_mode=ParseMode.HTML)
     await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
 
@@ -571,10 +569,7 @@ async def _render_preview(target, state: FSMContext) -> None:
 async def on_skip_buttons(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(poster_buttons=[], from_preview=False)
     await _render_preview(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(PosterFlow.composing_buttons)
@@ -592,10 +587,31 @@ async def on_edit_text(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(from_preview=True)
     await state.set_state(PosterFlow.composing_text)
     await answer(cb, t("poster_compose_text", _lang(cb)), _skip_kb("text", _lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
+
+
+@router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:rich")
+async def on_toggle_rich(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = _lang(cb)
+    data = await state.get_data()
+    enabling = not bool(data.get("poster_rich"))
+
+    if enabling:
+        text = data.get("poster_html") or ""
+        if len(text) > poster.RICH_TEXT_LIMIT:
+            await cb.answer(t("poster_err_rich_too_long", lang, limit=poster.RICH_TEXT_LIMIT), show_alert=True)
+            return
+        skipped = poster.rich_unsupported_media({"media": data.get("poster_media") or []})
+        if skipped:
+            await cb.answer(t("poster_warn_rich_media", lang, types=", ".join(skipped)), show_alert=True)
+
+    raw = data.get("poster_raw")
+    updates = {"poster_rich": enabling, "from_preview": False}
+    if raw:
+        updates["poster_html"] = _render_post_text(raw, enabling)
+    await state.update_data(**updates)
+    await _render_preview(cb, state)
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:edit:media")
@@ -603,10 +619,7 @@ async def on_edit_media(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(from_preview=True)
     await state.set_state(PosterFlow.composing_media)
     await answer(cb, t("poster_compose_media", _lang(cb)), _skip_kb("media", _lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:edit:buttons")
@@ -614,19 +627,13 @@ async def on_edit_buttons(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(from_preview=True)
     await state.set_state(PosterFlow.composing_buttons)
     await answer(cb, t("poster_compose_buttons", _lang(cb)), _skip_kb("buttons", _lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:autodelmenu")
 async def on_preview_autodel_menu(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(cb, t("poster_autodel_prompt", _lang(cb)), _autodel_kb(_lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data.regexp(r"^pstr:autodel:\d+$"))
@@ -636,20 +643,14 @@ async def on_preview_autodel_set(cb: CallbackQuery, state: FSMContext) -> None:
         minutes = 0
     await state.update_data(poster_delete_after=minutes, poster_delete_at_iso=None)
     await _render_preview(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:autodel:custom")
 async def on_preview_autodel_custom(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.entering_autodel_date)
-    await answer(cb, t("poster_autodel_date_prompt", _lang(cb)), _cancel_only_kb(_lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await answer(cb, t("poster_autodel_date_prompt", _lang(cb), tz=_tz_label(_tz_of(cb))), _cancel_only_kb(_lang(cb)))
+    await ack(cb)
 
 
 @router.message(PosterFlow.entering_autodel_date)
@@ -673,10 +674,7 @@ async def on_autodel_date_input(message: Message, state: FSMContext) -> None:
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:repeatmenu")
 async def on_preview_repeat_menu(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(cb, t("poster_repeat_prompt", _lang(cb)), _repeat_kb(_lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data.regexp(r"^pstr:repeat:\d+$"))
@@ -686,29 +684,20 @@ async def on_preview_repeat_set(cb: CallbackQuery, state: FSMContext) -> None:
         days = 0
     await state.update_data(poster_repeat_days=days)
     await _render_preview(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:preview:back")
 async def on_preview_back(cb: CallbackQuery, state: FSMContext) -> None:
     await _render_preview(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:schedule")
 async def on_preview_schedule(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.composing_time)
-    await answer(cb, t("poster_compose_time", _lang(cb)), _time_kb(_lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await answer(cb, t("poster_compose_time", _lang(cb), tz=_tz_label(_tz_of(cb))), _time_kb(_lang(cb)))
+    await ack(cb)
 
 
 @router.callback_query(PosterFlow.previewing, F.data == "pstr:publishnow")
@@ -725,6 +714,7 @@ async def on_preview_publish_now(cb: CallbackQuery, state: FSMContext) -> None:
         "html_text": data.get("poster_html") or "",
         "media": data.get("poster_media") or [],
         "buttons": data.get("poster_buttons") or [],
+        "rich": bool(data.get("poster_rich")),
         "delete_after_minutes": int(data.get("poster_delete_after") or 0),
         "delete_at_iso": data.get("poster_delete_at_iso") or None,
         "repeat_days": int(data.get("poster_repeat_days") or 0),
@@ -762,20 +752,14 @@ async def on_preview_publish_now(cb: CallbackQuery, state: FSMContext) -> None:
         reply_markup=_home_kb(channels, lang, bool(data.get("poster_admin_mode")), _tz_label(_tz_of(cb))),
         parse_mode=ParseMode.HTML,
     )
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data == "pstr:tz")
 async def on_poster_tz(cb: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(PosterFlow.entering_utc_offset)
     await answer(cb, t("poster_tz_prompt", _lang(cb)), _cancel_only_kb(_lang(cb)))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(PosterFlow.entering_utc_offset)
@@ -813,6 +797,7 @@ async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
         "html_text": data.get("poster_html") or "",
         "media": data.get("poster_media") or [],
         "buttons": data.get("poster_buttons") or [],
+        "rich": bool(data.get("poster_rich")),
         "delete_after_minutes": int(data.get("poster_delete_after") or 0),
         "delete_at_iso": data.get("poster_delete_at_iso") or None,
         "repeat_days": int(data.get("poster_repeat_days") or 0),
@@ -843,10 +828,7 @@ async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
 async def on_time_preset(cb: CallbackQuery, state: FSMContext) -> None:
     minutes = int(cb.data.split(":")[2])
     await _finalize(cb, state, datetime.now(timezone.utc) + timedelta(minutes=minutes))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(PosterFlow.composing_time)
@@ -874,10 +856,7 @@ async def _render_posts_list(target, state: FSMContext) -> None:
 @router.callback_query(F.data == "pstr:posts")
 async def on_my_posts(cb: CallbackQuery, state: FSMContext) -> None:
     await _render_posts_list(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 def _post_detail_kb(post_id: str, lang: str) -> InlineKeyboardMarkup:
@@ -921,10 +900,7 @@ async def on_post_detail(cb: CallbackQuery, state: FSMContext) -> None:
                    channel=_channel_label(post.get("chat_id"))),
         reply_markup=_post_detail_kb(post_id, lang), parse_mode=ParseMode.HTML)
     await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.regexp(r"^pstr:postedit:\w+$"))
@@ -943,14 +919,12 @@ async def on_post_edit(cb: CallbackQuery, state: FSMContext) -> None:
         poster_delete_after=int(content.get("delete_after_minutes") or 0),
         poster_delete_at_iso=content.get("delete_at_iso") or None,
         poster_repeat_days=int(content.get("repeat_days") or 0),
+        poster_rich=bool(content.get("rich")),
         editing_post_id=post_id,
         from_preview=False,
     )
     await _render_preview(cb, state)
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.callback_query(F.data.regexp(r"^pstr:postdel:\w+$"))
@@ -981,14 +955,20 @@ async def on_inline_post(query: InlineQuery) -> None:
 
     if media:
         item = media[0]
-        if item.get("type") == "video":
-            result = InlineQueryResultCachedVideo(
-                id=post_id, video_file_id=item["file_id"], title=title,
-                caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        kind = item.get("type")
+        file_id = item["file_id"]
+        common = dict(id=post_id, caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        if kind == "video":
+            result = InlineQueryResultCachedVideo(video_file_id=file_id, title=title, **common)
+        elif kind == "animation":
+            result = InlineQueryResultCachedGif(gif_file_id=file_id, title=title, **common)
+        elif kind == "audio":
+            result = InlineQueryResultCachedAudio(audio_file_id=file_id, **common)
+        elif kind == "document":
+            result = InlineQueryResultCachedDocument(
+                document_file_id=file_id, title=item.get("name") or title, **common)
         else:
-            result = InlineQueryResultCachedPhoto(
-                id=post_id, photo_file_id=item["file_id"],
-                caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            result = InlineQueryResultCachedPhoto(photo_file_id=file_id, **common)
     else:
         result = InlineQueryResultArticle(
             id=post_id, title=title, description=text[:80],

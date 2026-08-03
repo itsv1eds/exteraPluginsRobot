@@ -121,6 +121,16 @@ _CONFIG_DEFAULTS: Dict[str, Any] = {
     }
 }
 
+_pending_save: Dict[str, bool] = {}
+_background_tasks: set = set()
+
+
+def _spawn(loop, coro) -> None:
+    task = loop.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 _config_cache: Optional[Dict[str, Any]] = None
 _config_cache_time: float = 0.0
 
@@ -865,7 +875,7 @@ def _write_sqlite_doc_sync(doc_key: str, data: Dict[str, Any]) -> None:
 
 def _get_cached(doc_key: str, ttl: float = _TTL) -> Dict[str, Any]:
     now = time.time()
-    if doc_key in _cache and (now - _cache_time.get(doc_key, 0.0)) < ttl:
+    if doc_key in _cache and (_dirty.get(doc_key) or (now - _cache_time.get(doc_key, 0.0)) < ttl):
         return _cache[doc_key]
 
     data = _read_sqlite_doc_sync(doc_key)
@@ -882,8 +892,16 @@ def _set_cached(doc_key: str, data: Dict[str, Any]) -> None:
 
 async def _schedule_save(doc_key: str) -> None:
     now = time.time()
-    if now - _last_save.get(doc_key, 0.0) < _SAVE_INTERVAL:
-        return
+    delay = _SAVE_INTERVAL - (now - _last_save.get(doc_key, 0.0))
+    if delay > 0:
+        if _pending_save.get(doc_key):
+            return
+        _pending_save[doc_key] = True
+        try:
+            await asyncio.sleep(delay)
+        finally:
+            _pending_save[doc_key] = False
+        now = time.time()
 
     _last_save[doc_key] = now
     if doc_key not in _save_locks:
@@ -900,24 +918,21 @@ def _save_sync(doc_key: str, data: Dict[str, Any]) -> None:
     _set_cached(doc_key, data)
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_schedule_save(doc_key))
+        _spawn(loop, _schedule_save(doc_key))
     except RuntimeError:
         _write_sqlite_doc_sync(doc_key, data)
         _dirty[doc_key] = False
 
 
 def invalidate_cache(doc_key: Optional[str] = None) -> None:
-    if doc_key:
-        _cache.pop(doc_key, None)
-        _cache_time.pop(doc_key, None)
-        _dirty.pop(doc_key, None)
-        _last_save.pop(doc_key, None)
-        return
-
-    _cache.clear()
-    _cache_time.clear()
-    _dirty.clear()
-    _last_save.clear()
+    keys = [doc_key] if doc_key else list(_cache)
+    for key in keys:
+        if _dirty.get(key) and key in _cache:
+            _write_sqlite_doc_sync(key, _cache[key].copy())
+        _cache.pop(key, None)
+        _cache_time.pop(key, None)
+        _dirty.pop(key, None)
+        _last_save.pop(key, None)
 
 
 def _normalize_dict(data: Dict[str, Any], default: Dict[str, Any]) -> Dict[str, Any]:
@@ -1001,7 +1016,7 @@ def save_config(data: Dict[str, Any]) -> None:
 
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(asyncio.to_thread(_write))
+        _spawn(loop, asyncio.to_thread(_write))
     except RuntimeError:
         _write()
 

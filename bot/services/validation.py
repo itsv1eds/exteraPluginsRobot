@@ -52,7 +52,6 @@ def submission_fingerprint(payload: Dict[str, Any]) -> str:
 def validate_new_submission(plugin: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
     plugin_id = plugin.get("id", "")
     plugin_name = plugin.get("name", "")
-    plugin_version = plugin.get("version", "")
 
     if not plugin_id or not plugin_name:
         return False, "missing_plugin_info"

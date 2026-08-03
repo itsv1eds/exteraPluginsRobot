@@ -237,6 +237,19 @@ def icon_draft_edit_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def quiz_kb(options: List[str], index: int, lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [[_btn(opt, callback_data=f"quiz:a:{index}:{i}")] for i, opt in enumerate(options)]
+    rows.append([_btn(t("btn_cancel", lang), callback_data="cancel", style="danger", icon="cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def quiz_start_kb(lang: str = "ru") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(t("quiz_btn_start", lang), callback_data="quiz:start", icon="yes", style="success")],
+        [_btn(t("btn_cancel", lang), callback_data="cancel", style="danger", icon="cancel")],
+    ])
+
+
 def comment_skip_kb(lang: str, has_content: bool = False, media_count: int = 0,
                     required: bool = False) -> InlineKeyboardMarkup:
     rows = []

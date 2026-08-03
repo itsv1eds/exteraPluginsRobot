@@ -20,7 +20,28 @@ _ALLOWED_SIMPLE_TAGS = {
     "pre",
     "tg-spoiler",
 }
-_ALLOWED_URI_PREFIXES = ("http://", "https://", "tg://", "mailto:")
+_ALLOWED_URI_PREFIXES = ("http://", "https://", "tg://", "mailto:", "tel:")
+
+_RICH_SIMPLE_TAGS = {
+    "mark", "sub", "sup", "p", "footer", "cite", "aside", "summary",
+    "figure", "figcaption", "ul", "ol", "li", "details",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "tg-collage", "tg-slideshow", "tg-math",
+}
+_RICH_VOID_TAGS = {"br", "hr", "img", "video", "audio", "tg-map", "input"}
+_RICH_TAG_ATTRS = {
+    "ol": ("start", "type", "reversed"),
+    "li": ("value", "type"),
+    "details": ("open",),
+    "img": ("src", "alt", "tg-spoiler"),
+    "video": ("src", "tg-spoiler"),
+    "audio": ("src",),
+    "tg-map": ("lat", "long", "zoom"),
+    "tg-time": ("unix", "format"),
+    "tg-reference": ("name",),
+    "input": ("type", "checked"),
+}
+_RICH_SRC_PREFIXES = ("http://", "https://", "tg://")
 
 
 class _TelegramHTMLSanitizer(HTMLParser):
@@ -100,6 +121,69 @@ def _norm(value: object) -> str:
 
 def plain_html(value: object) -> str:
     return html.escape(_norm(value), quote=False)
+
+
+class _RichHTMLSanitizer(_TelegramHTMLSanitizer):
+
+    def _rich_attrs(self, tag: str, attrs_map: dict) -> str:
+        out = []
+        for name in _RICH_TAG_ATTRS.get(tag, ()):
+            if name not in attrs_map:
+                continue
+            value = attrs_map[name]
+            if name == "src" and not str(value or "").startswith(_RICH_SRC_PREFIXES):
+                return ""
+            if value is None:
+                out.append(f" {name}")
+            else:
+                out.append(f' {name}="{html.escape(str(value), quote=True)}"')
+        return "".join(out)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        attrs_map = {k.lower(): v for k, v in attrs}
+
+        if tag in _RICH_VOID_TAGS:
+            rendered = self._rich_attrs(tag, attrs_map)
+            if tag in ("img", "video", "audio") and "src" not in attrs_map:
+                return
+            if tag in ("img", "video", "audio") and not rendered:
+                return
+            self.parts.append(f"<{tag}{rendered}/>")
+            return
+
+        if tag in _RICH_SIMPLE_TAGS:
+            self.parts.append(f"<{tag}{self._rich_attrs(tag, attrs_map)}>")
+            self.stack.append(tag)
+            return
+
+        if tag in ("tg-reference", "tg-time"):
+            self.parts.append(f"<{tag}{self._rich_attrs(tag, attrs_map)}>")
+            self.stack.append(tag)
+            return
+
+        if tag == "a" and "name" in attrs_map and "href" not in attrs_map:
+            self.parts.append(f'<a name="{html.escape(str(attrs_map["name"]), quote=True)}">')
+            self.stack.append(tag)
+            return
+
+        super().handle_starttag(tag, attrs)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in _RICH_VOID_TAGS:
+            self.handle_starttag(tag, attrs)
+            return
+        super().handle_startendtag(tag, attrs)
+
+
+def rich_html(value: object) -> str:
+    text = html.unescape(_norm(value))
+    if not text:
+        return ""
+    parser = _RichHTMLSanitizer()
+    parser.feed(text)
+    parser.close_open_tags()
+    return "".join(parser.parts).strip()
 
 
 def telegram_html(value: object) -> str:

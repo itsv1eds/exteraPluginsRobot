@@ -13,7 +13,7 @@ from aiogram.types import CallbackQuery, ChatMemberUpdated, ChatPermissions, Inl
 
 from storage import load_joinly, save_joinly
 from bot.cache import get_admins_super
-from bot.helpers import try_react_pray
+from bot.helpers import ack, try_react_pray
 from bot.context import get_lang
 from bot.formatting import telegram_html
 from bot.keyboards import _btn
@@ -1066,10 +1066,7 @@ async def on_settings_cb(cb: CallbackQuery) -> None:
         await cb.message.edit_reply_markup(reply_markup=_settings_kb(cb.message.chat.id, lang))
     except Exception:
         pass
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await ack(cb)
 
 
 @router.message(F.text)

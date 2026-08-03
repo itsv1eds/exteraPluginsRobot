@@ -13,6 +13,7 @@ from bot.cache import get_admins, get_config
 from bot.formatting import code_html, quote_html, strip_blockquote_tags, telegram_html
 from bot.helpers import blank_and_delete, link_preview_options
 from bot.keyboards import moderation_appeal_kb, moderation_vote_kb
+from bot import limits
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,18 @@ def forum_text_with_votes(entry: dict | None) -> str:
     return "\n\n".join(parts)
 
 
+def author_reply_kwargs(entry: dict | None) -> dict:
+    payload = entry.get("payload") if isinstance(entry, dict) else None
+    message_id = (payload or {}).get("author_message_id") if isinstance(payload, dict) else None
+    try:
+        message_id = int(message_id or 0)
+    except (TypeError, ValueError):
+        message_id = 0
+    if not message_id:
+        return {}
+    return {"reply_to_message_id": message_id, "allow_sending_without_reply": True}
+
+
 def is_unban_appeal(entry: dict | None) -> bool:
     return isinstance(entry, dict) and entry.get("type") == "unban_appeal"
 
@@ -359,10 +372,9 @@ def _forum_image_key(entry: dict | None) -> str:
 
 async def send_media_group(bot, chat_id: int, media: list, *, topic_id: int | None = None,
                            reply_to: int | None = None, caption: str | None = None) -> list:
-    """Отправляет до 10 фото/видео альбомом. Возвращает id отправленных сообщений."""
     from aiogram.types import InputMediaPhoto, InputMediaVideo
 
-    items = [m for m in (media or []) if isinstance(m, dict) and m.get("file_id")][:10]
+    items = [m for m in (media or []) if isinstance(m, dict) and m.get("file_id")][: limits.ALBUM_ITEMS]
     if not items:
         return []
     group = []
@@ -370,7 +382,7 @@ async def send_media_group(bot, chat_id: int, media: list, *, topic_id: int | No
         cls = InputMediaVideo if item.get("type") == "video" else InputMediaPhoto
         kwargs = {"media": item["file_id"]}
         if idx == 0 and caption:
-            kwargs["caption"] = caption[:1024]
+            kwargs["caption"] = caption[: limits.CAPTION]
             kwargs["parse_mode"] = ParseMode.HTML
         group.append(cls(**kwargs))
     kw = {}
@@ -508,7 +520,7 @@ async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:
     except Exception:
         pass
 
-    if len(rendered_text) <= 1024:
+    if len(rendered_text) <= limits.CAPTION:
         try:
             await bot.edit_message_caption(
                 chat_id=chat_id,

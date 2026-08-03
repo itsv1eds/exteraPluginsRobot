@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from pathlib import Path
@@ -15,6 +16,7 @@ from aiogram.types import (
     Message,
 )
 
+from bot import limits
 from bot.cache import get_admins, get_categories, get_config
 from bot.context import get_lang
 from bot.formatting import telegram_html
@@ -69,6 +71,14 @@ def get_uploads_subdir(name: str) -> Path:
 
 def sanitize_filename(value: str) -> str:
     return re.sub(r"[^\w\-@.]", "", value).strip("._") or "plugin"
+
+
+def fit_filename(name: str, ext: str) -> str:
+    base = sanitize_filename(name)
+    room = limits.FILENAME - len(ext) - 1
+    if room > 0 and len(base) > room:
+        base = base[:room].rstrip("._-") or "plugin"
+    return f"{base}.{ext}"
 
 
 def _short_error(exc: Exception, limit: int = 160) -> str:
@@ -164,29 +174,106 @@ async def try_react_pray(message: Message) -> None:
         return
 
 
-BLANK_CHAR = "\u2800"
+BLANK_CHAR = "\u17b5"
+BLANK_CANDIDATES = ("\u17b5", "\u3164", "\u2800", "\u2060", "\u200b", "\u00b7")
+_EMPTY_TEXT_MARKERS = (
+    "text must be non-empty",
+    "message text is empty",
+    "caption must be non-empty",
+    "message_empty",
+    "message is empty",
+    "text_empty",
+    "text is empty",
+)
+
+
+def _is_empty_text_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in _EMPTY_TEXT_MARKERS)
+
+_background_tasks: set = set()
+
+
+async def ack(cb: CallbackQuery, text: str | None = None, *, show_alert: bool = False) -> None:
+    try:
+        await cb.answer(text, show_alert=show_alert)
+    except Exception:
+        pass
+
+
+def spawn_background(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+
+BLANK_SETTLE_DELAY = 1.5
 
 
 async def blank_and_delete(bot, chat_id: int, message_id: int) -> bool:
     if not chat_id or not message_id:
         return False
-    try:
-        await bot.edit_message_text(
-            BLANK_CHAR, chat_id=int(chat_id), message_id=int(message_id), reply_markup=None,
-        )
-    except Exception:
+
+    blanked = False
+    blanked_with = ""
+    text_error = caption_error = None
+
+    for candidate in BLANK_CANDIDATES:
         try:
-            await bot.edit_message_caption(
-                chat_id=int(chat_id), message_id=int(message_id),
-                caption=BLANK_CHAR, reply_markup=None,
+            await bot.edit_message_text(
+                candidate, chat_id=int(chat_id), message_id=int(message_id), reply_markup=None,
             )
-        except Exception:
-            pass
-    try:
-        await bot.delete_message(int(chat_id), int(message_id))
-        return True
-    except Exception:
-        return False
+            blanked = True
+            blanked_with = candidate
+            break
+        except Exception as exc:
+            text_error = _short_error(exc)
+            if not _is_empty_text_error(exc):
+                break
+
+    if not blanked:
+        for candidate in BLANK_CANDIDATES:
+            try:
+                await bot.edit_message_caption(
+                    chat_id=int(chat_id), message_id=int(message_id),
+                    caption=candidate, reply_markup=None,
+                )
+                blanked = True
+                blanked_with = candidate
+                break
+            except Exception as exc:
+                caption_error = _short_error(exc)
+                if not _is_empty_text_error(exc):
+                    break
+
+    async def _delete(delay: float) -> bool:
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await bot.delete_message(int(chat_id), int(message_id))
+            return True
+        except Exception as exc:
+            logger.warning(
+                "event=blank_before_delete.delete_failed chat_id=%s message_id=%s error=%s",
+                chat_id, message_id, _short_error(exc),
+            )
+            return False
+
+    if not blanked:
+        logger.warning(
+            "event=blank_before_delete.failed chat_id=%s message_id=%s text_error=%s caption_error=%s",
+            chat_id, message_id, text_error, caption_error,
+        )
+        return await _delete(0)
+
+    if blanked_with != BLANK_CANDIDATES[0]:
+        logger.info(
+            "event=blank_before_delete.fallback chat_id=%s message_id=%s char=U+%04X",
+            chat_id, message_id, ord(blanked_with),
+        )
+    spawn_background(_delete(BLANK_SETTLE_DELAY))
+    return True
 
 
 async def blank_and_delete_message(msg) -> bool:
@@ -239,7 +326,7 @@ async def answer(
         image = None
     disable_web_page_preview = not bool(preview_options)
 
-    if image and len(strip_html(text or "")) > 1024:
+    if image and len(strip_html(text or "")) > limits.CAPTION:
         image = None
 
     if isinstance(target, CallbackQuery):
@@ -252,7 +339,7 @@ async def answer(
         thread_kwargs = _topic_kwargs(msg)
 
         try:
-            if msg.photo and len(strip_html(text or "")) > 1024:
+            if msg.photo and len(strip_html(text or "")) > limits.CAPTION:
                 try:
                     await blank_and_delete_message(msg)
                 except Exception:
@@ -290,6 +377,19 @@ async def answer(
                     disable_web_page_preview=disable_web_page_preview,
                     link_preview_options=preview_options,
                 )
+
+            if image and not msg.photo:
+                path = IMAGES_DIR / f"{image}.png"
+                if path.exists():
+                    await blank_and_delete_message(msg)
+                    return await bot.send_photo(
+                        chat_id,
+                        FSInputFile(path),
+                        caption=text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=kb,
+                        **thread_kwargs,
+                    )
 
             if image and msg.photo:
                 file_id = _image_file_ids.get(image)
@@ -497,7 +597,6 @@ def extract_html_text(message: Message) -> str:
 
 
 async def preload_images(bot: Bot) -> None:
-    cfg = get_config()
     admins = list(get_admins())
     
     if not admins:

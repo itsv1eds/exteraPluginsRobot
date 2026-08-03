@@ -1,4 +1,4 @@
-aiogram==3.25.0
-python-dotenv==1.0.1
-telethon==1.42.0
-packaging==24.2
+aiogram==3.30.0
+python-dotenv==1.2.2
+telethon==1.44.0
+packaging==26.2

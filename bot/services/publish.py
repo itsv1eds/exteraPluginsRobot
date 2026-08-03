@@ -10,13 +10,14 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import FSInputFile
 
 from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html
-from bot.helpers import sanitize_filename
+from bot.helpers import fit_filename
 from storage import flush_all, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
 from request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
+from bot import limits
 from catalog import invalidate_catalog_cache, plugin_deeplink_token
 
-_CAPTION_LIMIT = 1024
+_CAPTION_LIMIT = limits.CAPTION
 
 
 def _channel_links_line(bot_username: str, slug: str) -> str:
@@ -210,7 +211,7 @@ async def publish_plugin(entry: Dict[str, Any], bot: Bot) -> Dict[str, Any]:
     post_text = build_channel_post(entry)
     file_path = plugin.get("file_path")
     slug = make_slug(plugin.get("name") or plugin.get("id"))
-    download_name = f"{sanitize_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'))}.plugin"
+    download_name = fit_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'), "plugin")
 
     try:
         me = await bot.me()
@@ -257,7 +258,7 @@ async def publish_icon(entry: Dict[str, Any]) -> Dict[str, Any]:
 
     post_text = build_icon_channel_post(entry)
     file_path = icon.get("file_path")
-    download_name = f"{sanitize_filename(str(icon.get('id') or icon.get('name') or 'icons'))}.icons"
+    download_name = fit_filename(str(icon.get('id') or icon.get('name') or 'icons'), "icons")
 
     result = await userbot.publish_icon(post_text, file_path, download_name)
 
@@ -335,7 +336,7 @@ async def update_plugin(entry: Dict[str, Any], old_catalog_entry: Dict[str, Any]
     if links_line and "Открыть в боте" not in post_text:
         post_text = f"{post_text}\n\n{links_line}"
 
-    download_name = f"{sanitize_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'))}.plugin"
+    download_name = fit_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'), "plugin")
     result = await userbot.update_message(old_message_id, post_text, file_path, download_name)
 
     update_request_status(entry.get("id"), "published")

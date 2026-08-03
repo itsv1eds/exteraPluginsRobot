@@ -9,7 +9,15 @@ _cache_loaded: bool = False
 _cache_lock = asyncio.Lock()
 _dirty: bool = False
 _last_save: float = 0
+_pending_save: bool = False
 _SAVE_INTERVAL = 5.0
+_background_tasks: set = set()
+
+
+def _spawn(loop) -> None:
+    task = loop.create_task(_schedule_save())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def _load_from_storage() -> Dict[str, Any]:
@@ -49,15 +57,20 @@ async def _ensure_loaded() -> None:
 
 
 async def _schedule_save() -> None:
-    global _dirty, _last_save
+    global _dirty, _last_save, _pending_save
 
     _dirty = True
-    now = time.time()
+    delay = _SAVE_INTERVAL - (time.time() - _last_save)
+    if delay > 0:
+        if _pending_save:
+            return
+        _pending_save = True
+        try:
+            await asyncio.sleep(delay)
+        finally:
+            _pending_save = False
 
-    if now - _last_save < _SAVE_INTERVAL:
-        return
-
-    _last_save = now
+    _last_save = time.time()
     _dirty = False
 
     data = {"users": _users_cache.copy()}
@@ -111,7 +124,7 @@ def set_user_language(user_id: int, language: str) -> None:
 
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_schedule_save())
+        _spawn(loop)
     except RuntimeError:
         _save_to_storage_sync({"users": _users_cache})
 
@@ -127,7 +140,7 @@ def update_user(user_id: int, **fields: Any) -> None:
 
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(_schedule_save())
+        _spawn(loop)
     except RuntimeError:
         _save_to_storage_sync({"users": _users_cache})
 
@@ -151,7 +164,7 @@ def unban_user(user_id: int) -> None:
 
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(_schedule_save())
+            _spawn(loop)
         except RuntimeError:
             _save_to_storage_sync({"users": _users_cache})
 

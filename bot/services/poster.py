@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -21,6 +22,50 @@ _RETRY_CAP_SECONDS = 5.0
 _TG_EMOJI_ANCHOR_RE = re.compile(
     r'<a\s+href="tg://emoji\?id=(\d+)"\s*>(.*?)</a>', re.IGNORECASE | re.DOTALL
 )
+
+
+@dataclass(slots=True)
+class SentContent:
+    primary: Any
+    messages: List[Any]
+
+    @property
+    def message_id(self) -> Optional[int]:
+        value = getattr(self.primary, "message_id", None)
+        return int(value) if value is not None else None
+
+    @property
+    def message_ids(self) -> List[int]:
+        return sent_message_ids(self)
+
+
+def sent_message_ids(result: Any) -> List[int]:
+    messages = result.messages if isinstance(result, SentContent) else [result]
+    ids: List[int] = []
+    for message in messages:
+        value = getattr(message, "message_id", None)
+        if value is None:
+            continue
+        message_id = int(value)
+        if message_id not in ids:
+            ids.append(message_id)
+    return ids
+
+
+async def _rollback_sent_messages(bot, chat_id: int, messages: List[Any]) -> None:
+    for message in reversed(messages):
+        message_id = getattr(message, "message_id", None)
+        if message_id is None:
+            continue
+        try:
+            await bot.delete_message(chat_id, int(message_id))
+        except Exception:
+            logger.warning(
+                "poster: rollback delete failed chat=%s msg=%s",
+                chat_id,
+                message_id,
+                exc_info=True,
+            )
 
 
 def normalize_custom_emoji(html: str) -> str:
@@ -165,6 +210,7 @@ def add_post(owner_user_id: int, chat_id: int, run_at_iso: str,
         "content": content,
         "created_at": _now_iso(),
         "sent_message_id": None,
+        "sent_message_ids": [],
         "error": None,
     }
     posts.append(entry)
@@ -344,11 +390,39 @@ def build_rich_message(content: Dict[str, Any]):
     return InputRichMessage(html=html, media=attachments or None)
 
 
+def _build_media_group(media: List[Dict[str, Any]], caption: str | None):
+    from aiogram.enums import ParseMode
+    from aiogram.types import InputMediaAudio, InputMediaDocument, InputMediaPhoto, InputMediaVideo
+
+    kinds = {str(item.get("type") or "") for item in media}
+    if kinds <= {"photo", "video"}:
+        classes = {"photo": InputMediaPhoto, "video": InputMediaVideo}
+    elif kinds == {"audio"}:
+        classes = {"audio": InputMediaAudio}
+    elif kinds == {"document"}:
+        classes = {"document": InputMediaDocument}
+    else:
+        return None
+
+    group = []
+    for index, item in enumerate(media):
+        kwargs: Dict[str, Any] = {"media": item["file_id"]}
+        if index == 0 and caption:
+            kwargs["caption"] = caption
+            kwargs["parse_mode"] = ParseMode.HTML
+        group.append(classes[str(item.get("type"))](**kwargs))
+    return group
+
+
 async def send_content(bot, chat_id: int, content: Dict[str, Any]):
     from aiogram.enums import ParseMode
 
     text = normalize_custom_emoji(content.get("html_text") or "")
-    media = content.get("media") or []
+    media = [
+        item
+        for item in (content.get("media") or [])
+        if isinstance(item, dict) and item.get("file_id")
+    ][: limits.ALBUM_ITEMS]
     kb = _build_keyboard(content.get("buttons") or [])
     visible_len = visible_length(text)
 
@@ -356,14 +430,62 @@ async def send_content(bot, chat_id: int, content: Dict[str, Any]):
         if content.get("rich"):
             return await bot.send_rich_message(
                 chat_id=chat_id, rich_message=build_rich_message(content), reply_markup=kb)
+        if len(media) > 1:
+            sent: List[Any] = []
+            try:
+                caption = text if text and visible_len <= CAPTION_LIMIT else None
+                group = _build_media_group(media, caption)
+                if group is not None:
+                    sent.extend(await bot.send_media_group(chat_id, group))
+                else:
+                    for item in media:
+                        send_media = getattr(
+                            bot,
+                            MEDIA_SEND_METHODS.get(item.get("type"), "send_document"),
+                        )
+                        sent.append(await send_media(chat_id, item["file_id"]))
+
+                text_was_caption = bool(group is not None and caption)
+                if text and not text_was_caption:
+                    text_message = await bot.send_message(
+                        chat_id,
+                        text,
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=kb,
+                        disable_web_page_preview=True,
+                    )
+                    sent.append(text_message)
+                    return SentContent(primary=text_message, messages=sent)
+
+                if kb:
+                    controls = await bot.send_message(
+                        chat_id,
+                        BLANK_CHAR,
+                        reply_markup=kb,
+                        disable_web_page_preview=True,
+                    )
+                    sent.append(controls)
+                return SentContent(primary=sent[0], messages=sent)
+            except Exception:
+                await _rollback_sent_messages(bot, chat_id, sent)
+                raise
+
         if media:
             item = media[0]
             send_media = getattr(bot, MEDIA_SEND_METHODS.get(item.get("type"), "send_photo"))
             if visible_len > CAPTION_LIMIT:
-                await send_media(chat_id, item["file_id"])
-                return await bot.send_message(
-                    chat_id, text, parse_mode=ParseMode.HTML,
-                    reply_markup=kb, disable_web_page_preview=True)
+                media_message = await send_media(chat_id, item["file_id"])
+                try:
+                    text_message = await bot.send_message(
+                        chat_id, text, parse_mode=ParseMode.HTML,
+                        reply_markup=kb, disable_web_page_preview=True)
+                except Exception:
+                    await _rollback_sent_messages(bot, chat_id, [media_message])
+                    raise
+                return SentContent(
+                    primary=text_message,
+                    messages=[media_message, text_message],
+                )
             return await send_media(
                 chat_id, item["file_id"], caption=(text or None),
                 parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -441,6 +563,11 @@ async def _send_via_premium_userbot(bot, chat_id: int, content: Dict[str, Any], 
     kb = _build_keyboard(content.get("buttons") or [])
     visible = visible_length(text)
 
+    # Albums are delivered atomically by send_content. Editing only their first
+    # item through the userbot would lose the remaining message ids.
+    if len(media) > 1:
+        return None
+
     if media:
         if not CAPTION_LIMIT < visible <= limits.PREMIUM_CAPTION:
             return None
@@ -453,26 +580,64 @@ async def _send_via_premium_userbot(bot, chat_id: int, content: Dict[str, Any], 
     if media:
         item = media[0]
         send_media = getattr(bot, MEDIA_SEND_METHODS.get(item.get("type"), "send_photo"))
-        message = await _safe_send(lambda: send_media(chat_id, item["file_id"], reply_markup=kb))
+        message = await _safe_send(lambda: send_media(chat_id, item["file_id"]))
     else:
         message = await _safe_send(lambda: bot.send_message(
             chat_id, BLANK_CHAR, parse_mode=ParseMode.HTML,
-            reply_markup=kb, disable_web_page_preview=True))
+            disable_web_page_preview=True))
 
     message_id = getattr(message, "message_id", None)
+    edited = False
     try:
-        if message_id and await _try_userbot_edit(chat_id, message_id, text):
-            logger.info("poster: long text delivered via userbot chat=%s msg=%s len=%s",
-                        chat_id, message_id, visible)
-            return message
+        edited = bool(message_id and await _try_userbot_edit(chat_id, message_id, text))
     except Exception:
         logger.warning("poster: userbot long-text edit failed chat=%s msg=%s",
                        chat_id, message_id, exc_info=True)
 
+    if edited:
+        if kb:
+            try:
+                await bot.edit_message_reply_markup(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    reply_markup=kb,
+                )
+            except Exception:
+                logger.warning(
+                    "poster: failed to attach markup after userbot edit chat=%s msg=%s",
+                    chat_id,
+                    message_id,
+                    exc_info=True,
+                )
+                try:
+                    controls = await _safe_send(lambda: bot.send_message(
+                        chat_id,
+                        BLANK_CHAR,
+                        reply_markup=kb,
+                        disable_web_page_preview=True,
+                    ))
+                except Exception:
+                    await _rollback_sent_messages(bot, chat_id, [message])
+                    raise
+                logger.info(
+                    "poster: markup sent as companion message chat=%s msg=%s",
+                    chat_id,
+                    getattr(controls, "message_id", None),
+                )
+                return SentContent(primary=message, messages=[message, controls])
+        logger.info("poster: long text delivered via userbot chat=%s msg=%s len=%s",
+                    chat_id, message_id, visible)
+        return message
+
     if media:
-        return await _safe_send(lambda: bot.send_message(
-            chat_id, text, parse_mode=ParseMode.HTML,
-            reply_markup=kb, disable_web_page_preview=True))
+        try:
+            text_message = await _safe_send(lambda: bot.send_message(
+                chat_id, text, parse_mode=ParseMode.HTML,
+                reply_markup=kb, disable_web_page_preview=True))
+        except Exception:
+            await _rollback_sent_messages(bot, chat_id, [message])
+            raise
+        return SentContent(primary=text_message, messages=[message, text_message])
 
     if message_id:
         from bot.helpers import blank_and_delete
@@ -493,7 +658,7 @@ async def _send_content_for_delivery(bot, chat_id: int, content: Dict[str, Any])
     message_id = getattr(message, "message_id", None)
     if content.get("rich"):
         return message
-    if "tg-emoji" in text and message_id:
+    if "tg-emoji" in text and message_id and not isinstance(message, SentContent):
         await _apply_custom_emoji(
             bot, chat_id, message_id, text, _build_keyboard(content.get("buttons") or [])
         )
@@ -515,8 +680,10 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
         logger.warning("poster: skip duplicate delivery post=%s", post_id)
         return False
 
+    message = None
     try:
         message = await _send_content_for_delivery(bot, chat_id, content)
+        message_ids = sent_message_ids(message)
         extra: Dict[str, Any] = {}
         delete_at_abs = _parse_dt(content.get("delete_at_iso"))
         if delete_at_abs:
@@ -528,8 +695,14 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
                 delete_after = 0
             if delete_after > 0:
                 extra["delete_at"] = (_now() + timedelta(minutes=delete_after)).isoformat()
-        _update_post(post_id, status="sent", sent_message_id=getattr(message, "message_id", None),
-                     error=None, **extra)
+        _update_post(
+            post_id,
+            status="sent",
+            sent_message_id=getattr(message, "message_id", None),
+            sent_message_ids=message_ids,
+            error=None,
+            **extra,
+        )
         _schedule_repeat(post, content)
         if _content_has_updated_block(content):
             try:
@@ -540,6 +713,12 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
         return True
     except Exception as exc:
         logger.exception("poster: delivery failed post=%s chat=%s", post_id, chat_id)
+        if message is not None:
+            await _rollback_sent_messages(
+                bot,
+                int(chat_id),
+                message.messages if isinstance(message, SentContent) else [message],
+            )
         _update_post(post_id, status="failed", error=str(exc)[:300])
         return False
     finally:
@@ -581,15 +760,42 @@ def due_deletions(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
 
 async def delete_sent_post(bot, post: Dict[str, Any]) -> None:
     chat_id = post.get("chat_id")
-    message_id = post.get("sent_message_id")
-    if message_id:
+    raw_ids = post.get("sent_message_ids")
+    message_ids = raw_ids if isinstance(raw_ids, list) else []
+    if not message_ids and post.get("sent_message_id"):
+        message_ids = [post.get("sent_message_id")]
+    failed_ids: List[int] = []
+    for message_id in message_ids:
         try:
             from bot.helpers import blank_and_delete
 
-            await blank_and_delete(bot, chat_id, message_id)
+            deleted = await blank_and_delete(bot, chat_id, message_id)
+            if not deleted:
+                failed_ids.append(int(message_id))
         except Exception:
-            logger.exception("poster: auto-delete failed post=%s chat=%s", post.get("id"), chat_id)
-    _update_post(post.get("id"), status="deleted", delete_at=None)
+            failed_ids.append(int(message_id))
+            logger.exception(
+                "poster: auto-delete failed post=%s chat=%s msg=%s",
+                post.get("id"),
+                chat_id,
+                message_id,
+            )
+    if failed_ids:
+        _update_post(
+            post.get("id"),
+            status="sent",
+            sent_message_id=failed_ids[0],
+            sent_message_ids=failed_ids,
+            error=f"auto-delete pending for {len(failed_ids)} message(s)",
+        )
+        return
+    _update_post(
+        post.get("id"),
+        status="deleted",
+        delete_at=None,
+        sent_message_id=None,
+        sent_message_ids=[],
+    )
 
 
 _worker_task: Optional[asyncio.Task] = None
@@ -636,8 +842,13 @@ def start_poster_worker(bot) -> None:
     _worker_task = loop.create_task(_worker_loop(bot))
 
 
-def stop_poster_worker() -> None:
+async def stop_poster_worker() -> None:
     global _worker_task
-    if _worker_task and not _worker_task.done():
-        _worker_task.cancel()
+    task = _worker_task
     _worker_task = None
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass

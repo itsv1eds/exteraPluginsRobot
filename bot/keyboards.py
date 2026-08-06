@@ -1,11 +1,11 @@
 from typing import List, Optional, Tuple
-from urllib.parse import quote
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.callback_tokens import encode_slug
 from bot.icons import CATEGORY_ICONS, ICONS
 from bot.texts import t
+from request_store import request_callback_token, request_deeplink_token
 
 
 def _btn(
@@ -983,6 +983,7 @@ def admin_review_kb(
     lang: str = "ru",
     allow_publish: bool = True,
 ) -> InlineKeyboardMarkup:
+    vote_token = request_callback_token(request_id)
     submit_callback = submit_callback or f"adm:prepublish:{request_id}"
     submit_label = submit_label or t("btn_publish", lang)
     rows: list[list[InlineKeyboardButton]] = []
@@ -992,8 +993,8 @@ def admin_review_kb(
             _btn(t("btn_more", lang), callback_data=f"adm:actions:{request_id}", icon="menu"),
         ])
     rows.append([
-        _btn(t("btn_vote_yes", lang), callback_data=f"modvote:yes:{request_id}", icon="yes", style="success"),
-        _btn(t("btn_vote_no", lang), callback_data=f"modvote:no:{request_id}", icon="no", style="danger"),
+        _btn(t("btn_vote_yes", lang), callback_data=f"modvote:yes:{vote_token}", icon="yes", style="success"),
+        _btn(t("btn_vote_no", lang), callback_data=f"modvote:no:{vote_token}", icon="no", style="danger"),
     ])
     if user_id:
         rows.append([_btn(t("kb_admin_msg_author", lang), callback_data=f"adm:msgauthor:{request_id}", icon="edit")])
@@ -1002,10 +1003,11 @@ def admin_review_kb(
 
 
 def moderation_vote_kb(request_id: str, yes_count: int = 0, no_count: int = 0, lang: str = "ru") -> InlineKeyboardMarkup:
+    token = request_callback_token(request_id)
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            _btn(f"{t('btn_vote_yes', lang)} ({yes_count})", callback_data=f"modvote:yes:{request_id}", icon="yes", style="success"),
-            _btn(f"{t('btn_vote_no', lang)} ({no_count})", callback_data=f"modvote:no:{request_id}", icon="no", style="danger"),
+            _btn(f"{t('btn_vote_yes', lang)} ({yes_count})", callback_data=f"modvote:yes:{token}", icon="yes", style="success"),
+            _btn(f"{t('btn_vote_no', lang)} ({no_count})", callback_data=f"modvote:no:{token}", icon="no", style="danger"),
         ],
     ])
 
@@ -1036,29 +1038,31 @@ def moderation_vote_reason_kb(
     allow_no_reason: bool = False,
     lang: str = "ru",
 ) -> InlineKeyboardMarkup:
+    token = request_callback_token(request_id)
     anon_key = "kb_vote_anon_on" if anonymous else "kb_vote_anon_off"
-    rows = [[_btn(t(anon_key, lang), callback_data=f"mvr:anon:{owner_id}:{request_id}",
+    rows = [[_btn(t(anon_key, lang), callback_data=f"mvr:anon:{owner_id}:{token}",
                   icon="profile", style="success" if anonymous else None)]]
     if has_templates:
-        rows.append([_btn(t("kb_vote_reason_tpl", lang), callback_data=f"mvr:tpl:{owner_id}:{request_id}", icon="file")])
-    rows.append([_btn(t("kb_vote_reason_own", lang), callback_data=f"mvr:own:{owner_id}:{request_id}", icon="edit")])
+        rows.append([_btn(t("kb_vote_reason_tpl", lang), callback_data=f"mvr:tpl:{owner_id}:{token}", icon="file")])
+    rows.append([_btn(t("kb_vote_reason_own", lang), callback_data=f"mvr:own:{owner_id}:{token}", icon="edit")])
     if allow_no_reason:
-        rows.append([_btn(t("kb_vote_reason_skip", lang), callback_data=f"mvr:none:{owner_id}:{request_id}", icon="yes")])
-    rows.append([_btn(t("kb_vote_cancel", lang), callback_data=f"mvr:cancel:{owner_id}:{request_id}", icon="no", style="danger")])
+        rows.append([_btn(t("kb_vote_reason_skip", lang), callback_data=f"mvr:none:{owner_id}:{token}", icon="yes")])
+    rows.append([_btn(t("kb_vote_cancel", lang), callback_data=f"mvr:cancel:{owner_id}:{token}", icon="no", style="danger")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def moderation_vote_template_kb(request_id: str, owner_id: int, templates: List[str], lang: str = "ru") -> InlineKeyboardMarkup:
+    token = request_callback_token(request_id)
     rows = [
-        [_btn(f"{idx + 1}. {_tpl_label(tpl)}", callback_data=f"mvr:t:{owner_id}:{idx}:{request_id}", icon="file")]
+        [_btn(f"{idx + 1}. {_tpl_label(tpl)}", callback_data=f"mvr:t:{owner_id}:{idx}:{token}", icon="file")]
         for idx, tpl in enumerate(templates)
     ]
-    rows.append([_btn(t("btn_back", lang), callback_data=f"mvr:back:{owner_id}:{request_id}", style="danger", icon="back")])
+    rows.append([_btn(t("btn_back", lang), callback_data=f"mvr:back:{owner_id}:{token}", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def moderation_inline_vote_url_kb(bot_username: str, request_id: str, yes_count: int = 0, no_count: int = 0, lang: str = "ru") -> InlineKeyboardMarkup:
-    token = quote(str(request_id), safe="")
+    token = request_deeplink_token(request_id)
     return InlineKeyboardMarkup(inline_keyboard=[
         [
             _btn(f"{t('btn_vote_yes', lang)} ({yes_count})", url=f"https://t.me/{bot_username}?start=modvote_yes_{token}", icon="yes", style="success"),
@@ -1150,10 +1154,11 @@ def admin_confirm_ban_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMar
 
 
 def moderation_appeal_kb(request_id: str, yes_count: int = 0, no_count: int = 0, lang: str = "ru") -> InlineKeyboardMarkup:
+    vote_token = request_callback_token(request_id)
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            _btn(f"{t('btn_vote_yes', lang)} ({yes_count})", callback_data=f"modvote:yes:{request_id}", icon="yes", style="success"),
-            _btn(f"{t('btn_vote_no', lang)} ({no_count})", callback_data=f"modvote:no:{request_id}", icon="no", style="danger"),
+            _btn(f"{t('btn_vote_yes', lang)} ({yes_count})", callback_data=f"modvote:yes:{vote_token}", icon="yes", style="success"),
+            _btn(f"{t('btn_vote_no', lang)} ({no_count})", callback_data=f"modvote:no:{vote_token}", icon="no", style="danger"),
         ],
         [
             _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_id}", icon="yes", style="success"),

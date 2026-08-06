@@ -49,9 +49,9 @@ from bot.services.submission import (
     build_submission_payload,
     process_plugin_file,
 )
-from bot.services.publish import build_channel_post, update_plugin
-from bot.services.admin_notifications import refresh_admin_notify_messages, send_review_notifications
-from bot.services.moderation import can_vote_in_context, send_request_to_forum, set_vote
+from bot.services.publish import build_channel_post
+from bot.services.admin_notifications import send_review_notifications
+from bot.services.moderation import can_accept_vote, can_vote_in_context, send_request_to_forum
 from bot.services.versioning import get_min_supported_version, is_valid_version, meets_min_supported, normalize_version
 from bot.services.validation import (
     check_duplicate_pending,
@@ -76,6 +76,7 @@ from request_store import (
     delete_request_and_file,
     discard_user_drafts,
     get_user_requests,
+    get_request_by_deeplink_token,
     get_request_by_id,
     promote_draft_request,
     update_request_payload,
@@ -88,6 +89,8 @@ router = Router(name="user-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
 logger = logging.getLogger(__name__)
 TZ_UTC_PLUS_5 = timezone(timedelta(hours=5))
+_COMMENT_MEDIA_GROUP_SETTLE_SECONDS = 0.8
+_comment_media_group_buffers: dict[tuple[int, int, str], dict[str, Any]] = {}
 
 
 @router.pre_checkout_query()
@@ -325,33 +328,37 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
 
     if raw_value.startswith(("modvote_yes_", "modvote_no_")):
         vote = "yes" if raw_value.startswith("modvote_yes_") else "no"
-        request_id = unquote(raw_value.split("_", 2)[2])
-        entry = get_request_by_id(request_id)
+        # unquote keeps already-sent links from the old percent-encoded format
+        # working after switching new links to Bot API-safe tokens.
+        request_token = unquote(raw_value.split("_", 2)[2])
+        entry = get_request_by_deeplink_token(request_token)
         request_payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
         inline_public = bool(request_payload.get("moderation_inline_public")) if isinstance(request_payload, dict) else False
         user = message.from_user
         if not entry or not user:
             await message.answer(t("not_found", lang), parse_mode=ParseMode.HTML)
             return True
+        if not can_accept_vote(entry):
+            await message.answer(t("vote_expired", lang), parse_mode=ParseMode.HTML)
+            return True
         if not inline_public and not can_vote_in_context(user.id, message.chat.id):
             await message.answer(t("admin_denied", lang), parse_mode=ParseMode.HTML)
             return True
-        entry = set_vote(
+        request_id = str(entry.get("id") or "")
+        from bot.routers.moderation_flow import start_vote_prompt
+
+        ok = await start_vote_prompt(
+            message.bot,
             request_id,
             int(user.id),
             user.username or "",
             user.full_name or "",
             vote,
+            lang,
+            int(message.chat.id),
         )
-        if entry:
-            await refresh_admin_notify_messages(message.bot, entry)
-        await state.set_state(UserFlow.entering_moderation_vote_reason)
-        await state.update_data(
-            moderation_vote_request_id=request_id,
-            moderation_vote_inline_message_id="",
-            moderation_vote_dm=True,
-        )
-        await message.answer(t("moderation_vote_reason_dm_prompt", lang), parse_mode=ParseMode.HTML)
+        if not ok:
+            await message.answer(t("vote_expired", lang), parse_mode=ParseMode.HTML)
         return True
 
     if value == "catalog":
@@ -1214,6 +1221,7 @@ async def on_profile_delete(cb: CallbackQuery, state: FSMContext) -> None:
         pending_request_type="delete",
         pending_reply_key="delete_sent",
     )
+    await _discard_pending_comment_media_groups(cb)
     await state.set_state(UserFlow.entering_admin_comment)
     await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=True)
     await answer(cb, t("ask_delete_reason", lang, max=COMMENT_MEDIA_LIMIT),
@@ -1509,6 +1517,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             pending_request_type="update",
             pending_reply_key="update_sent",
         )
+        await _discard_pending_comment_media_groups(cb)
         await state.set_state(UserFlow.entering_admin_comment)
         await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=False)
         await answer(cb, t("ask_admin_comment", lang, max=COMMENT_MEDIA_LIMIT), comment_skip_kb(lang), "update")
@@ -2318,6 +2327,7 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         pending_request_type="new",
         pending_reply_key="submission_sent",
     )
+    await _discard_pending_comment_media_groups(cb)
     await state.set_state(UserFlow.entering_admin_comment)
     await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=False)
     await answer(cb, t("ask_admin_comment", lang, max=COMMENT_MEDIA_LIMIT), comment_skip_kb(lang), "new")
@@ -2333,6 +2343,112 @@ def _comment_media_of(message: Message) -> dict | None:
     if message.video:
         return {"type": "video", "file_id": message.video.file_id}
     return None
+
+
+def _comment_media_owner(target: Message | CallbackQuery) -> tuple[int, int]:
+    message = target.message if isinstance(target, CallbackQuery) else target
+    chat_id = int(message.chat.id) if message and message.chat else 0
+    user_id = int(target.from_user.id) if target.from_user else 0
+    return chat_id, user_id
+
+
+async def _store_comment_media_group(pending: dict[str, Any], *, render: bool = True) -> None:
+    state: FSMContext = pending["state"]
+    if await state.get_state() != UserFlow.entering_admin_comment.state:
+        return
+
+    target: Message = pending["target"]
+    data = await state.get_data()
+    media = list(data.get("pending_comment_media") or [])
+    existing = {
+        (str(item.get("type") or ""), str(item.get("file_id") or ""))
+        for item in media
+        if isinstance(item, dict)
+    }
+    limit_reached = False
+    for item in pending["items"]:
+        item_key = (str(item.get("type") or ""), str(item.get("file_id") or ""))
+        if item_key in existing:
+            continue
+        if len(media) >= COMMENT_MEDIA_LIMIT:
+            limit_reached = True
+            break
+        media.append(item)
+        existing.add(item_key)
+
+    update: dict[str, Any] = {"pending_comment_media": media}
+    caption = str(pending.get("caption") or "").strip()
+    if caption:
+        update["pending_comment"] = caption
+    await state.update_data(**update)
+
+    if render or limit_reached:
+        lang = await get_language(target, state)
+        if limit_reached:
+            await target.answer(t("comment_media_limit", lang, max=COMMENT_MEDIA_LIMIT))
+        if render:
+            await _render_comment_state(target, state, lang)
+
+
+async def _queue_comment_media_group(message: Message, state: FSMContext, item: dict) -> None:
+    owner = _comment_media_owner(message)
+    key = (*owner, str(message.media_group_id))
+    pending = _comment_media_group_buffers.setdefault(
+        key,
+        {"items": [], "caption": "", "target": message, "state": state, "task": None},
+    )
+    item_key = (str(item.get("type") or ""), str(item.get("file_id") or ""))
+    existing = {
+        (str(value.get("type") or ""), str(value.get("file_id") or ""))
+        for value in pending["items"]
+        if isinstance(value, dict)
+    }
+    if item_key not in existing and len(pending["items"]) < COMMENT_MEDIA_LIMIT:
+        pending["items"].append(item)
+    caption = extract_html_text(message).strip()
+    if caption:
+        pending["caption"] = caption
+    pending["target"] = message
+    pending["state"] = state
+
+    previous = pending.get("task")
+    if previous and not previous.done():
+        previous.cancel()
+
+    async def _settle() -> None:
+        try:
+            await asyncio.sleep(_COMMENT_MEDIA_GROUP_SETTLE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        current = _comment_media_group_buffers.get(key)
+        if not current or current.get("task") is not asyncio.current_task():
+            return
+        _comment_media_group_buffers.pop(key, None)
+        try:
+            await _store_comment_media_group(current)
+        except Exception:
+            logger.exception("submission: comment media group finalize failed key=%s", key)
+
+    pending["task"] = asyncio.create_task(_settle())
+
+
+async def _discard_pending_comment_media_groups(target: Message | CallbackQuery) -> None:
+    owner = _comment_media_owner(target)
+    for key in [key for key in _comment_media_group_buffers if key[:2] == owner]:
+        pending = _comment_media_group_buffers.pop(key)
+        task = pending.get("task")
+        if task and not task.done():
+            task.cancel()
+
+
+async def _flush_pending_comment_media_groups(target: Message | CallbackQuery) -> None:
+    owner = _comment_media_owner(target)
+    for key in [key for key in _comment_media_group_buffers if key[:2] == owner]:
+        pending = _comment_media_group_buffers.pop(key)
+        task = pending.get("task")
+        if task and not task.done():
+            task.cancel()
+        await _store_comment_media_group(pending, render=False)
 
 
 async def _render_comment_state(target, state: FSMContext, lang: str) -> None:
@@ -2359,6 +2475,7 @@ async def _render_comment_state(target, state: FSMContext, lang: str) -> None:
 async def on_admin_comment_skip(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
+    await _discard_pending_comment_media_groups(cb)
     await state.update_data(pending_comment=None, pending_comment_media=[])
     await _finalize_submission(cb, state, comment=None)
 
@@ -2367,6 +2484,7 @@ async def on_admin_comment_skip(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_admin_comment_reset(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
+    await _discard_pending_comment_media_groups(cb)
     lang = await get_language(cb, state)
     await state.update_data(pending_comment=None, pending_comment_media=[])
     await _render_comment_state(cb, state, lang)
@@ -2377,6 +2495,7 @@ async def on_admin_comment_reset(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_admin_comment_send(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
+    await _flush_pending_comment_media_groups(cb)
     data = await state.get_data()
     comment = str(data.get("pending_comment") or "").strip()
     if bool(data.get("comment_required")) and not comment:
@@ -2394,11 +2513,13 @@ async def on_admin_comment(message: Message, state: FSMContext) -> None:
     if not await _ensure_not_banned(message, state):
         return
     lang = await get_language(message, state)
-    data = await state.get_data()
-    media = list(data.get("pending_comment_media") or [])
-
     item = _comment_media_of(message)
     if item:
+        if message.media_group_id:
+            await _queue_comment_media_group(message, state, item)
+            return
+        data = await state.get_data()
+        media = list(data.get("pending_comment_media") or [])
         if len(media) >= COMMENT_MEDIA_LIMIT:
             await message.answer(t("comment_media_limit", lang, max=COMMENT_MEDIA_LIMIT))
             return
@@ -2414,6 +2535,7 @@ async def on_admin_comment(message: Message, state: FSMContext) -> None:
         await message.answer(t("comment_media_unsupported", lang))
         return
 
+    await _flush_pending_comment_media_groups(message)
     text = extract_html_text(message).strip()
     if not text:
         return

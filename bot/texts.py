@@ -217,8 +217,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Send the post <b>text</b> (formatting and custom emoji supported):",
     },
     "poster_compose_media": {
-        "ru": "Прикрепите <b>фото</b>, <b>видео</b>, <b>гиф</b>, <b>аудио</b> или <b>файл</b>, либо пропустите.",
-        "en": "Attach a <b>photo</b>, <b>video</b>, <b>GIF</b>, <b>audio</b> or <b>file</b>, or skip.",
+        "ru": "Прикрепите до 10 <b>фото или видео одним альбомом</b>. Также можно отправить гиф, аудио или файл — либо пропустить.",
+        "en": "Attach up to 10 <b>photos or videos as one album</b>. You can also send a GIF, audio or file, or skip.",
     },
     "poster_compose_buttons": {
         "ru": "Отправьте кнопки — по одной на строку в формате <code>Текст | https://ссылка</code>.\n\nЦвет кнопки — добавьте в конце <code>::red</code> (красная), <code>::green</code> (зелёная) или <code>::blue</code> (синяя), например <code>Текст | https://ссылка::red</code>. Или пропустите.",
@@ -1071,6 +1071,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "join_btn_welcome_toggle": {"ru": "Приветствие", "en": "Welcome"},
     "join_btn_edit": {"ru": "Редактировать", "en": "Edit"},
     "join_prompt_welcome": {"ru": "Отправь новый текст приветствия.", "en": "Send the new welcome text."},
+    "join_bad_welcome_template": {
+        "ru": "Некорректный шаблон: проверь фигурные скобки, плейсхолдеры и URL кнопок. Для обычных скобок используй <code>{{</code> и <code>}}</code>.",
+        "en": "Invalid template: check braces, placeholders, and button URLs. Use <code>{{</code> and <code>}}</code> for literal braces.",
+    },
     "join_prompt_post_lock_seconds": {
         "ru": "Отправь время закрытия чата в секундах. Например: <code>30</code>, <code>120</code>. Чтобы выключить закрытие, отправь <code>0</code>.",
         "en": "Send chat lock duration in seconds. Example: <code>30</code>, <code>120</code>. Send <code>0</code> to disable locking.",

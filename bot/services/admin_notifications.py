@@ -161,6 +161,7 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
     request_id = str(entry.get("id") or "")
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     user_id = int(payload.get("user_id") or 0)
+    sent_message_ids: list[int] = []
     try:
         msg = await bot.send_message(
             chat_id,
@@ -169,6 +170,7 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
             reply_markup=admin_review_kb(request_id, user_id, allow_publish=False),
             disable_web_page_preview=True,
         )
+        sent_message_ids.append(int(msg.message_id))
         file_msg = None
         if file_path and Path(file_path).exists():
             file_msg = await bot.send_document(
@@ -178,6 +180,7 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
                 allow_sending_without_reply=True,
                 disable_notification=True,
             )
+            sent_message_ids.append(int(file_msg.message_id))
         mapping = payload.get("admin_notify_messages")
         if not isinstance(mapping, dict):
             mapping = {}
@@ -192,6 +195,17 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
         payload["admin_notify_messages"] = mapping
         update_request_payload(request_id, {"admin_notify_messages": mapping})
     except Exception as exc:
+        for message_id in reversed(sent_message_ids):
+            try:
+                await blank_and_delete(bot, chat_id, message_id)
+            except Exception:
+                logger.warning(
+                    "event=submission.notify_review_target.rollback_failed request_id=%s chat_id=%s message_id=%s",
+                    request_id,
+                    chat_id,
+                    message_id,
+                    exc_info=True,
+                )
         if is_unreachable_chat(exc):
             logger.warning(
                 "event=submission.notify_review_target.unreachable request_id=%s chat_id=%s reason=%s",

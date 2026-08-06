@@ -1,7 +1,12 @@
 import logging
 import asyncio
+import re
 import time
+from copy import deepcopy
+from functools import partial
+from string import Formatter
 from typing import Any
+from urllib.parse import urlsplit
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
@@ -23,11 +28,23 @@ router = Router()
 
 logger = logging.getLogger(__name__)
 _post_guard_unlock_tasks: dict[int, asyncio.Task] = {}
+_post_guard_permission_locks: dict[int, asyncio.Lock] = {}
 
 _RETRY_CAP_SECONDS = 5.0
 _ADMIN_STATUS_TTL = 60.0
 _me_cache: dict[int, Any] = {}
 _admin_status_cache: dict[int, tuple[float, bool]] = {}
+_WELCOME_FIELDS = {
+    "first",
+    "last",
+    "fullname",
+    "username",
+    "mention",
+    "id",
+    "chatname",
+    "name",
+}
+_BUTTON_URL_PATTERN = re.compile(r"\[(?P<label>[^\]]+)\]\(buttonurl://(?P<url>[^)]+)\)")
 
 
 async def _safe_telegram(factory, *, retries: int = 1):
@@ -132,8 +149,6 @@ def _escape_md_v2(text: str) -> str:
 
 
 def _unescape_md_v2(text: str) -> str:
-    import re
-
     return re.sub(r"\\([_\[\]\(\)~`>#+\-=|{}\.!*])", r"\1", text or "")
 
 
@@ -170,12 +185,9 @@ def _escape_vars_for_md(vars_map: dict[str, str]) -> dict[str, str]:
 
 
 def _parse_buttonurl_md(text: str) -> tuple[str, InlineKeyboardMarkup | None]:
-    import re
-
     if not text:
         return text, None
 
-    pattern = re.compile(r"\[(?P<label>[^\]]+)\]\(buttonurl://(?P<url>[^)]+)\)")
     buttons: list[tuple[str, str, bool]] = []
 
     def _collect(m: re.Match) -> str:
@@ -184,10 +196,12 @@ def _parse_buttonurl_md(text: str) -> tuple[str, InlineKeyboardMarkup | None]:
         if raw_url.endswith(":same"):
             same = True
             raw_url = raw_url[: -len(":same")]
+        if not _is_valid_button_url(raw_url):
+            return m.group("label")
         buttons.append((m.group("label"), raw_url, same))
         return ""
 
-    cleaned = pattern.sub(_collect, text)
+    cleaned = _BUTTON_URL_PATTERN.sub(_collect, text)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -214,11 +228,45 @@ def _extract_flags(text: str) -> tuple[str, dict[str, bool]]:
     }
     out = text or ""
     for key in list(flags.keys()):
-        token = "{" + key + "}"
-        if token in out:
-            flags[key] = True
-            out = out.replace(token, "")
+        pattern = re.compile(rf"(?<!{{)\{{{re.escape(key)}\}}(?!}})")
+        out, count = pattern.subn("", out)
+        flags[key] = count > 0
     return out.strip(), flags
+
+
+def _is_valid_button_url(url: str) -> bool:
+    try:
+        parsed = urlsplit((url or "").strip())
+    except ValueError:
+        return False
+    if parsed.scheme in {"http", "https"}:
+        return bool(parsed.netloc)
+    return parsed.scheme == "tg" and bool(parsed.netloc or parsed.path)
+
+
+def _is_valid_welcome_template(template: str) -> bool:
+    if not isinstance(template, str) or not template.strip():
+        return False
+
+    templ, _flags = _extract_flags(template)
+    if not templ:
+        return False
+    try:
+        for _literal, field_name, format_spec, conversion in Formatter().parse(templ):
+            if field_name is None:
+                continue
+            if field_name not in _WELCOME_FIELDS or format_spec or conversion:
+                return False
+    except ValueError:
+        return False
+
+    for match in _BUTTON_URL_PATTERN.finditer(templ):
+        raw_url = (match.group("url") or "").strip()
+        if raw_url.endswith(":same"):
+            raw_url = raw_url[: -len(":same")]
+        if not _is_valid_button_url(raw_url):
+            return False
+    return True
 
 
 def _onoff(value: bool, lang: str) -> str:
@@ -404,10 +452,10 @@ def _get_setting(chat_id: int, key: str) -> Any:
         db[chat_key] = chat_cfg
 
     if key not in chat_cfg and key in _DEFAULTS:
-        chat_cfg[key] = _DEFAULTS[key]
+        chat_cfg[key] = deepcopy(_DEFAULTS[key])
         _save_db(db)
 
-    return chat_cfg.get(key, _DEFAULTS.get(key))
+    return chat_cfg.get(key, deepcopy(_DEFAULTS.get(key)))
 
 
 def _set_setting(chat_id: int, key: str, value: Any) -> None:
@@ -510,27 +558,6 @@ async def _set_chat_permissions(bot, chat_id: int, permissions: ChatPermissions)
         await bot.set_chat_permissions(chat_id=chat_id, permissions=permissions)
 
 
-async def _force_open_chat_permissions(bot, chat_id: int) -> None:
-    permissions = _open_permissions()
-    errors: list[Exception] = []
-    for kwargs in (
-        {"chat_id": chat_id, "permissions": permissions, "use_independent_chat_permissions": True},
-        {"chat_id": chat_id, "permissions": permissions, "use_independent_chat_permissions": False},
-        {"chat_id": chat_id, "permissions": permissions},
-    ):
-        try:
-            await bot.set_chat_permissions(**kwargs)
-            return
-        except TypeError as exc:
-            errors.append(exc)
-            continue
-        except Exception as exc:
-            errors.append(exc)
-            continue
-    if errors:
-        raise errors[-1]
-
-
 async def _chat_allows_messages(bot, chat_id: int) -> bool:
     try:
         chat = await bot.get_chat(chat_id)
@@ -588,38 +615,65 @@ async def _restore_post_guard_permissions(bot, chat_id: int, lock_until: int) ->
         if delay:
             await asyncio.sleep(delay)
 
-        current_until = int(_get_setting(chat_id, "PostLockUntil") or 0)
-        if current_until != int(lock_until):
-            return
+        async with _post_guard_permission_lock(chat_id):
+            current_until = int(_get_setting(chat_id, "PostLockUntil") or 0)
+            if current_until != int(lock_until):
+                return
 
-        original = _get_setting(chat_id, "PostOriginalPermissions")
-        locked = _get_setting(chat_id, "PostLockedPermissions")
-        if not isinstance(original, dict):
-            original = {}
-        if not isinstance(locked, list):
-            locked = list(original.keys())
-        updates: dict[str, bool] = {}
-        for field in locked:
-            field = str(field)
-            if field not in _CHAT_PERMISSION_FIELDS:
-                continue
-            value = original.get(field, True)
-            updates[field] = bool(value) if value is not None else True
-        permissions = await _get_chat_permissions(bot, chat_id)
-        await _set_chat_permissions(bot, chat_id, _permissions_with_updates(permissions, updates))
+            await _restore_saved_post_guard_permissions(bot, chat_id)
+            if int(_get_setting(chat_id, "PostLockUntil") or 0) == int(lock_until):
+                _clear_post_guard_lock(chat_id)
     except Exception:
         logger.exception("event=joinly.post_guard.unlock_failed chat_id=%s", chat_id)
-        return
 
+
+def _post_guard_permission_lock(chat_id: int) -> asyncio.Lock:
+    lock = _post_guard_permission_locks.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _post_guard_permission_locks[chat_id] = lock
+    return lock
+
+
+def _post_guard_restore_updates(chat_id: int) -> dict[str, bool]:
+    original = _get_setting(chat_id, "PostOriginalPermissions")
+    locked = _get_setting(chat_id, "PostLockedPermissions")
+    if not isinstance(original, dict):
+        original = {}
+    if not isinstance(locked, list):
+        locked = list(original.keys())
+
+    updates: dict[str, bool] = {}
+    for field in locked:
+        field = str(field)
+        if field not in _CHAT_PERMISSION_FIELDS:
+            continue
+        value = original.get(field, True)
+        updates[field] = bool(value) if value is not None else True
+    return updates
+
+
+async def _restore_saved_post_guard_permissions(bot, chat_id: int) -> None:
+    updates = _post_guard_restore_updates(chat_id)
+    if not updates:
+        return
+    permissions = await _get_chat_permissions(bot, chat_id)
+    await _set_chat_permissions(bot, chat_id, _permissions_with_updates(permissions, updates))
+
+
+def _clear_post_guard_lock(chat_id: int) -> None:
     _set_setting(chat_id, "PostLockUntil", 0)
+    _set_setting(chat_id, "PostOriginalPermissions", {})
+    _set_setting(chat_id, "PostLockedPermissions", [])
 
 
 async def _unlock_chat_now(bot, chat_id: int) -> None:
     old_task = _post_guard_unlock_tasks.pop(chat_id, None)
     if old_task and not old_task.done():
         old_task.cancel()
-    await _force_open_chat_permissions(bot, chat_id)
-    _set_setting(chat_id, "PostLockUntil", 0)
+    async with _post_guard_permission_lock(chat_id):
+        await _restore_saved_post_guard_permissions(bot, chat_id)
+        _clear_post_guard_lock(chat_id)
 
 
 def _schedule_post_guard_unlock(bot, chat_id: int, lock_until: int) -> None:
@@ -641,49 +695,51 @@ async def _lock_chat_after_post(message: Message, seconds: int) -> None:
     if seconds <= 0:
         return
 
-    lock_until = int(time.time()) + seconds
-    current_until = int(_get_setting(message.chat.id, "PostLockUntil") or 0)
-    selected_permissions = _post_lock_permissions(message.chat.id)
-    if current_until <= int(time.time()):
-        permissions = await _get_chat_permissions(message.bot, message.chat.id) or getattr(message.chat, "permissions", None)
-        original = {}
-        for field in selected_permissions:
-            value = getattr(permissions, field, None) if permissions else None
-            original[field] = bool(value) if value is not None else True
-        _set_setting(message.chat.id, "PostOriginalPermissions", original)
-        _set_setting(message.chat.id, "PostLockedPermissions", selected_permissions)
-    else:
-        locked = _get_setting(message.chat.id, "PostLockedPermissions")
-        if isinstance(locked, list):
-            selected_permissions = sorted(set(str(item) for item in locked) | set(selected_permissions))
-            _set_setting(message.chat.id, "PostLockedPermissions", selected_permissions)
-
-    _set_setting(message.chat.id, "PostLockUntil", lock_until)
-    try:
-        permissions = await _get_chat_permissions(message.bot, message.chat.id) or getattr(message.chat, "permissions", None)
-        await _set_chat_permissions(
-            message.bot,
-            message.chat.id,
-            _permissions_with_updates(permissions, {field: False for field in selected_permissions}),
-        )
-        after_permissions = await _get_chat_permissions(message.bot, message.chat.id)
-        original = _get_setting(message.chat.id, "PostOriginalPermissions")
-        if not isinstance(original, dict):
+    chat_id = int(message.chat.id)
+    async with _post_guard_permission_lock(chat_id):
+        lock_until = int(time.time()) + seconds
+        current_until = int(_get_setting(chat_id, "PostLockUntil") or 0)
+        selected_permissions = _post_lock_permissions(chat_id)
+        if current_until <= int(time.time()):
+            permissions = await _get_chat_permissions(message.bot, chat_id) or getattr(message.chat, "permissions", None)
             original = {}
-        locked = set(str(item) for item in (_get_setting(message.chat.id, "PostLockedPermissions") or []))
-        for field in _CHAT_PERMISSION_FIELDS:
-            before = getattr(permissions, field, None) if permissions else None
-            after = getattr(after_permissions, field, None) if after_permissions else None
-            if before is not False and after is False:
-                original.setdefault(field, True if before is None else bool(before))
-                locked.add(field)
-        _set_setting(message.chat.id, "PostOriginalPermissions", original)
-        _set_setting(message.chat.id, "PostLockedPermissions", [field for field in _CHAT_PERMISSION_FIELDS if field in locked])
-    except Exception:
-        logger.exception("event=joinly.post_guard.lock_failed chat_id=%s message_id=%s", message.chat.id, message.message_id)
-        return
+            for field in selected_permissions:
+                value = getattr(permissions, field, None) if permissions else None
+                original[field] = bool(value) if value is not None else True
+            _set_setting(chat_id, "PostOriginalPermissions", original)
+            _set_setting(message.chat.id, "PostLockedPermissions", selected_permissions)
+        else:
+            locked = _get_setting(chat_id, "PostLockedPermissions")
+            if isinstance(locked, list):
+                selected_permissions = sorted(set(str(item) for item in locked) | set(selected_permissions))
+                _set_setting(chat_id, "PostLockedPermissions", selected_permissions)
 
-    _schedule_post_guard_unlock(message.bot, message.chat.id, lock_until)
+        _set_setting(chat_id, "PostLockUntil", lock_until)
+        try:
+            permissions = await _get_chat_permissions(message.bot, chat_id) or getattr(message.chat, "permissions", None)
+            await _set_chat_permissions(
+                message.bot,
+                chat_id,
+                _permissions_with_updates(permissions, {field: False for field in selected_permissions}),
+            )
+            after_permissions = await _get_chat_permissions(message.bot, chat_id)
+            original = _get_setting(chat_id, "PostOriginalPermissions")
+            if not isinstance(original, dict):
+                original = {}
+            locked = set(str(item) for item in (_get_setting(chat_id, "PostLockedPermissions") or []))
+            for field in _CHAT_PERMISSION_FIELDS:
+                before = getattr(permissions, field, None) if permissions else None
+                after = getattr(after_permissions, field, None) if after_permissions else None
+                if before is not False and after is False:
+                    original.setdefault(field, True if before is None else bool(before))
+                    locked.add(field)
+            _set_setting(chat_id, "PostOriginalPermissions", original)
+            _set_setting(chat_id, "PostLockedPermissions", [field for field in _CHAT_PERMISSION_FIELDS if field in locked])
+        except Exception:
+            logger.exception("event=joinly.post_guard.lock_failed chat_id=%s message_id=%s", chat_id, message.message_id)
+            return
+
+    _schedule_post_guard_unlock(message.bot, chat_id, lock_until)
 
 
 async def _ensure_post_guard_unlock(bot, chat_id: int) -> None:
@@ -805,28 +861,37 @@ async def on_new_members(message: Message) -> None:
         raw_vars = _build_welcome_vars(message, u)
         vars_map = _escape_vars_for_md(raw_vars)
         template = str(_get_setting(message.chat.id, "WelcomeText") or _DEFAULTS["WelcomeText"])
+        if not _is_valid_welcome_template(template):
+            logger.warning("Invalid welcome template, using default: chat_id=%s", message.chat.id)
+            template = t("join_welcome_default", _lang_for(message))
         templ, flags = _extract_flags(template)
         rendered = templ.format(**vars_map)
         rendered, kb = _parse_buttonurl_md(rendered)
-        sent = await _safe_telegram(lambda: message.answer(
-            rendered,
-            parse_mode=ParseMode.MARKDOWN_V2,
-            reply_markup=kb,
-            disable_web_page_preview=(not flags.get("preview")),
-            disable_notification=bool(flags.get("nonotif")),
-            protect_content=bool(flags.get("protect")),
-        ))
+        sent = await _safe_telegram(
+            partial(
+                message.answer,
+                rendered,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=kb,
+                disable_web_page_preview=(not flags.get("preview")),
+                disable_notification=bool(flags.get("nonotif")),
+                protect_content=bool(flags.get("protect")),
+            )
+        )
         if sent is None:
             plain_template = _unescape_md_v2(templ)
             plain_text = plain_template.format(**raw_vars)
             plain_text, safe_kb = _parse_buttonurl_md(plain_text)
-            await _safe_telegram(lambda: message.answer(
-                plain_text,
-                reply_markup=safe_kb,
-                disable_web_page_preview=(not flags.get("preview")),
-                disable_notification=bool(flags.get("nonotif")),
-                protect_content=bool(flags.get("protect")),
-            ))
+            await _safe_telegram(
+                partial(
+                    message.answer,
+                    plain_text,
+                    reply_markup=safe_kb,
+                    disable_web_page_preview=(not flags.get("preview")),
+                    disable_notification=bool(flags.get("nonotif")),
+                    protect_content=bool(flags.get("protect")),
+                )
+            )
 
     if _get_setting(message.chat.id, "DeleteServiceMessages"):
         try:
@@ -1143,7 +1208,12 @@ async def on_welcome_edit(message: Message) -> None:
             await message.answer(t("join_saved", lang), reply_markup=_settings_kb(message.chat.id, lang))
         return
 
-    _set_setting(message.chat.id, "WelcomeText", message.text or "")
+    template = message.text or ""
+    if not _is_valid_welcome_template(template):
+        await message.answer(t("join_bad_welcome_template", lang), parse_mode=ParseMode.HTML)
+        return
+
+    _set_setting(message.chat.id, "WelcomeText", template)
     _set_setting(message.chat.id, "WelcomeEditingUser", 0)
     panel_id = _get_panel_message_id(message.chat.id, message.from_user.id)
     if panel_id:

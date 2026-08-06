@@ -17,7 +17,7 @@ from aiogram.types import (
 )
 
 from bot import limits
-from bot.cache import get_admins, get_categories, get_config
+from bot.cache import get_config
 from bot.context import get_lang
 from bot.formatting import telegram_html
 from bot.texts import t
@@ -27,7 +27,6 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 IMAGES_DIR = BASE_DIR / "img"
 
 _image_file_ids: Dict[str, str] = {}
-_pending_upload: Dict[str, bool] = {}
 logger = logging.getLogger(__name__)
 
 _LINK_PREVIEW_IMAGE_URLS = {
@@ -204,7 +203,19 @@ async def ack(cb: CallbackQuery, text: str | None = None, *, show_alert: bool = 
 def spawn_background(coro) -> None:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+
+    def _done(completed: asyncio.Task) -> None:
+        _background_tasks.discard(completed)
+        if completed.cancelled():
+            return
+        exc = completed.exception()
+        if exc is not None:
+            logger.error(
+                "Background bot task failed",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    task.add_done_callback(_done)
 
 
 
@@ -293,17 +304,6 @@ async def download_document(bot: Bot, file_id: str, dest_dir: Path) -> Path:
     return dest
 
 
-async def _get_photo_input(key: str, bot: Bot, chat_id: int) -> Optional[str]:
-    if key in _image_file_ids:
-        return _image_file_ids[key]
-    
-    path = IMAGES_DIR / f"{key}.png"
-    if not path.exists():
-        return None
-
-    return None
-
-
 async def answer(
     target: Message | CallbackQuery,
     text: str,
@@ -370,15 +370,6 @@ async def answer(
                 )
 
             if image and not msg.photo:
-                return await msg.edit_text(
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    disable_web_page_preview=disable_web_page_preview,
-                    link_preview_options=preview_options,
-                )
-
-            if image and not msg.photo:
                 path = IMAGES_DIR / f"{image}.png"
                 if path.exists():
                     await blank_and_delete_message(msg)
@@ -430,8 +421,6 @@ async def answer(
                         link_preview_options=preview_options,
                     )
 
-                return None
-            
             elif msg.photo:
                 return await msg.edit_caption(
                     caption=text,
@@ -447,8 +436,6 @@ async def answer(
                     link_preview_options=preview_options,
                 )
 
-                return None
-                
         except Exception as exc:
             if isinstance(exc, TelegramBadRequest) and (
                 _is_not_modified_error(exc) or _is_superseded_error(exc)
@@ -594,25 +581,3 @@ def strip_html(text: str) -> str:
 
 def extract_html_text(message: Message) -> str:
     return telegram_html(message.html_text or message.text or "")
-
-
-async def preload_images(bot: Bot) -> None:
-    admins = list(get_admins())
-    
-    if not admins:
-        return
-    
-    admin_chat_id = admins[0]
-
-    image_keys = ["welcome", "plugins", "profile", "catalog", "icons", "cat_all", "suggestion", "admin", "notifications", "joinly"]
-    for cat in get_categories():
-        key = cat.get("key")
-        if key:
-            image_keys.append(f"cat_{key}")
-    
-    for key in image_keys:
-        if key not in _image_file_ids:
-            try:
-                await _get_photo_input(key, bot, admin_chat_id)
-            except Exception:
-                pass

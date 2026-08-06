@@ -107,32 +107,29 @@ async def on_startup(bot: Bot) -> None:
     
     await start_log_worker()
     
-    from bot.helpers import preload_images
-    await preload_images(bot)
-    
     logger.info("Bot initialized")
 
 
 async def on_shutdown(bot: Bot) -> None:
-    from user_store import flush_user_store
-    await flush_user_store()
-
     from request_store import (
         stop_draft_cleanup_worker,
         stop_draft_reminder_worker,
         stop_scheduled_publish_worker,
     )
-    stop_draft_cleanup_worker()
-    stop_draft_reminder_worker()
-    stop_scheduled_publish_worker()
+    await stop_draft_cleanup_worker()
+    await stop_draft_reminder_worker()
+    await stop_scheduled_publish_worker()
 
-    admin_flow.stop_scheduled_posts_cleanup_worker()
+    await admin_flow.stop_scheduled_posts_cleanup_worker()
 
     from bot.services.poster import stop_poster_worker
-    stop_poster_worker()
+    await stop_poster_worker()
 
     from bot.services.backup import stop_backup_worker
-    stop_backup_worker()
+    await stop_backup_worker()
+
+    from user_store import flush_user_store
+    await flush_user_store()
     
     from storage import flush_all
     await flush_all()

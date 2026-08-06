@@ -1,16 +1,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import html
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
-    InlineKeyboardButton,
     InlineKeyboardMarkup,
     InlineQuery,
     InlineQueryResultArticle,
@@ -40,6 +42,8 @@ router.callback_query.middleware(MenuOwnerMiddleware())
 
 TZ_DISPLAY = timezone(timedelta(hours=5))
 DEFAULT_UTC_OFFSET = 5
+_MEDIA_GROUP_SETTLE_SECONDS = 0.8
+_media_group_buffers: dict[tuple[int, int, str], dict] = {}
 
 
 def _user_tz(user_id) -> timezone:
@@ -91,6 +95,27 @@ def _chat_id(target) -> int:
 async def _delete_msg(bot, chat_id: int, msg_id) -> None:
     if msg_id:
         await blank_and_delete(bot, chat_id, int(msg_id))
+
+
+def _preview_message_ids(data: dict) -> list[int]:
+    raw = data.get("preview_post_msg_ids")
+    values = raw if isinstance(raw, list) else []
+    if not values and data.get("preview_post_msg_id"):
+        values = [data.get("preview_post_msg_id")]
+    result: list[int] = []
+    for value in values:
+        try:
+            message_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if message_id and message_id not in result:
+            result.append(message_id)
+    return result
+
+
+async def _delete_msgs(bot, chat_id: int, message_ids: list[int]) -> None:
+    for message_id in message_ids:
+        await _delete_msg(bot, chat_id, message_id)
 
 
 def _fmt_local(run_at_iso: str, tz: timezone | None = None) -> str:
@@ -167,10 +192,15 @@ def _posts_kb(posts: list, lang: str, tz: timezone | None = None) -> InlineKeybo
 
 async def _exit_screen(target, state: FSMContext, text: str, kb) -> None:
     data = await state.get_data()
-    had_preview = bool(data.get("preview_post_msg_id") or data.get("preview_ctrl_msg_id"))
-    await _delete_msg(target.bot, _chat_id(target), data.get("preview_post_msg_id"))
+    preview_ids = _preview_message_ids(data)
+    had_preview = bool(preview_ids or data.get("preview_ctrl_msg_id"))
+    await _delete_msgs(target.bot, _chat_id(target), preview_ids)
     await _delete_msg(target.bot, _chat_id(target), data.get("preview_ctrl_msg_id"))
-    await state.update_data(preview_post_msg_id=None, preview_ctrl_msg_id=None)
+    await state.update_data(
+        preview_post_msg_id=None,
+        preview_post_msg_ids=[],
+        preview_ctrl_msg_id=None,
+    )
     if had_preview:
         await target.bot.send_message(
             _chat_id(target), text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -389,6 +419,7 @@ async def on_compose_text(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(PosterFlow.composing_media, F.data == "pstr:skip:media")
 async def on_skip_media(cb: CallbackQuery, state: FSMContext) -> None:
+    await _discard_pending_media_groups(cb)
     await state.update_data(poster_media=[])
     if await _editing(state):
         await state.update_data(from_preview=False)
@@ -401,8 +432,13 @@ async def on_skip_media(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 def _extract_media(message: Message) -> dict | None:
+    bot_id = getattr(message.bot, "id", None)
     if message.photo:
-        return {"type": "photo", "file_id": message.photo[-1].file_id}
+        return {
+            "type": "photo",
+            "file_id": message.photo[-1].file_id,
+            "bot_id": int(bot_id) if bot_id else None,
+        }
     for kind in ("video", "animation", "audio", "document"):
         item = getattr(message, kind, None)
         if item:
@@ -410,8 +446,79 @@ def _extract_media(message: Message) -> dict | None:
                 "type": kind,
                 "file_id": item.file_id,
                 "name": getattr(item, "file_name", None) or "",
+                "bot_id": int(bot_id) if bot_id else None,
             }
     return None
+
+
+def _media_group_owner(target: Message | CallbackQuery) -> tuple[int, int]:
+    message = target.message if isinstance(target, CallbackQuery) else target
+    chat_id = int(message.chat.id) if message and message.chat else 0
+    user_id = int(target.from_user.id) if target.from_user else 0
+    return chat_id, user_id
+
+
+async def _discard_pending_media_groups(target: Message | CallbackQuery) -> None:
+    owner = _media_group_owner(target)
+    for key in [key for key in _media_group_buffers if key[:2] == owner]:
+        pending = _media_group_buffers.pop(key)
+        task = pending.get("task")
+        if task and not task.done():
+            task.cancel()
+
+
+async def _complete_media_selection(target: Message, state: FSMContext, media: list[dict]) -> None:
+    if await state.get_state() != PosterFlow.composing_media.state:
+        return
+    await state.update_data(poster_media=media[: limits.ALBUM_ITEMS])
+    if await _editing(state):
+        await state.update_data(from_preview=False)
+        await _render_preview(target, state)
+        return
+    await state.set_state(PosterFlow.composing_buttons)
+    await answer(target, t("poster_compose_buttons", _lang(target)), _skip_kb("buttons", _lang(target)))
+
+
+async def _queue_media_group(message: Message, state: FSMContext, media: dict) -> None:
+    key = (*_media_group_owner(message), str(message.media_group_id))
+    buffer = _media_group_buffers.setdefault(
+        key,
+        {"items": [], "target": message, "state": state, "task": None},
+    )
+    item_key = (str(media.get("type") or ""), str(media.get("file_id") or ""))
+    existing = {
+        (str(item.get("type") or ""), str(item.get("file_id") or ""))
+        for item in buffer["items"]
+        if isinstance(item, dict)
+    }
+    if item_key not in existing and len(buffer["items"]) < limits.ALBUM_ITEMS:
+        buffer["items"].append(media)
+    buffer["target"] = message
+    buffer["state"] = state
+
+    previous = buffer.get("task")
+    if previous and not previous.done():
+        previous.cancel()
+
+    async def _settle() -> None:
+        try:
+            await asyncio.sleep(_MEDIA_GROUP_SETTLE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        current = _media_group_buffers.get(key)
+        if not current or current.get("task") is not asyncio.current_task():
+            return
+        _media_group_buffers.pop(key, None)
+        try:
+            await _complete_media_selection(
+                current["target"],
+                current["state"],
+                list(current["items"]),
+            )
+        except Exception:
+            logger.exception("poster: media group finalize failed key=%s", key)
+
+    buffer["task"] = asyncio.create_task(_settle())
 
 
 @router.message(PosterFlow.composing_media)
@@ -420,13 +527,10 @@ async def on_compose_media(message: Message, state: FSMContext) -> None:
     if not media:
         await message.answer(t("poster_err_not_media", _lang(message)))
         return
-    await state.update_data(poster_media=[media])
-    if await _editing(state):
-        await state.update_data(from_preview=False)
-        await _render_preview(message, state)
+    if message.media_group_id:
+        await _queue_media_group(message, state, media)
         return
-    await state.set_state(PosterFlow.composing_buttons)
-    await answer(message, t("poster_compose_buttons", _lang(message)), _skip_kb("buttons", _lang(message)))
+    await _complete_media_selection(message, state, [media])
 
 
 _BUTTON_STYLE_ALIASES = {
@@ -538,7 +642,7 @@ async def _render_preview(target, state: FSMContext) -> None:
     chat_id = _chat_id(target)
     data = await state.get_data()
 
-    await _delete_msg(bot, chat_id, data.get("preview_post_msg_id"))
+    await _delete_msgs(bot, chat_id, _preview_message_ids(data))
     await _delete_msg(bot, chat_id, data.get("preview_ctrl_msg_id"))
 
     content = {
@@ -553,8 +657,10 @@ async def _render_preview(target, state: FSMContext) -> None:
     try:
         post_msg = await poster.send_content(bot, chat_id, content)
         post_msg_id = getattr(post_msg, "message_id", None)
+        post_msg_ids = poster.sent_message_ids(post_msg)
     except Exception:
         logger.exception("poster: preview render failed")
+        post_msg_ids = []
 
     admin_mode = bool(data.get("poster_admin_mode"))
     ctrl = await bot.send_message(
@@ -562,7 +668,11 @@ async def _render_preview(target, state: FSMContext) -> None:
         reply_markup=_preview_kb(lang, admin_mode, _autodel_label(data, lang), _repeat_label(data, lang),
                                  bool(data.get("poster_rich"))),
         parse_mode=ParseMode.HTML)
-    await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
+    await state.update_data(
+        preview_post_msg_id=post_msg_id,
+        preview_post_msg_ids=post_msg_ids,
+        preview_ctrl_msg_id=getattr(ctrl, "message_id", None),
+    )
 
 
 @router.callback_query(PosterFlow.composing_buttons, F.data == "pstr:skip:buttons")
@@ -879,15 +989,17 @@ async def on_post_detail(cb: CallbackQuery, state: FSMContext) -> None:
     chat_id = _chat_id(cb)
     lang = _lang(cb)
     data = await state.get_data()
-    await _delete_msg(bot, chat_id, data.get("preview_post_msg_id"))
+    await _delete_msgs(bot, chat_id, _preview_message_ids(data))
     await _delete_msg(bot, chat_id, data.get("preview_ctrl_msg_id"))
     await _delete_msg(bot, chat_id, cb.message.message_id if cb.message else None)
     post_msg_id = None
     try:
         post_msg = await poster.send_content(bot, chat_id, post.get("content") or {})
         post_msg_id = getattr(post_msg, "message_id", None)
+        post_msg_ids = poster.sent_message_ids(post_msg)
     except Exception:
         logger.exception("poster: post detail render failed")
+        post_msg_ids = []
     when = _fmt_local(post.get("run_at", ""), _tz_of(cb))
     repeat = _REPEAT_SHORT.get(int((post.get("content") or {}).get("repeat_days") or 0), "нет")
     try:
@@ -899,7 +1011,11 @@ async def on_post_detail(cb: CallbackQuery, state: FSMContext) -> None:
                    bot=bot_username, repeat=repeat,
                    channel=_channel_label(post.get("chat_id"))),
         reply_markup=_post_detail_kb(post_id, lang), parse_mode=ParseMode.HTML)
-    await state.update_data(preview_post_msg_id=post_msg_id, preview_ctrl_msg_id=getattr(ctrl, "message_id", None))
+    await state.update_data(
+        preview_post_msg_id=post_msg_id,
+        preview_post_msg_ids=post_msg_ids,
+        preview_ctrl_msg_id=getattr(ctrl, "message_id", None),
+    )
     await ack(cb)
 
 
@@ -940,6 +1056,22 @@ def _is_post_id_query(query: InlineQuery) -> bool:
     return bool(q) and poster.get_post(q) is not None
 
 
+def _inline_text_result(post_id: str, title: str, text: str, kb) -> InlineQueryResultArticle:
+    plain_text = html.unescape(re.sub(r"<[^>]+>", "", text))
+    if len(plain_text) > limits.MESSAGE_TEXT:
+        plain_text = plain_text[: limits.MESSAGE_TEXT - 1].rstrip() + "…"
+    return InlineQueryResultArticle(
+        id=post_id,
+        title=title,
+        description=plain_text[:80],
+        input_message_content=InputTextMessageContent(
+            message_text=plain_text or "—",
+            disable_web_page_preview=True,
+        ),
+        reply_markup=kb,
+    )
+
+
 @router.inline_query(_is_post_id_query)
 async def on_inline_post(query: InlineQuery) -> None:
     post = poster.get_post((query.query or "").strip())
@@ -953,10 +1085,31 @@ async def on_inline_post(query: InlineQuery) -> None:
     post_id = str(post.get("id"))
     title = t("poster_inline_title", get_lang(query.from_user.id if query.from_user else None))
 
-    if media:
-        item = media[0]
+    inline_media = media[0] if media else None
+    media_bot_id = inline_media.get("bot_id") if isinstance(inline_media, dict) else None
+    current_bot_id = getattr(query.bot, "id", None)
+    try:
+        media_belongs_to_bot = (
+            not media_bot_id
+            or not current_bot_id
+            or int(media_bot_id) == int(current_bot_id)
+        )
+    except (TypeError, ValueError):
+        media_belongs_to_bot = False
+    inline_file_id = (
+        str(inline_media.get("file_id") or "").strip()
+        if isinstance(inline_media, dict)
+        else ""
+    )
+    caption_fits = poster.visible_length(text) <= limits.CAPTION
+
+    uses_cached_media = bool(
+        inline_media and inline_file_id and media_belongs_to_bot and caption_fits
+    )
+    if uses_cached_media:
+        item = inline_media
         kind = item.get("type")
-        file_id = item["file_id"]
+        file_id = inline_file_id
         common = dict(id=post_id, caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
         if kind == "video":
             result = InlineQueryResultCachedVideo(video_file_id=file_id, title=title, **common)
@@ -970,9 +1123,19 @@ async def on_inline_post(query: InlineQuery) -> None:
         else:
             result = InlineQueryResultCachedPhoto(photo_file_id=file_id, **common)
     else:
-        result = InlineQueryResultArticle(
-            id=post_id, title=title, description=text[:80],
-            input_message_content=InputTextMessageContent(
-                message_text=text, parse_mode=ParseMode.HTML, disable_web_page_preview=True),
-            reply_markup=kb)
-    await query.answer([result], cache_time=1, is_personal=False)
+        result = _inline_text_result(post_id, title, text, kb)
+    try:
+        await query.answer([result], cache_time=1, is_personal=False)
+    except TelegramBadRequest:
+        if not uses_cached_media:
+            raise
+        logger.warning(
+            "poster: cached inline media rejected, using text fallback post=%s",
+            post_id,
+            exc_info=True,
+        )
+        await query.answer(
+            [_inline_text_result(post_id, title, text, kb)],
+            cache_time=1,
+            is_personal=False,
+        )

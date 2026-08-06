@@ -1,4 +1,5 @@
 import html
+import logging
 import time
 import math
 from html.parser import HTMLParser
@@ -71,10 +72,11 @@ from storage import load_stenka, save_stenka
 from storage import load_joinly
 from storage import save_joinly
 from request_store import get_request_by_plugin_id, get_user_requests, update_request_payload
-from bot.services.moderation import forum_text_with_votes, vote_counts
+from bot.services.moderation import VOTABLE_REQUEST_STATUSES, forum_text_with_votes, vote_counts
 
 router = Router(name="catalog-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
+logger = logging.getLogger(__name__)
 
 BOT_USERNAME = "exteraPluginsRobot"
 GITHUB_IMG_BASE_URL = "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img"
@@ -1544,16 +1546,21 @@ async def on_inline(query: InlineQuery) -> None:
 
     results = []
     user_id = query.from_user.id if query.from_user else 0
+    request_result_added = False
     if text and int(user_id) in get_admins_super():
-        request_entry = get_request_by_plugin_id(text)
+        request_entry = get_request_by_plugin_id(text, statuses=VOTABLE_REQUEST_STATUSES)
         if request_entry and request_entry.get("status") in {"pending", "error", "scheduled"}:
             request_id = str(request_entry.get("id") or text)
             update_request_payload(request_id, {"moderation_inline_public": True})
-            request_entry = get_request_by_plugin_id(text) or request_entry
+            request_entry = get_request_by_plugin_id(text, statuses=VOTABLE_REQUEST_STATUSES) or request_entry
             payload = request_entry.get("payload", {}) if isinstance(request_entry.get("payload"), dict) else {}
             yes, no, _ = vote_counts(request_entry)
             message_text = forum_text_with_votes(request_entry)
-            vote_markup = moderation_inline_vote_url_kb(BOT_USERNAME, request_id, yes, no, lang=lang)
+            try:
+                bot_username = str((await query.bot.me()).username or BOT_USERNAME)
+            except Exception:
+                bot_username = BOT_USERNAME
+            vote_markup = moderation_inline_vote_url_kb(bot_username, request_id, yes, no, lang=lang)
             results.append(
                 InlineQueryResultArticle(
                     id=f"request:{encode_slug(request_id)}",
@@ -1567,6 +1574,7 @@ async def on_inline(query: InlineQuery) -> None:
                     reply_markup=vote_markup,
                 )
             )
+            request_result_added = True
             inline_file = _request_inline_file(payload)
             if inline_file:
                 file_id, file_name, file_kind = inline_file
@@ -1661,4 +1669,15 @@ async def on_inline(query: InlineQuery) -> None:
             )
         )
 
-    await query.answer(results, cache_time=60, is_personal=True)
+    cache_time = 0 if request_result_added else 60
+    try:
+        await query.answer(results, cache_time=cache_time, is_personal=True)
+    except TelegramBadRequest:
+        article_results = [item for item in results if isinstance(item, InlineQueryResultArticle)]
+        if len(article_results) == len(results):
+            raise
+        logger.warning(
+            "Inline cached media rejected; retrying with article results only",
+            exc_info=True,
+        )
+        await query.answer(article_results, cache_time=0, is_personal=True)

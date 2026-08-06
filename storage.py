@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -123,16 +124,32 @@ _CONFIG_DEFAULTS: Dict[str, Any] = {
 
 _pending_save: Dict[str, bool] = {}
 _background_tasks: set = set()
+logger = logging.getLogger(__name__)
+
+
+def _on_background_done(task: asyncio.Task) -> None:
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Background storage save failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
 
 
 def _spawn(loop, coro) -> None:
     task = loop.create_task(coro)
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_on_background_done)
 
 
 _config_cache: Optional[Dict[str, Any]] = None
 _config_cache_time: float = 0.0
+_config_generation = 0
+_config_persisted_generation = 0
+_config_write_lock = threading.Lock()
 
 _db_lock = threading.Lock()
 _db_ready = False
@@ -909,9 +926,12 @@ async def _schedule_save(doc_key: str) -> None:
 
     async with _save_locks[doc_key]:
         if doc_key in _cache and _dirty.get(doc_key):
-            data = _cache[doc_key].copy()
+            data = deepcopy(_cache[doc_key])
             await asyncio.to_thread(_write_sqlite_doc_sync, doc_key, data)
-            _dirty[doc_key] = False
+            # A newer mutation may have happened while SQLite was writing.
+            # Only mark the document clean if the saved snapshot is current.
+            if _cache.get(doc_key) == data:
+                _dirty[doc_key] = False
 
 
 def _save_sync(doc_key: str, data: Dict[str, Any]) -> None:
@@ -928,7 +948,7 @@ def invalidate_cache(doc_key: Optional[str] = None) -> None:
     keys = [doc_key] if doc_key else list(_cache)
     for key in keys:
         if _dirty.get(key) and key in _cache:
-            _write_sqlite_doc_sync(key, _cache[key].copy())
+            _write_sqlite_doc_sync(key, deepcopy(_cache[key]))
         _cache.pop(key, None)
         _cache_time.pop(key, None)
         _dirty.pop(key, None)
@@ -999,26 +1019,37 @@ def load_config() -> Dict[str, Any]:
     return data
 
 
-def save_config(data: Dict[str, Any]) -> None:
-    payload = dict(data) if isinstance(data, dict) else {}
-    payload, _ = _normalize_config_defaults(payload)
-    payload.setdefault("updated_at", _now_iso())
+def _write_config_sync(payload: Dict[str, Any], generation: int) -> None:
+    global _config_persisted_generation
 
-    global _config_cache, _config_cache_time
-    _config_cache = payload
-    _config_cache_time = time.time()
-
-    def _write() -> None:
+    with _config_write_lock:
+        # If a newer save was requested before this worker got the lock,
+        # writing this snapshot would roll the configuration back.
+        if generation < _config_generation:
+            return
         _ensure_db()
         with _connect() as conn:
             _set_meta_json(conn, _CONFIG_META_KEY, payload)
             conn.commit()
+        _config_persisted_generation = max(_config_persisted_generation, generation)
+
+
+def save_config(data: Dict[str, Any]) -> None:
+    payload = dict(data) if isinstance(data, dict) else {}
+    payload, _ = _normalize_config_defaults(payload)
+    payload["updated_at"] = _now_iso()
+
+    global _config_cache, _config_cache_time, _config_generation
+    _config_generation += 1
+    generation = _config_generation
+    _config_cache = payload
+    _config_cache_time = time.time()
 
     try:
         loop = asyncio.get_running_loop()
-        _spawn(loop, asyncio.to_thread(_write))
+        _spawn(loop, asyncio.to_thread(_write_config_sync, payload, generation))
     except RuntimeError:
-        _write()
+        _write_config_sync(payload, generation)
 
 
 def load_plugins() -> Dict[str, Any]:
@@ -1136,11 +1167,26 @@ def save_dialogs(data: Dict[str, Any]) -> None:
 
 
 async def flush_all() -> None:
+    tasks = [task for task in _background_tasks if not task.done()]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    if (
+        _config_cache is not None
+        and _config_persisted_generation < _config_generation
+    ):
+        await asyncio.to_thread(
+            _write_config_sync,
+            deepcopy(_config_cache),
+            _config_generation,
+        )
+
     for doc_key, is_dirty in list(_dirty.items()):
         if is_dirty and doc_key in _cache:
-            data = _cache[doc_key].copy()
+            data = deepcopy(_cache[doc_key])
             await asyncio.to_thread(_write_sqlite_doc_sync, doc_key, data)
-            _dirty[doc_key] = False
+            if _cache.get(doc_key) == data:
+                _dirty[doc_key] = False
 
 
 async def preload_storage() -> None:

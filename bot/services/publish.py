@@ -10,7 +10,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import FSInputFile
 
 from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html
-from bot.helpers import fit_filename
+from bot.helpers import blank_and_delete, fit_filename
 from storage import flush_all, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
 from request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
@@ -65,6 +65,15 @@ async def _send_channel_post(
             )
         except Exception:
             logger.exception("event=publish.caption_overflow_text_failed channel_id=%s", channel_id)
+            try:
+                await blank_and_delete(bot, channel_id, message.message_id)
+            except Exception:
+                logger.exception(
+                    "event=publish.caption_overflow_rollback_failed channel_id=%s message_id=%s",
+                    channel_id,
+                    message.message_id,
+                )
+            raise
         return message
 
 logger = logging.getLogger(__name__)

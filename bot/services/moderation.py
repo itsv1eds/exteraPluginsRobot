@@ -25,6 +25,11 @@ def _forum_reply_markup(entry: dict | None, request_id: str, yes: int, no: int):
 from request_store import get_request_by_id, update_request_payload
 
 VoteValue = Literal["yes", "no"]
+VOTABLE_REQUEST_STATUSES = frozenset({"pending", "error", "scheduled"})
+
+
+def can_accept_vote(entry: dict | None) -> bool:
+    return bool(isinstance(entry, dict) and entry.get("status") in VOTABLE_REQUEST_STATUSES)
 
 def moderation_config() -> dict[str, int]:
     cfg = get_config()
@@ -422,26 +427,31 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
         link_preview_options=link_preview_options(img_key),
         message_thread_id=topic_id,
     )
+    sent_message_ids = [int(msg.message_id)]
     file_msg = None
-    if file_path and Path(file_path).exists():
-        file_msg = await bot.send_document(
-            chat_id,
-            FSInputFile(file_path),
-            message_thread_id=topic_id,
-            reply_to_message_id=msg.message_id,
-            allow_sending_without_reply=True,
-        )
+    try:
+        if file_path and Path(file_path).exists():
+            file_msg = await bot.send_document(
+                chat_id,
+                FSInputFile(file_path),
+                message_thread_id=topic_id,
+                reply_to_message_id=msg.message_id,
+                allow_sending_without_reply=True,
+            )
+            sent_message_ids.append(int(file_msg.message_id))
 
-    payload_now = entry.get("payload", {}) if isinstance(entry, dict) else {}
-    comment_media = payload_now.get("comment_media") if isinstance(payload_now, dict) else None
-    media_ids = []
-    if comment_media and msg:
-        media_ids = await send_media_group(
-            bot, chat_id, comment_media,
-            topic_id=topic_id, reply_to=msg.message_id,
-        )
+        payload_now = entry.get("payload", {}) if isinstance(entry, dict) else {}
+        comment_media = payload_now.get("comment_media") if isinstance(payload_now, dict) else None
+        media_ids = []
+        if comment_media:
+            media_ids = await send_media_group(
+                bot, chat_id, comment_media,
+                topic_id=topic_id, reply_to=msg.message_id,
+            )
+            if not media_ids:
+                raise RuntimeError("Failed to send request comment media")
+            sent_message_ids.extend(media_ids)
 
-    if msg:
         actual_topic_id = int(getattr(msg, "message_thread_id", None) or topic_id)
         info = {
             "chat_id": chat_id,
@@ -463,6 +473,18 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
                 info["file_name"] = file_name
                 payload_update["moderation_file_name"] = file_name
         update_request_payload(request_id, payload_update)
+    except Exception:
+        for message_id in reversed(sent_message_ids):
+            try:
+                await blank_and_delete(bot, chat_id, message_id)
+            except Exception:
+                logger.warning(
+                    "forum delivery rollback failed request_id=%s message_id=%s",
+                    request_id,
+                    message_id,
+                    exc_info=True,
+                )
+        raise
 
 
 async def refresh_forum_vote_keyboard(bot, entry: dict) -> None:

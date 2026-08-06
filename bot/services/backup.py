@@ -213,8 +213,13 @@ def start_backup_worker(bot) -> None:
     _worker_task = loop.create_task(_worker_loop(bot))
 
 
-def stop_backup_worker() -> None:
+async def stop_backup_worker() -> None:
     global _worker_task
-    if _worker_task and not _worker_task.done():
-        _worker_task.cancel()
+    task = _worker_task
     _worker_task = None
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass

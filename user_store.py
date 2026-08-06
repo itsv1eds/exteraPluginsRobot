@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import time
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from storage import load_users, save_users
@@ -7,17 +9,31 @@ from storage import load_users, save_users
 _users_cache: Dict[str, Dict[str, Any]] = {}
 _cache_loaded: bool = False
 _cache_lock = asyncio.Lock()
+_save_lock = asyncio.Lock()
 _dirty: bool = False
 _last_save: float = 0
 _pending_save: bool = False
 _SAVE_INTERVAL = 5.0
 _background_tasks: set = set()
+logger = logging.getLogger(__name__)
+
+
+def _on_background_done(task: asyncio.Task) -> None:
+    _background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(
+            "Background user-store save failed",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
 
 
 def _spawn(loop) -> None:
     task = loop.create_task(_schedule_save())
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    task.add_done_callback(_on_background_done)
 
 
 def _load_from_storage() -> Dict[str, Any]:
@@ -70,11 +86,14 @@ async def _schedule_save() -> None:
         finally:
             _pending_save = False
 
-    _last_save = time.time()
-    _dirty = False
-
-    data = {"users": _users_cache.copy()}
-    await asyncio.to_thread(_save_to_storage_sync, data)
+    async with _save_lock:
+        if not _dirty:
+            return
+        _last_save = time.time()
+        data = {"users": deepcopy(_users_cache)}
+        await asyncio.to_thread(_save_to_storage_sync, data)
+        if _users_cache == data["users"]:
+            _dirty = False
 
 
 def _ensure_loaded_sync() -> None:
@@ -188,6 +207,14 @@ async def init_user_store() -> None:
 
 
 async def flush_user_store() -> None:
+    global _dirty
+
+    tasks = [task for task in _background_tasks if not task.done()]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     if _dirty or _users_cache:
-        data = {"users": _users_cache.copy()}
+        data = {"users": deepcopy(_users_cache)}
         await asyncio.to_thread(_save_to_storage_sync, data)
+        if _users_cache == data["users"]:
+            _dirty = False

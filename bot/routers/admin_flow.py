@@ -72,7 +72,6 @@ from bot.keyboards import (
     admin_reject_templates_cfg_kb,
     admin_confirm_delete_plugin_kb,
     admin_cancel_kb,
-    cancel_kb,
     draft_category_kb,
     draft_edit_kb,
     draft_lang_kb,
@@ -95,7 +94,6 @@ from bot.services.publish import (
     remove_user_content,
     clear_updated_plugins,
     update_plugin,
-    update_icon_catalog_entry,
     update_catalog_entry,
 )
 from bot.services.admin_notifications import (
@@ -526,11 +524,16 @@ def start_scheduled_posts_cleanup_worker() -> None:
     _scheduled_posts_cleanup_task = loop.create_task(_scheduled_posts_cleanup_loop())
 
 
-def stop_scheduled_posts_cleanup_worker() -> None:
+async def stop_scheduled_posts_cleanup_worker() -> None:
     global _scheduled_posts_cleanup_task
-    if _scheduled_posts_cleanup_task and not _scheduled_posts_cleanup_task.done():
-        _scheduled_posts_cleanup_task.cancel()
+    task = _scheduled_posts_cleanup_task
     _scheduled_posts_cleanup_task = None
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 def _format_scheduled_post_label(it: dict) -> str:
@@ -1457,12 +1460,12 @@ async def _notify_subscribers(
 
 
 def _ensure_admin(cb: CallbackQuery | Message) -> bool:
-    user = cb.from_user if isinstance(cb, CallbackQuery) else cb.from_user
+    user = cb.from_user
     return bool(user and user.id in get_admins())
 
 
 def _ensure_admin_role(cb: CallbackQuery | Message, role: str) -> bool:
-    user = cb.from_user if isinstance(cb, CallbackQuery) else cb.from_user
+    user = cb.from_user
     if not user:
         return False
     if user.id in get_admins_super():
@@ -1475,7 +1478,7 @@ def _ensure_admin_role(cb: CallbackQuery | Message, role: str) -> bool:
 
 
 def _admin_menu_role(cb: CallbackQuery | Message) -> str | None:
-    user = cb.from_user if isinstance(cb, CallbackQuery) else cb.from_user
+    user = cb.from_user
     if not user:
         return None
     return get_admin_role(user.id)
@@ -1518,7 +1521,7 @@ def _actor_id(target: CallbackQuery | Message) -> int:
 
 
 def _admin_actor_label(target: CallbackQuery | Message) -> str:
-    user = target.from_user if isinstance(target, CallbackQuery) else target.from_user
+    user = target.from_user
     if not user:
         return "<code>?</code>"
     return user_mention(user.id, user.username)
@@ -2135,6 +2138,8 @@ async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
 
     current = await state.get_state()
     if current in _TRANSIENT_ADMIN_STATES:
+        if current == AdminFlow.entering_reject_comment.state:
+            await _discard_pending_reject_media_groups(cb)
         data = await state.get_data()
         stack = data.get(_NAV_STACK_KEY)
         top = stack[-1] if isinstance(stack, list) and stack else None
@@ -5978,7 +5983,12 @@ async def on_admin_reject_comment(cb: CallbackQuery, state: FSMContext) -> None:
             return
 
     await _nav_push(state, f"adm:reject_comment:{request_id}")
-    await state.update_data(reject_request_id=request_id)
+    await _discard_pending_reject_media_groups(cb)
+    await state.update_data(
+        reject_request_id=request_id,
+        reject_media=[],
+        reject_comment_draft=None,
+    )
     await state.set_state(AdminFlow.entering_reject_comment)
     await answer(cb, _tr(cb, "admin_enter_reject_reason"), admin_cancel_kb(_lang_for(cb)), "admin")
     await ack(cb)
@@ -6067,6 +6077,8 @@ async def _finalize_rejection(
 
 
 REJECT_MEDIA_LIMIT = limits.ALBUM_ITEMS
+_REJECT_MEDIA_GROUP_SETTLE_SECONDS = 0.8
+_reject_media_group_buffers: dict[tuple[int, int, str], dict[str, Any]] = {}
 
 
 def _reject_media_of(message: Message) -> dict | None:
@@ -6077,13 +6089,117 @@ def _reject_media_of(message: Message) -> dict | None:
     return None
 
 
+def _reject_media_owner(target: Message | CallbackQuery) -> tuple[int, int]:
+    message = target.message if isinstance(target, CallbackQuery) else target
+    chat_id = int(message.chat.id) if message and message.chat else 0
+    user_id = int(target.from_user.id) if target.from_user else 0
+    return chat_id, user_id
+
+
+async def _store_reject_media_group(pending: dict[str, Any], *, notify: bool = True) -> None:
+    state: FSMContext = pending["state"]
+    if await state.get_state() != AdminFlow.entering_reject_comment.state:
+        return
+
+    data = await state.get_data()
+    media = list(data.get("reject_media") or [])
+    existing = {
+        (str(item.get("type") or ""), str(item.get("file_id") or ""))
+        for item in media
+        if isinstance(item, dict)
+    }
+    for item in pending["items"]:
+        item_key = (str(item.get("type") or ""), str(item.get("file_id") or ""))
+        if item_key in existing or len(media) >= REJECT_MEDIA_LIMIT:
+            continue
+        media.append(item)
+        existing.add(item_key)
+
+    update: dict[str, Any] = {"reject_media": media}
+    caption = str(pending.get("caption") or "").strip()
+    if caption:
+        update["reject_comment_draft"] = caption
+    await state.update_data(**update)
+    if notify:
+        await pending["target"].answer(
+            _tr(
+                pending["target"],
+                "admin_reject_media_added",
+                count=len(media),
+                max=REJECT_MEDIA_LIMIT,
+            )
+        )
+
+
+async def _queue_reject_media_group(message: Message, state: FSMContext, item: dict) -> None:
+    key = (*_reject_media_owner(message), str(message.media_group_id))
+    pending = _reject_media_group_buffers.setdefault(
+        key,
+        {"items": [], "caption": "", "target": message, "state": state, "task": None},
+    )
+    item_key = (str(item.get("type") or ""), str(item.get("file_id") or ""))
+    existing = {
+        (str(value.get("type") or ""), str(value.get("file_id") or ""))
+        for value in pending["items"]
+        if isinstance(value, dict)
+    }
+    if item_key not in existing and len(pending["items"]) < REJECT_MEDIA_LIMIT:
+        pending["items"].append(item)
+    caption = telegram_html(message.html_text or message.caption or "")
+    if caption:
+        pending["caption"] = caption
+    pending["target"] = message
+    pending["state"] = state
+
+    previous = pending.get("task")
+    if previous and not previous.done():
+        previous.cancel()
+
+    async def _settle() -> None:
+        try:
+            await asyncio.sleep(_REJECT_MEDIA_GROUP_SETTLE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        current = _reject_media_group_buffers.get(key)
+        if not current or current.get("task") is not asyncio.current_task():
+            return
+        _reject_media_group_buffers.pop(key, None)
+        try:
+            await _store_reject_media_group(current)
+        except Exception:
+            logger.exception("admin: reject media group finalize failed key=%s", key)
+
+    pending["task"] = asyncio.create_task(_settle())
+
+
+async def _discard_pending_reject_media_groups(target: Message | CallbackQuery) -> None:
+    owner = _reject_media_owner(target)
+    for key in [key for key in _reject_media_group_buffers if key[:2] == owner]:
+        pending = _reject_media_group_buffers.pop(key)
+        task = pending.get("task")
+        if task and not task.done():
+            task.cancel()
+
+
+async def _flush_pending_reject_media_groups(target: Message | CallbackQuery) -> None:
+    owner = _reject_media_owner(target)
+    for key in [key for key in _reject_media_group_buffers if key[:2] == owner]:
+        pending = _reject_media_group_buffers.pop(key)
+        task = pending.get("task")
+        if task and not task.done():
+            task.cancel()
+        await _store_reject_media_group(pending, notify=False)
+
+
 @router.message(AdminFlow.entering_reject_comment)
 async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
-    data = await state.get_data()
-
     item = _reject_media_of(message)
     if item:
+        if message.media_group_id:
+            await _queue_reject_media_group(message, state, item)
+            return
+        data = await state.get_data()
         media = list(data.get("reject_media") or [])
         if len(media) >= REJECT_MEDIA_LIMIT:
             await message.answer(_tr(message, "comment_media_limit", max=REJECT_MEDIA_LIMIT))
@@ -6096,12 +6212,13 @@ async def on_admin_enter_reject_comment(message: Message, state: FSMContext) -> 
         await message.answer(_tr(message, "admin_reject_media_added", count=len(media), max=REJECT_MEDIA_LIMIT))
         return
 
+    await _flush_pending_reject_media_groups(message)
+    data = await state.get_data()
     comment = telegram_html(message.html_text or message.text or "") or str(data.get("reject_comment_draft") or "")
     if not comment:
         await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
         return
 
-    data = await state.get_data()
     request_id = data.get("reject_request_id")
     if not request_id:
         await state.clear()
@@ -6489,15 +6606,43 @@ async def on_admin_enter_rework_comment(message: Message, state: FSMContext) -> 
                     disable_web_page_preview=True,
                     **author_reply_kwargs(entry),
                 )
+                resubmit_sent = False
                 if file_id:
-                    await message.bot.send_document(
-                        user_id,
-                        file_id,
-                        caption=t("notify_rework_request", author_lang),
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=resubmit_kb,
-                    )
-                else:
+                    try:
+                        await message.bot.send_document(
+                            user_id,
+                            file_id,
+                            caption=t("notify_rework_request", author_lang),
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=resubmit_kb,
+                        )
+                        resubmit_sent = True
+                    except Exception:
+                        logger.warning(
+                            "event=rework.notify_author_file_id_failed user_id=%s request_id=%s",
+                            user_id,
+                            request_id,
+                            exc_info=True,
+                        )
+                file_path = str(item.get("file_path") or "").strip()
+                if not resubmit_sent and file_path and Path(file_path).is_file():
+                    try:
+                        await message.bot.send_document(
+                            user_id,
+                            FSInputFile(file_path),
+                            caption=t("notify_rework_request", author_lang),
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=resubmit_kb,
+                        )
+                        resubmit_sent = True
+                    except Exception:
+                        logger.warning(
+                            "event=rework.notify_author_local_file_failed user_id=%s request_id=%s",
+                            user_id,
+                            request_id,
+                            exc_info=True,
+                        )
+                if not resubmit_sent:
                     await message.bot.send_message(
                         user_id,
                         t("notify_rework_request", author_lang),

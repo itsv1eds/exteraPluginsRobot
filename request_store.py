@@ -1,5 +1,7 @@
 import asyncio
+import hashlib
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -10,6 +12,9 @@ from storage import load_requests, save_requests
 logger = logging.getLogger(__name__)
 _requests_cache: Optional[List[Dict[str, Any]]] = None
 _id_index: Dict[str, Dict[str, Any]] = {}
+_route_token_index: Dict[str, Dict[str, Any]] = {}
+_route_tokens_ready = False
+_route_tokens_source_id: Optional[int] = None
 _cleanup_task: Optional[asyncio.Task] = None
 _reminder_task: Optional[asyncio.Task] = None
 _scheduled_task: Optional[asyncio.Task] = None
@@ -19,15 +24,48 @@ _cleanup_interval_seconds = 300
 _reminder_interval_seconds = 300
 _scheduled_interval_seconds = 30
 
+_REQUEST_ROUTE_TOKEN_RE = re.compile(r"^q[0-9a-f]{20}$")
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_datetime_utc(value: Any) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _scheduled_time_is_due(value: Any, now: Optional[datetime] = None) -> bool:
+    scheduled_at = _parse_datetime_utc(value)
+    if scheduled_at is None:
+        return False
+    current = now or _now_utc()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    else:
+        current = current.astimezone(timezone.utc)
+    return scheduled_at <= current
+
 
 def invalidate_requests_cache() -> None:
-    global _requests_cache, _id_index
+    global _requests_cache, _id_index, _route_tokens_ready, _route_tokens_source_id
     _requests_cache = None
     _id_index.clear()
+    _route_token_index.clear()
+    _route_tokens_ready = False
+    _route_tokens_source_id = None
 
 
 def _get_requests_list() -> List[Dict[str, Any]]:
-    global _requests_cache, _id_index
+    global _requests_cache, _id_index, _route_tokens_ready, _route_tokens_source_id
     
     if _requests_cache is not None:
         return _requests_cache
@@ -36,6 +74,9 @@ def _get_requests_list() -> List[Dict[str, Any]]:
     _requests_cache = database.get("requests", [])
     
     _id_index.clear()
+    _route_token_index.clear()
+    _route_tokens_ready = False
+    _route_tokens_source_id = None
     for req in _requests_cache:
         req_id = req.get("id")
         if req_id:
@@ -49,24 +90,106 @@ def _save_requests_list() -> None:
         save_requests({"requests": _requests_cache})
 
 
+def _route_token_candidate(request_id: str, nonce: int = 0) -> str:
+    source = request_id if nonce == 0 else f"{nonce}\0{request_id}"
+    digest = hashlib.blake2s(source.encode("utf-8"), digest_size=10).hexdigest()
+    return f"q{digest}"
+
+
+def _reserved_request_values(requests: List[Dict[str, Any]]) -> set[str]:
+    reserved: set[str] = set()
+    for item in requests:
+        if not isinstance(item, dict):
+            continue
+        request_id = str(item.get("id") or "").strip()
+        route_token = str(item.get("route_token") or "").strip()
+        if request_id:
+            reserved.add(request_id)
+        if _REQUEST_ROUTE_TOKEN_RE.fullmatch(route_token):
+            reserved.add(route_token)
+    return reserved
+
+
+def _ensure_all_request_route_tokens() -> List[Dict[str, Any]]:
+    global _route_tokens_ready, _route_tokens_source_id
+    requests = _get_requests_list()
+    if _route_tokens_ready and _route_tokens_source_id == id(requests):
+        return requests
+
+    request_ids = {
+        str(entry.get("id") or "").strip()
+        for entry in requests
+        if isinstance(entry, dict) and str(entry.get("id") or "").strip()
+    }
+
+    # A valid duplicate token keeps the newest owner, matching the reverse
+    # lookup behavior used before the index existed. Earlier duplicates are
+    # assigned fresh tokens below.
+    last_valid_owner: Dict[str, Dict[str, Any]] = {}
+    for entry in requests:
+        if not isinstance(entry, dict):
+            continue
+        token = str(entry.get("route_token") or "").strip()
+        if _REQUEST_ROUTE_TOKEN_RE.fullmatch(token):
+            last_valid_owner[token] = entry
+
+    reserved = set(request_ids)
+    reserved.update(last_valid_owner)
+    rebuilt_index: Dict[str, Dict[str, Any]] = {}
+    changed = False
+    for entry in requests:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        request_id = str(entry.get("id") or "").strip()
+        current = str(entry.get("route_token") or "").strip()
+        if _REQUEST_ROUTE_TOKEN_RE.fullmatch(current) and last_valid_owner.get(current) is entry:
+            token = current
+        else:
+            nonce = 0
+            while True:
+                token = _route_token_candidate(request_id, nonce)
+                if token not in reserved:
+                    break
+                nonce += 1
+            entry["route_token"] = token
+            changed = True
+        reserved.add(token)
+        rebuilt_index[token] = entry
+
+    _route_token_index.clear()
+    _route_token_index.update(rebuilt_index)
+    _route_tokens_ready = True
+    _route_tokens_source_id = id(requests)
+    if changed:
+        _save_requests_list()
+    return requests
+
+
+def _find_request_by_route_token(value: str) -> Optional[Dict[str, Any]]:
+    _ensure_all_request_route_tokens()
+    return _route_token_index.get(value)
+
+
 def _touch_request(entry: Dict[str, Any]) -> None:
-    entry["updated_at"] = datetime.utcnow().isoformat()
+    entry["updated_at"] = _now_utc().isoformat()
     entry.pop("reminder_sent_at", None)
 
 
 def add_request(payload: Dict[str, Any], request_type: str = "new") -> Dict[str, Any]:
+    global _route_tokens_ready
     requests = _get_requests_list()
+    _ensure_all_request_route_tokens()
     
     plugin = payload.get("plugin", {})
     icon_pack = payload.get("icon", {})
     plugin_id = plugin.get("id")
     icon_id = icon_pack.get("id")
-    base_id = plugin_id or icon_id or uuid4().hex
+    base_id = str(plugin_id or icon_id or uuid4().hex).strip() or uuid4().hex
     
-    existing_ids = _id_index.keys()
+    reserved_values = _reserved_request_values(requests)
     final_id = base_id
     suffix = 1
-    while final_id in existing_ids:
+    while final_id in reserved_values:
         final_id = f"{base_id}+{suffix}"
         suffix += 1
 
@@ -74,30 +197,33 @@ def add_request(payload: Dict[str, Any], request_type: str = "new") -> Dict[str,
         "id": final_id,
         "type": request_type,
         "status": "pending",
-        "submitted_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
+        "submitted_at": _now_utc().isoformat(),
+        "updated_at": _now_utc().isoformat(),
         "payload": payload,
         "history": [],
     }
     
     requests.append(entry)
     _id_index[final_id] = entry
-    _save_requests_list()
+    _route_tokens_ready = False
+    _ensure_all_request_route_tokens()
     
     return entry
 
 
 def add_draft_request(payload: Dict[str, Any], request_type: str = "new") -> Dict[str, Any]:
+    global _route_tokens_ready
     requests = _get_requests_list()
+    _ensure_all_request_route_tokens()
 
     plugin = payload.get("plugin", {})
     icon_pack = payload.get("icon", {})
-    base_id = plugin.get("id") or icon_pack.get("id") or uuid4().hex
+    base_id = str(plugin.get("id") or icon_pack.get("id") or uuid4().hex).strip() or uuid4().hex
 
-    existing_ids = _id_index.keys()
+    reserved_values = _reserved_request_values(requests)
     final_id = base_id
     suffix = 1
-    while final_id in existing_ids:
+    while final_id in reserved_values:
         final_id = f"{base_id}+{suffix}"
         suffix += 1
 
@@ -106,14 +232,15 @@ def add_draft_request(payload: Dict[str, Any], request_type: str = "new") -> Dic
         "type": request_type,
         "status": "draft",
         "submitted_at": None,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": _now_utc().isoformat(),
         "payload": payload,
         "history": [],
     }
 
     requests.append(entry)
     _id_index[final_id] = entry
-    _save_requests_list()
+    _route_tokens_ready = False
+    _ensure_all_request_route_tokens()
 
     return entry
 
@@ -170,14 +297,52 @@ def _request_plugin_ids(entry: Dict[str, Any]) -> set[str]:
     return ids
 
 
-def get_request_by_plugin_id(plugin_id: str) -> Optional[Dict[str, Any]]:
+def get_request_by_plugin_id(
+    plugin_id: str,
+    statuses: Optional[set[str] | frozenset[str]] = None,
+) -> Optional[Dict[str, Any]]:
     target = str(plugin_id or "").strip()
     if not target:
         return None
-    for entry in _get_requests_list():
+    # Requests are appended to storage. Prefer the newest matching request so
+    # an old published/rejected submission does not hide a pending update.
+    for entry in reversed(_get_requests_list()):
+        if statuses is not None and entry.get("status") not in statuses:
+            continue
         if target in _request_plugin_ids(entry):
             return entry
     return None
+
+
+def request_deeplink_token(request_id: str) -> str:
+    """Return the persisted, Bot API-safe routing token for a request."""
+    value = str(request_id or "").strip()
+    _ensure_all_request_route_tokens()
+    entry = get_request_by_id(value) or _route_token_index.get(value)
+    if not entry:
+        raise ValueError(f"Unknown request id: {value!r}")
+    return str(entry["route_token"])
+
+
+def get_request_by_deeplink_token(token: str) -> Optional[Dict[str, Any]]:
+    """Resolve persisted tokens first, then direct IDs from legacy links."""
+    value = str(token or "").strip()
+    if not value:
+        return None
+    return _find_request_by_route_token(value) or get_request_by_id(value)
+
+
+def request_callback_token(request_id: str) -> str:
+    """Return the same compact persisted token used by request callbacks."""
+    return request_deeplink_token(request_id)
+
+
+def get_request_by_callback_token(token: str) -> Optional[Dict[str, Any]]:
+    """Resolve persisted tokens first, then direct IDs from legacy callbacks."""
+    value = str(token or "").strip()
+    if not value:
+        return None
+    return _find_request_by_route_token(value) or get_request_by_id(value)
 
 
 def _relocate_request_files(entry: Dict[str, Any], subdir: str) -> None:
@@ -229,7 +394,7 @@ def update_request_status(
     if status in DECISION_STATUSES and (actor or actor_id):
         entry["decided_by"] = actor or ""
         entry["decided_by_id"] = int(actor_id) if actor_id else 0
-        entry["decided_at"] = datetime.utcnow().isoformat()
+        entry["decided_at"] = _now_utc().isoformat()
     if status == "rejected":
         _relocate_request_files(entry, "rejected")
     elif status == "published" and entry.get("type") != "unban_appeal":
@@ -243,7 +408,7 @@ def update_request_status(
         "comment": comment,
         "actor": actor or "",
         "actor_id": int(actor_id) if actor_id else 0,
-        "changed_at": datetime.utcnow().isoformat(),
+        "changed_at": _now_utc().isoformat(),
     })
     
     _save_requests_list()
@@ -268,7 +433,7 @@ def promote_draft_request(request_id: str, payload: Dict[str, Any]) -> Optional[
 
     entry["payload"] = payload
     entry["status"] = "pending"
-    entry["submitted_at"] = datetime.utcnow().isoformat()
+    entry["submitted_at"] = _now_utc().isoformat()
     _touch_request(entry)
     _save_requests_list()
     return entry
@@ -287,7 +452,7 @@ def delete_request_and_file(request_id: str) -> bool:
 
 
 def collect_draft_reminders() -> List[Dict[str, Any]]:
-    now = datetime.utcnow()
+    now = _now_utc()
     reminders: List[Dict[str, Any]] = []
     for entry in list(_get_requests_list()):
         if entry.get("status") != "draft":
@@ -297,9 +462,8 @@ def collect_draft_reminders() -> List[Dict[str, Any]]:
         updated_at = entry.get("updated_at") or entry.get("submitted_at")
         if not updated_at:
             continue
-        try:
-            updated_dt = datetime.fromisoformat(updated_at)
-        except ValueError:
+        updated_dt = _parse_datetime_utc(updated_at)
+        if updated_dt is None:
             continue
         age = now - updated_dt
         if age >= (_draft_expiration - _draft_reminder_before) and age < _draft_expiration:
@@ -312,16 +476,15 @@ def collect_draft_reminders() -> List[Dict[str, Any]]:
 
 def cleanup_expired_drafts() -> int:
     removed = 0
-    now = datetime.utcnow()
+    now = _now_utc()
     for entry in list(_get_requests_list()):
         if entry.get("status") != "draft":
             continue
         updated_at = entry.get("updated_at") or entry.get("submitted_at")
         if not updated_at:
             continue
-        try:
-            updated_dt = datetime.fromisoformat(updated_at)
-        except ValueError:
+        updated_dt = _parse_datetime_utc(updated_at)
+        if updated_dt is None:
             continue
         if now - updated_dt > _draft_expiration:
             delete_request_and_file(entry.get("id", ""))
@@ -378,19 +541,13 @@ REJECTED_RETENTION_DAYS = 7
 def _rejected_at(entry: Dict[str, Any]) -> Optional[datetime]:
     for h in reversed(entry.get("history") or []):
         if isinstance(h, dict) and h.get("status") == "rejected" and h.get("changed_at"):
-            try:
-                return datetime.fromisoformat(str(h["changed_at"]))
-            except ValueError:
-                return None
+            return _parse_datetime_utc(h["changed_at"])
     updated = entry.get("updated_at")
-    try:
-        return datetime.fromisoformat(str(updated)) if updated else None
-    except ValueError:
-        return None
+    return _parse_datetime_utc(updated)
 
 
 def cleanup_rejected_files(days: int = REJECTED_RETENTION_DAYS) -> int:
-    now = datetime.utcnow()
+    now = _now_utc()
     removed = 0
     for entry in _get_requests_list():
         if entry.get("status") != "rejected":
@@ -479,18 +636,28 @@ def start_draft_reminder_worker(bot) -> None:
     _reminder_task = loop.create_task(_reminder_loop(bot))
 
 
-def stop_draft_cleanup_worker() -> None:
+async def _cancel_worker(task: Optional[asyncio.Task]) -> None:
+    if not task or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def stop_draft_cleanup_worker() -> None:
     global _cleanup_task
-    if _cleanup_task and not _cleanup_task.done():
-        _cleanup_task.cancel()
+    task = _cleanup_task
     _cleanup_task = None
+    await _cancel_worker(task)
 
 
-def stop_draft_reminder_worker() -> None:
+async def stop_draft_reminder_worker() -> None:
     global _reminder_task
-    if _reminder_task and not _reminder_task.done():
-        _reminder_task.cancel()
+    task = _reminder_task
     _reminder_task = None
+    await _cancel_worker(task)
 
 
 async def _scheduled_publish_loop(bot) -> None:
@@ -500,7 +667,7 @@ async def _scheduled_publish_loop(bot) -> None:
 
     while True:
         await asyncio.sleep(_scheduled_interval_seconds)
-        now = datetime.utcnow()
+        now = _now_utc()
         for entry in list(get_requests(status="scheduled")):
             request_id = entry.get("id")
             if not request_id:
@@ -511,12 +678,7 @@ async def _scheduled_publish_loop(bot) -> None:
             if not scheduled_at or not isinstance(scheduled_at, str):
                 continue
 
-            try:
-                scheduled_dt = datetime.fromisoformat(scheduled_at.replace("Z", "+00:00")).replace(tzinfo=None)
-            except Exception:
-                continue
-
-            if scheduled_dt > now:
+            if not _scheduled_time_is_due(scheduled_at, now):
                 continue
 
             try:
@@ -586,11 +748,11 @@ def start_scheduled_publish_worker(bot) -> None:
     _scheduled_task = loop.create_task(_scheduled_publish_loop(bot))
 
 
-def stop_scheduled_publish_worker() -> None:
+async def stop_scheduled_publish_worker() -> None:
     global _scheduled_task
-    if _scheduled_task and not _scheduled_task.done():
-        _scheduled_task.cancel()
+    task = _scheduled_task
     _scheduled_task = None
+    await _cancel_worker(task)
 
 
 def delete_request(request_id: str) -> bool:
@@ -602,6 +764,9 @@ def delete_request(request_id: str) -> bool:
         if req.get("id") == request_id:
             requests.pop(i)
             _id_index.pop(request_id, None)
+            route_token = str(req.get("route_token") or "").strip()
+            if _route_token_index.get(route_token) is req:
+                _route_token_index.pop(route_token, None)
             _save_requests_list()
             return True
     

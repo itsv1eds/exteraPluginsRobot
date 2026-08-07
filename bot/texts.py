@@ -303,6 +303,41 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "<b>❌ Rejected requests</b>  (page {current}/{total}, total {count})\n\nTap a request to change the decision or delete it.",
     },
     "admin_rejected_empty": {"ru": "<b>❌ Отклонённые заявки</b>\n\nПусто.", "en": "<b>❌ Rejected requests</b>\n\nEmpty."},
+    "admin_btn_quiz": {"ru": "Тест по правилам", "en": "Rules quiz"},
+    "admin_quiz_title": {
+        "ru": "<b>Тест по правилам</b>\n\nВопросов в банке: {count}\nПеред отправкой автор отвечает на {per_quiz} случайных.",
+        "en": "<b>Rules quiz</b>\n\nQuestions in the pool: {count}\nAuthors answer {per_quiz} random ones before submitting.",
+    },
+    "admin_quiz_view": {
+        "ru": "<b>Вопрос {index} из {total}</b>\n<code>{id}</code>\n\n{text}\n\n{options}",
+        "en": "<b>Question {index} of {total}</b>\n<code>{id}</code>\n\n{text}\n\n{options}",
+    },
+    "admin_quiz_correct_hint": {
+        "ru": "Первый вариант — правильный, остальные показываются вперемешку.",
+        "en": "The first option is the correct one, the rest are shuffled at runtime.",
+    },
+    "admin_quiz_edit_text": {
+        "ru": "Пришлите новый текст вопроса ({value}).",
+        "en": "Send the new question text ({value}).",
+    },
+    "admin_quiz_edit_options": {
+        "ru": "Пришлите варианты ответа ({value}), каждый с новой строки.\n<b>Первый — правильный.</b>\nМинимум 2, обычно {count}.",
+        "en": "Send the answer options ({value}), one per line.\n<b>The first one is correct.</b>\nAt least 2, usually {count}.",
+    },
+    "admin_quiz_add": {
+        "ru": "Новый вопрос. Первая строка — идентификатор латиницей, вторая — текст вопроса, дальше варианты (первый правильный).",
+        "en": "New question. First line is a latin id, second is the question, then the options (first one correct).",
+    },
+    "admin_quiz_saved": {"ru": "Сохранено", "en": "Saved"},
+    "admin_quiz_deleted": {"ru": "Вопрос удалён", "en": "Question deleted"},
+    "admin_quiz_bad_format": {"ru": "Нужно минимум 2 варианта ответа", "en": "At least 2 options are required"},
+    "admin_quiz_bad_id": {"ru": "Такой идентификатор уже есть или он пустой", "en": "That id already exists or is empty"},
+    "admin_quiz_restored": {"ru": "Восстановлено вопросов: {count}", "en": "Restored questions: {count}"},
+    "admin_quiz_btn_text": {"ru": "Текст вопроса", "en": "Question text"},
+    "admin_quiz_btn_options": {"ru": "Варианты ответа", "en": "Answer options"},
+    "admin_quiz_btn_add": {"ru": "Добавить вопрос", "en": "Add question"},
+    "admin_quiz_btn_restore": {"ru": "Вернуть стандартные", "en": "Restore defaults"},
+    "admin_quiz_btn_lang": {"ru": "Язык: {value}", "en": "Language: {value}"},
     "admin_decided_by": {
         "ru": "<b>Решение принял:</b> {actor}{when}",
         "en": "<b>Decided by:</b> {actor}{when}",

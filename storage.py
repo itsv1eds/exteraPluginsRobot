@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import logging
 import os
 import sqlite3
@@ -8,7 +9,7 @@ import time
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 ROOT = Path(__file__).resolve().parent
 _CONFIG_META_KEY = "app_config"
@@ -101,6 +102,7 @@ _DOC_AUDIT = "audit"
 _DOC_POSTER = "poster"
 _DOC_DIALOGS = "dialogs"
 _DOC_STATS = "stats"
+_DOC_QUIZ = "quiz"
 
 _cache: Dict[str, Dict[str, Any]] = {}
 _cache_time: Dict[str, float] = {}
@@ -277,6 +279,8 @@ def _is_doc_empty(doc_key: str, data: Dict[str, Any]) -> bool:
         return not (data.get("channels") or data.get("posts"))
     if doc_key == _DOC_AUDIT:
         return not bool(data.get("events"))
+    if doc_key == _DOC_QUIZ:
+        return not bool(data.get("questions"))
     return len(data) == 0
 
 
@@ -806,6 +810,21 @@ def _write_audit_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     _mark_initialized(conn, _DOC_AUDIT)
 
 
+def _read_quiz_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
+    data = _get_meta_json(conn, _meta_key(_DOC_QUIZ), {})
+    if not isinstance(data.get("questions"), list):
+        data["questions"] = []
+    return data
+
+
+def _write_quiz_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+    payload = dict(data) if isinstance(data, dict) else {}
+    if not isinstance(payload.get("questions"), list):
+        payload["questions"] = []
+    _set_meta_json(conn, _meta_key(_DOC_QUIZ), payload)
+    _mark_initialized(conn, _DOC_QUIZ)
+
+
 def _read_dialogs_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
     data = _get_meta_json(conn, _meta_key(_DOC_DIALOGS), {})
     if not isinstance(data.get("threads"), dict):
@@ -849,6 +868,7 @@ _READERS = {
     _DOC_POSTER: _read_poster_doc,
     _DOC_DIALOGS: _read_dialogs_doc,
     _DOC_STATS: _read_stats_doc,
+    _DOC_QUIZ: _read_quiz_doc,
 }
 
 _WRITERS = {
@@ -864,6 +884,7 @@ _WRITERS = {
     _DOC_POSTER: _write_poster_doc,
     _DOC_DIALOGS: _write_dialogs_doc,
     _DOC_STATS: _write_stats_doc,
+    _DOC_QUIZ: _write_quiz_doc,
 }
 
 
@@ -942,17 +963,6 @@ def _save_sync(doc_key: str, data: Dict[str, Any]) -> None:
     except RuntimeError:
         _write_sqlite_doc_sync(doc_key, data)
         _dirty[doc_key] = False
-
-
-def invalidate_cache(doc_key: Optional[str] = None) -> None:
-    keys = [doc_key] if doc_key else list(_cache)
-    for key in keys:
-        if _dirty.get(key) and key in _cache:
-            _write_sqlite_doc_sync(key, deepcopy(_cache[key]))
-        _cache.pop(key, None)
-        _cache_time.pop(key, None)
-        _dirty.pop(key, None)
-        _last_save.pop(key, None)
 
 
 def _normalize_dict(data: Dict[str, Any], default: Dict[str, Any]) -> Dict[str, Any]:
@@ -1123,6 +1133,119 @@ def save_stenka(data: Dict[str, Any]) -> None:
     _save_sync(_DOC_STENKA, data)
 
 
+QUIZ_QUESTIONS_PER_RUN = 3
+QUIZ_OPTIONS_PER_QUESTION = 4
+_QUIZ_SEED_FILE = Path(__file__).resolve().parent / "quiz_seed.json"
+
+
+def _normalize_quiz_question(item: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(item, dict):
+        return None
+    result: Dict[str, Any] = {"id": str(item.get("id") or "").strip()}
+    if not result["id"]:
+        return None
+    for lang in ("ru", "en"):
+        block = item.get(lang)
+        if isinstance(block, (list, tuple)) and len(block) == 2:
+            text, options = block
+        elif isinstance(block, dict):
+            text, options = block.get("text"), block.get("options")
+        else:
+            continue
+        options = [str(o).strip() for o in (options or []) if str(o).strip()]
+        text = str(text or "").strip()
+        if text and len(options) >= 2:
+            result[lang] = [text, options]
+    return result if result.get("ru") or result.get("en") else None
+
+
+def quiz_seed_questions() -> List[Dict[str, Any]]:
+    try:
+        raw = json.loads(_QUIZ_SEED_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    items = raw.get("questions") if isinstance(raw, dict) else raw
+    return [q for q in (_normalize_quiz_question(i) for i in (items or [])) if q]
+
+
+def load_quiz_questions() -> List[Dict[str, Any]]:
+    stored = _normalize_dict(_get_cached(_DOC_QUIZ), {"questions": []}).get("questions")
+    items = [q for q in (_normalize_quiz_question(i) for i in (stored or [])) if q]
+    if items:
+        return items
+    seeded = quiz_seed_questions()
+    if seeded:
+        save_quiz_questions(seeded)
+    return seeded
+
+
+def save_quiz_questions(items: List[Dict[str, Any]]) -> None:
+    _save_sync(_DOC_QUIZ, {
+        "questions": [q for q in (_normalize_quiz_question(i) for i in items) if q],
+    })
+
+
+def update_quiz_question(question_id: str, lang: str, text: str | None = None,
+                         options: List[str] | None = None) -> bool:
+    items = load_quiz_questions()
+    for item in items:
+        if item["id"] != question_id:
+            continue
+        block = item.get(lang) or item.get("ru") or ["", []]
+        item[lang] = [
+            str(text if text is not None else block[0]).strip(),
+            [str(o).strip() for o in (options if options is not None else block[1]) if str(o).strip()],
+        ]
+        save_quiz_questions(items)
+        return True
+    return False
+
+
+def add_quiz_question(question_id: str, lang: str, text: str, options: List[str]) -> bool:
+    items = load_quiz_questions()
+    question_id = str(question_id or "").strip()
+    if not question_id or any(q["id"] == question_id for q in items):
+        return False
+    entry = _normalize_quiz_question({"id": question_id, lang: [text, options]})
+    if not entry:
+        return False
+    items.append(entry)
+    save_quiz_questions(items)
+    return True
+
+
+def delete_quiz_question(question_id: str) -> bool:
+    items = load_quiz_questions()
+    remaining = [q for q in items if q["id"] != question_id]
+    if len(remaining) == len(items):
+        return False
+    save_quiz_questions(remaining)
+    return True
+
+
+def restore_quiz_defaults() -> int:
+    items = quiz_seed_questions()
+    save_quiz_questions(items)
+    return len(items)
+
+
+def build_quiz(lang: str = "ru", count: int = QUIZ_QUESTIONS_PER_RUN) -> List[Dict[str, Any]]:
+    pool = load_quiz_questions()
+    quiz: List[Dict[str, Any]] = []
+    for item in random.sample(pool, min(count, len(pool))):
+        text, options = item.get(lang) or item["ru"]
+        correct = options[0]
+        shuffled = list(options)
+        random.shuffle(shuffled)
+        quiz.append({
+            "id": item["id"],
+            "text": text,
+            "options": shuffled,
+            "correct": shuffled.index(correct),
+        })
+    return quiz
+
+
 def load_audit() -> Dict[str, Any]:
     return _normalize_dict(_get_cached(_DOC_AUDIT), {"events": []})
 
@@ -1201,5 +1324,6 @@ async def preload_storage() -> None:
         _DOC_JOINLY,
         _DOC_STENKA,
         _DOC_AUDIT,
+        _DOC_QUIZ,
     ):
         await asyncio.to_thread(_get_cached, doc_key)

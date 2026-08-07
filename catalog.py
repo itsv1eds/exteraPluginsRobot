@@ -1,7 +1,7 @@
 import hashlib
 import random
 import re
-from typing import Any, Dict, Iterable, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 from storage import load_icons, load_plugins
 
@@ -225,13 +225,6 @@ def list_plugins_by_category(category_key: str, source_filter: str = SOURCE_ALL)
     return [p for p in entries if p.get("category") == category_key]
 
 
-def list_icons_by_category(category_key: str) -> List[CatalogEntry]:
-    entries = _get_published_icons()
-    if category_key in (None, "", "_all"):
-        return entries
-    return [i for i in entries if i.get("category") == category_key]
-
-
 def search_plugins(query: str, limit: int = 10, source_filter: str = SOURCE_ALL) -> List[CatalogEntry]:
     normalized = query.strip().lower()
     entries = _filter_plugins_by_source(_get_published_plugins(), source_filter)
@@ -296,15 +289,6 @@ def search_icons(query: str, limit: int = 10) -> List[CatalogEntry]:
 
 def _normalize_slug(value: Optional[str]) -> str:
     return (value or "").strip().lower()
-
-
-def _normalize_handle(value: Optional[str]) -> str:
-    if not value:
-        return ""
-    value = value.strip()
-    if value.startswith("@"):
-        value = value[1:]
-    return value.lower()
 
 
 def find_plugin_by_slug(slug: Optional[str]) -> Optional[CatalogEntry]:
@@ -395,61 +379,3 @@ def find_user_icons(user_id: int, username: str = "") -> List[CatalogEntry]:
     return results
 
 
-def find_plugins_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
-    normalized: Set[str] = {_normalize_handle(h) for h in handles if h}
-    normalized.discard("")
-    if not normalized:
-        return []
-
-    results: List[CatalogEntry] = []
-    for plugin in _load_plugins():
-        authors = plugin.get("authors", {})
-        raw_blocks = plugin.get("raw_blocks", {}) or {}
-        raw_ru = raw_blocks.get("ru") if isinstance(raw_blocks.get("ru"), dict) else {}
-        raw_en = raw_blocks.get("en") if isinstance(raw_blocks.get("en"), dict) else {}
-        haystack = " ".join(
-            filter(
-                None,
-                [
-                    authors.get("ru"),
-                    authors.get("en"),
-                    raw_ru.get("author") or "",
-                    raw_en.get("author") or "",
-                    raw_ru.get("author_channel") or "",
-                    raw_en.get("author_channel") or "",
-                ],
-            )
-        ).lower()
-        for needle in normalized:
-            if needle and needle in haystack:
-                results.append(plugin)
-                break
-    return results
-
-
-def find_icons_by_handles(handles: Iterable[str]) -> List[CatalogEntry]:
-    normalized: Set[str] = {_normalize_handle(h) for h in handles if h}
-    normalized.discard("")
-    if not normalized:
-        return []
-
-    results: List[CatalogEntry] = []
-    for icon in _load_icons():
-        authors = icon.get("authors", {})
-        raw_blocks = icon.get("raw_blocks", {})
-        haystack = " ".join(
-            filter(
-                None,
-                [
-                    authors.get("ru"),
-                    authors.get("en"),
-                    raw_blocks.get("ru") if isinstance(raw_blocks.get("ru"), str) else "",
-                    raw_blocks.get("en") if isinstance(raw_blocks.get("en"), str) else "",
-                ],
-            )
-        ).lower()
-        for needle in normalized:
-            if needle and needle in haystack:
-                results.append(icon)
-                break
-    return results

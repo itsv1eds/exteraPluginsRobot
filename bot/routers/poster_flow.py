@@ -234,6 +234,11 @@ async def on_start_user(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "pstr:admin")
 async def on_start_admin(cb: CallbackQuery, state: FSMContext) -> None:
+    from bot.cache import get_admins
+
+    if not (cb.from_user and cb.from_user.id in get_admins()):
+        await ack(cb, t("admin_denied", _lang(cb)), show_alert=True)
+        return
     await state.update_data(poster_admin_mode=True)
     await render_home(cb, state)
     await ack(cb)

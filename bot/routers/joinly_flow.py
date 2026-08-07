@@ -489,13 +489,6 @@ def _is_group(message: Message) -> bool:
     return message.chat.type in {"group", "supergroup"}
 
 
-def _format_user(user) -> tuple[str, str]:
-    name = (getattr(user, "full_name", None) or getattr(user, "first_name", None) or "").strip()
-    username = (getattr(user, "username", None) or "").strip()
-    username_fmt = f"@{username}" if username else "—"
-    return name or "—", username_fmt
-
-
 def _permissions_to_dict(permissions: Any) -> dict[str, bool]:
     if not permissions:
         return {}
@@ -510,16 +503,6 @@ def _permissions_to_dict(permissions: Any) -> dict[str, bool]:
     return {k: bool(v) for k, v in data.items() if k.startswith("can_")}
 
 
-def _permissions_from_dict(data: Any) -> ChatPermissions:
-    allowed = set(getattr(ChatPermissions, "model_fields", {}).keys())
-    if not isinstance(data, dict):
-        data = {}
-    values = {k: bool(v) for k, v in data.items() if k in allowed and k.startswith("can_")}
-    if values and any(values.values()):
-        return ChatPermissions(**values)
-    return _open_permissions()
-
-
 def _permissions_with_updates(permissions: Any, updates: dict[str, bool]) -> ChatPermissions:
     allowed = set(getattr(ChatPermissions, "model_fields", {}).keys())
     values = _permissions_to_dict(permissions)
@@ -532,21 +515,6 @@ def _permissions_with_updates(permissions: Any, updates: dict[str, bool]) -> Cha
     return ChatPermissions(**values)
 
 
-def _permissions_with_value(value: bool) -> ChatPermissions:
-    allowed = set(getattr(ChatPermissions, "model_fields", {}).keys())
-    values = {field: value for field in _CHAT_PERMISSION_FIELDS if field in allowed}
-    values.setdefault("can_send_messages", value)
-    return ChatPermissions(**values)
-
-
-def _open_permissions() -> ChatPermissions:
-    return _permissions_with_value(True)
-
-
-def _locked_permissions() -> ChatPermissions:
-    return _permissions_with_value(False)
-
-
 async def _set_chat_permissions(bot, chat_id: int, permissions: ChatPermissions) -> None:
     try:
         await bot.set_chat_permissions(
@@ -556,18 +524,6 @@ async def _set_chat_permissions(bot, chat_id: int, permissions: ChatPermissions)
         )
     except TypeError:
         await bot.set_chat_permissions(chat_id=chat_id, permissions=permissions)
-
-
-async def _chat_allows_messages(bot, chat_id: int) -> bool:
-    try:
-        chat = await bot.get_chat(chat_id)
-    except Exception:
-        return True
-    permissions = getattr(chat, "permissions", None)
-    if not permissions:
-        return True
-    value = getattr(permissions, "can_send_messages", None)
-    return value is not False
 
 
 async def _get_chat_permissions(bot, chat_id: int) -> Any:

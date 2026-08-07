@@ -55,15 +55,6 @@ def _scheduled_time_is_due(value: Any, now: Optional[datetime] = None) -> bool:
     return scheduled_at <= current
 
 
-def invalidate_requests_cache() -> None:
-    global _requests_cache, _id_index, _route_tokens_ready, _route_tokens_source_id
-    _requests_cache = None
-    _id_index.clear()
-    _route_token_index.clear()
-    _route_tokens_ready = False
-    _route_tokens_source_id = None
-
-
 def _get_requests_list() -> List[Dict[str, Any]]:
     global _requests_cache, _id_index, _route_tokens_ready, _route_tokens_source_id
     

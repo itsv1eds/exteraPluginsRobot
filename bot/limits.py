@@ -30,9 +30,3 @@ QUOTE = 1024
 PLUGIN_FILE_BYTES = 8 * 1024 * 1024
 
 
-def caption_limit(premium: bool = False) -> int:
-    return PREMIUM_CAPTION if premium else CAPTION
-
-
-def text_limit(premium: bool = False) -> int:
-    return PREMIUM_MESSAGE_TEXT if premium else MESSAGE_TEXT

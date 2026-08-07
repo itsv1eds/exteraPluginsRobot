@@ -19,9 +19,7 @@ from bot import limits
 from bot.cache import (
     get_admin_role,
     get_admins,
-    get_admins_icons,
-    get_admins_plugins,
-    get_admins_super,
+            get_admins_super,
     get_categories,
     get_config,
     invalidate,
@@ -34,6 +32,8 @@ from bot.helpers import ack, answer
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
 from bot.services.audit import add_audit_event, audit_events_page, recent_audit_events
 from bot.keyboards import (
+    admin_quiz_item_kb,
+    admin_quiz_list_kb,
     admin_schedule_presets_kb,
     admin_actions_kb,
     admin_banned_kb,
@@ -130,7 +130,7 @@ from request_store import (
     update_request_payload,
     update_request_status,
 )
-from storage import DATA_DIR, SQLITE_PATH, load_config, load_plugins, save_config, save_plugins
+from storage import DATA_DIR, QUIZ_OPTIONS_PER_QUESTION, QUIZ_QUESTIONS_PER_RUN, SQLITE_PATH, add_quiz_question, delete_quiz_question, load_config, load_plugins, load_quiz_questions, restore_quiz_defaults, save_config, save_plugins, update_quiz_question
 from user_store import ban_user, get_banned_users, is_broadcast_enabled, list_users, unban_user
 from subscription_store import list_subscribers
 from catalog import invalidate_catalog_cache
@@ -409,7 +409,7 @@ async def _render_scheduled_list(target: CallbackQuery | Message, state: FSMCont
         filtered.append(r)
 
     if not filtered:
-        await answer(target, _tr(target, "admin_scheduled_empty"), admin_plugins_section_kb(lang=lang), "admin")
+        await answer(target, _tr(target, "admin_scheduled_empty"), admin_plugins_section_kb(lang=lang, role=_admin_menu_role(target)), "admin")
         return
 
     sortable = [(r, _scheduled_dt_utc(r)) for r in filtered]
@@ -443,7 +443,7 @@ async def _render_scheduled_view(target: CallbackQuery | Message, state: FSMCont
     lang = _lang_for(target)
     entry = get_request_by_id(request_id)
     if not entry:
-        await answer(target, _tr(target, "not_found"), admin_plugins_section_kb(lang=lang), "admin")
+        await answer(target, _tr(target, "not_found"), admin_plugins_section_kb(lang=lang, role=_admin_menu_role(target)), "admin")
         return
     dt = _scheduled_dt_utc(entry)
     dt_str = dt.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M") if dt else "—"
@@ -1170,13 +1170,29 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
         await state.update_data(draft_message_id=msg.message_id)
 
 
+_SUPER_ONLY_NAV_PREFIXES = (
+    "adm:config", "adm:broadcast", "adm:banned", "adm:blocklist", "adm:backup",
+    "adm:maint", "adm:sources", "adm:audit", "adm:auditlog", "adm:rejreq", "adm:quiz",
+    "adm:edit_plugins", "adm:link_author", "adm:icons",
+)
+
+
+def _nav_token_allowed(cb: CallbackQuery, token: str) -> bool:
+    if not token.startswith(_SUPER_ONLY_NAV_PREFIXES):
+        return True
+    return _is_super_admin(cb)
+
+
 async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) -> None:
     lang = _lang_for(cb)
+    if not _nav_token_allowed(cb, token):
+        await _render_menu(cb, state)
+        return
     if token == "adm:menu":
         await _render_menu(cb, state)
     elif token == "adm:section:plugins":
         await state.set_state(AdminFlow.menu)
-        await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang), "admin")
+        await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang, role=_admin_menu_role(cb)), "admin")
     elif token == "adm:section:updates":
         await _render_updates_list(cb, state, 0)
     elif token == "adm:section:post":
@@ -1184,6 +1200,8 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await answer(cb, _post_section_text(lang), admin_post_section_kb(lang=lang), "admin")
     elif token == "adm:config":
         await _render_config(cb, state)
+    elif token.startswith("adm:quiz"):
+        await _render_quiz_list(cb, state, 0)
     elif token == "adm:notifs":
         await _render_admin_notifications(cb, state)
     elif token.startswith("adm:config_section:"):
@@ -1470,11 +1488,7 @@ def _ensure_admin_role(cb: CallbackQuery | Message, role: str) -> bool:
         return False
     if user.id in get_admins_super():
         return True
-    if role == "plugins":
-        return user.id in get_admins_plugins()
-    if role == "icons":
-        return user.id in get_admins_icons()
-    return False
+    return role != "super" and user.id in get_admins()
 
 
 def _admin_menu_role(cb: CallbackQuery | Message) -> str | None:
@@ -2663,7 +2677,7 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
 
     await _nav_push(state, "adm:section:plugins")
     await state.set_state(AdminFlow.menu)
-    await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang), "admin")
+    await answer(cb, _plugins_section_text(lang), admin_plugins_section_kb(lang=lang, role=_admin_menu_role(cb)), "admin")
     await ack(cb)
 
 
@@ -2742,7 +2756,7 @@ async def _render_rejected(
 
 @router.callback_query(F.data.regexp(r"^adm:audit:(?:[a-z]+:)?\d+$"))
 async def on_admin_audit(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _ensure_admin_role(cb, "plugins"):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     parts = cb.data.split(":")
@@ -2754,7 +2768,7 @@ async def on_admin_audit(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.regexp(r"^adm:rejreq:[^:]+$"))
 async def on_admin_rejected_detail(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _ensure_admin_role(cb, "plugins"):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     request_id = cb.data.split(":")[2]
@@ -2783,7 +2797,7 @@ async def on_admin_rejected_detail(cb: CallbackQuery, state: FSMContext) -> None
 
 @router.callback_query(F.data.regexp(r"^adm:rejdel:[^:]+$"))
 async def on_admin_rejected_delete(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _ensure_admin_role(cb, "plugins"):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     request_id = cb.data.split(":")[2]
@@ -4397,7 +4411,7 @@ async def on_admin_user_info(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "adm:link_author")
 async def on_admin_link_author(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
-    if not _ensure_admin_role(cb, "plugins"):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
@@ -4412,7 +4426,7 @@ async def on_admin_link_author(cb: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == "adm:edit_plugins")
 async def on_admin_edit_plugins(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
-    if not _ensure_admin_role(cb, "plugins"):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
@@ -6945,7 +6959,7 @@ async def _render_audit_log(target, state: FSMContext, page: int) -> None:
 
 @router.callback_query(F.data.regexp(r"^adm:auditlog:\d+$"))
 async def on_admin_audit_log(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _ensure_admin(cb):
+    if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     await _render_audit_log(cb, state, int(cb.data.split(":")[2]))
@@ -6991,3 +7005,192 @@ async def on_admin_unblock(cb: CallbackQuery, state: FSMContext) -> None:
         )
     await _render_blocklist(cb, state)
     await ack(cb, _tr(cb, "admin_unblocked", id=plugin_id), show_alert=True)
+
+
+_QUIZ_PAGE_SIZE = 8
+
+
+def _quiz_edit_lang(data: dict) -> str:
+    return "en" if str(data.get("quiz_edit_lang") or "ru") == "en" else "ru"
+
+
+def _quiz_block(question: dict, lang: str) -> tuple[str, list[str]]:
+    block = question.get(lang) or question.get("ru") or question.get("en") or ["", []]
+    return str(block[0]), list(block[1])
+
+
+async def _render_quiz_list(target, state: FSMContext, page: int) -> None:
+    lang = _lang_for(target)
+    questions = load_quiz_questions()
+    total_pages = max(1, math.ceil(len(questions) / _QUIZ_PAGE_SIZE))
+    page = max(0, min(page, total_pages - 1))
+    chunk = questions[page * _QUIZ_PAGE_SIZE:(page + 1) * _QUIZ_PAGE_SIZE]
+
+    edit_lang = _quiz_edit_lang(await state.get_data())
+    items = []
+    for index, question in enumerate(chunk, start=page * _QUIZ_PAGE_SIZE + 1):
+        text, _ = _quiz_block(question, edit_lang)
+        items.append((f"{index}. {text}", question["id"]))
+
+    await state.set_state(AdminFlow.menu)
+    await answer(
+        target,
+        _tr(target, "admin_quiz_title", count=len(questions), per_quiz=QUIZ_QUESTIONS_PER_RUN),
+        admin_quiz_list_kb(items, page, total_pages, lang=lang),
+        "admin",
+    )
+
+
+async def _render_quiz_item(target, state: FSMContext, question_id: str) -> None:
+    lang = _lang_for(target)
+    questions = load_quiz_questions()
+    question = next((q for q in questions if q["id"] == question_id), None)
+    if not question:
+        await _render_quiz_list(target, state, 0)
+        return
+
+    edit_lang = _quiz_edit_lang(await state.get_data())
+    text, options = _quiz_block(question, edit_lang)
+    rendered = "\n".join(
+        f"{'✅' if idx == 0 else '▫️'} {plain_html(option)}" for idx, option in enumerate(options)
+    )
+    body = _tr(
+        target, "admin_quiz_view",
+        index=questions.index(question) + 1, total=len(questions),
+        id=plain_html(question["id"]), text=plain_html(text), options=rendered,
+    ) + "\n\n" + _tr(target, "admin_quiz_correct_hint")
+
+    await state.update_data(quiz_current=question_id)
+    await state.set_state(AdminFlow.menu)
+    await answer(target, body, admin_quiz_item_kb(question_id, lang=lang, edit_lang=edit_lang), "admin")
+
+
+@router.callback_query(F.data.regexp(r"^adm:quiz:\d+$"))
+async def on_admin_quiz(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    page = int(cb.data.split(":")[2])
+    await _nav_push(state, "adm:quiz:0")
+    await _render_quiz_list(cb, state, page)
+    await ack(cb)
+
+
+@router.callback_query(F.data.startswith("adm:quiz:view:"))
+async def on_admin_quiz_view(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await _render_quiz_item(cb, state, cb.data.split(":", 3)[3])
+    await ack(cb)
+
+
+@router.callback_query(F.data.startswith("adm:quiz:lang:"))
+async def on_admin_quiz_lang(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    parts = cb.data.split(":")
+    await state.update_data(quiz_edit_lang="en" if parts[4] == "en" else "ru")
+    await _render_quiz_item(cb, state, parts[3])
+    await ack(cb)
+
+
+@router.callback_query(F.data.startswith("adm:quiz:edit_text:"))
+async def on_admin_quiz_edit_text(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    edit_lang = _quiz_edit_lang(await state.get_data())
+    await state.update_data(quiz_current=cb.data.split(":", 3)[3])
+    await state.set_state(AdminFlow.editing_quiz_text)
+    await answer(cb, _tr(cb, "admin_quiz_edit_text", value=edit_lang.upper()), admin_cancel_kb(_lang_for(cb)), "admin")
+    await ack(cb)
+
+
+@router.callback_query(F.data.startswith("adm:quiz:edit_options:"))
+async def on_admin_quiz_edit_options(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    edit_lang = _quiz_edit_lang(await state.get_data())
+    await state.update_data(quiz_current=cb.data.split(":", 3)[3])
+    await state.set_state(AdminFlow.editing_quiz_options)
+    await answer(
+        cb,
+        _tr(cb, "admin_quiz_edit_options", value=edit_lang.upper(), count=QUIZ_OPTIONS_PER_QUESTION),
+        admin_cancel_kb(_lang_for(cb)),
+        "admin",
+    )
+    await ack(cb)
+
+
+@router.callback_query(F.data.startswith("adm:quiz:del:"))
+async def on_admin_quiz_delete(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    delete_quiz_question(cb.data.split(":", 3)[3])
+    await _render_quiz_list(cb, state, 0)
+    await ack(cb, _tr(cb, "admin_quiz_deleted"))
+
+
+@router.callback_query(F.data == "adm:quiz:add")
+async def on_admin_quiz_add(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    await state.set_state(AdminFlow.adding_quiz_question)
+    await answer(cb, _tr(cb, "admin_quiz_add"), admin_cancel_kb(_lang_for(cb)), "admin")
+    await ack(cb)
+
+
+@router.callback_query(F.data == "adm:quiz:restore")
+async def on_admin_quiz_restore(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _is_super_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    count = restore_quiz_defaults()
+    await _render_quiz_list(cb, state, 0)
+    await ack(cb, _tr(cb, "admin_quiz_restored", count=count), show_alert=True)
+
+
+@router.message(AdminFlow.editing_quiz_text)
+async def on_admin_quiz_text_value(message: Message, state: FSMContext) -> None:
+    if not _is_super_admin(message):
+        return
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer(_tr(message, "need_text"), parse_mode=ParseMode.HTML)
+        return
+    data = await state.get_data()
+    update_quiz_question(str(data.get("quiz_current") or ""), _quiz_edit_lang(data), text=text)
+    await _render_quiz_item(message, state, str(data.get("quiz_current") or ""))
+
+
+@router.message(AdminFlow.editing_quiz_options)
+async def on_admin_quiz_options_value(message: Message, state: FSMContext) -> None:
+    if not _is_super_admin(message):
+        return
+    options = [line.strip() for line in (message.text or "").splitlines() if line.strip()]
+    if len(options) < 2:
+        await message.answer(_tr(message, "admin_quiz_bad_format"), parse_mode=ParseMode.HTML)
+        return
+    data = await state.get_data()
+    update_quiz_question(str(data.get("quiz_current") or ""), _quiz_edit_lang(data), options=options)
+    await _render_quiz_item(message, state, str(data.get("quiz_current") or ""))
+
+
+@router.message(AdminFlow.adding_quiz_question)
+async def on_admin_quiz_add_value(message: Message, state: FSMContext) -> None:
+    if not _is_super_admin(message):
+        return
+    lines = [line.strip() for line in (message.text or "").splitlines() if line.strip()]
+    if len(lines) < 4:
+        await message.answer(_tr(message, "admin_quiz_bad_format"), parse_mode=ParseMode.HTML)
+        return
+    data = await state.get_data()
+    if not add_quiz_question(lines[0], _quiz_edit_lang(data), lines[1], lines[2:]):
+        await message.answer(_tr(message, "admin_quiz_bad_id"), parse_mode=ParseMode.HTML)
+        return
+    await _render_quiz_item(message, state, lines[0])

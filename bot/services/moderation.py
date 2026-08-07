@@ -351,22 +351,6 @@ def commit_pending_vote(request_id: str, user_id: int, reason: str) -> dict | No
     return get_request_by_id(request_id) or entry
 
 
-def set_vote_reason(request_id: str, user_id: int, reason: str) -> dict | None:
-    entry = get_request_by_id(request_id)
-    if not entry:
-        return None
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
-    votes = payload.get("moderation_votes")
-    if not isinstance(votes, dict) or str(user_id) not in votes:
-        return None
-    item = votes.get(str(user_id))
-    if not isinstance(item, dict):
-        return None
-    item["reason"] = reason
-    item["reason_at"] = datetime.now(timezone.utc).isoformat()
-    return update_request_payload(request_id, {"moderation_votes": votes})
-
-
 _FORUM_IMG_BY_TYPE = {"unban_appeal": "appeal", "update": "update", "delete": "delete"}
 
 

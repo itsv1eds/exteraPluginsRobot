@@ -80,32 +80,3 @@ def meets_min_supported(value: object) -> bool:
     return compare_versions(norm, get_min_supported_version()) >= 0
 
 
-def satisfies(candidate: object, spec: object, *, default_operator: str = ">=") -> bool:
-    operator, _ = split_operator(spec)
-    operator = operator or default_operator
-    if operator == "=":
-        operator = "=="
-    cmp = compare_versions(candidate, spec)
-    if operator == ">=":
-        return cmp >= 0
-    if operator == ">":
-        return cmp > 0
-    if operator == "<=":
-        return cmp <= 0
-    if operator == "<":
-        return cmp < 0
-    if operator == "==":
-        return cmp == 0
-    if operator == "!=":
-        return cmp != 0
-    if operator == "~=":
-        return cmp >= 0 and _key(candidate) >= _key(spec)
-    return cmp >= 0
-
-
-def is_compatible(client_version: object, min_version: object) -> bool:
-    if not is_valid_version(min_version):
-        return True
-    if not is_valid_version(client_version):
-        return True
-    return satisfies(client_version, min_version, default_operator=">=")

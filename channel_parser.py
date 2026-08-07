@@ -210,25 +210,3 @@ def _parse_block(text: str, mapping: Dict[str, str]) -> Dict[str, str]:
     return result
 
 
-def match_user_to_plugins(username: str, plugins: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    if not username:
-        return []
-    
-    handle = f"@{username.lower().lstrip('@')}"
-    matched = []
-    
-    for plugin in plugins:
-        authors = plugin.get("authors", {})
-        handles = authors.get("handles", [])
-        
-        if any(h.lower() == handle for h in handles):
-            matched.append(plugin)
-            continue
-        
-        for locale in ("ru", "en"):
-            author_text = (authors.get(locale) or "").lower()
-            if handle in author_text:
-                matched.append(plugin)
-                break
-    
-    return matched

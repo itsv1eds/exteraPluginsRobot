@@ -11,5 +11,3 @@ EMOJI_TEXT = "👋"
 CUSTOM_EMOJI_ID = "5319016550248751722"
 
 
-def utf16_length(text: str) -> int:
-    return len(text.encode("utf-16-le")) // 2

@@ -633,53 +633,6 @@ def add_submitter_to_iconpack(slug: str, user_id: int, username: str = "") -> bo
     return False
 
 
-def update_icon_catalog_entry(slug: str, payload: Dict[str, Any], message_id: int) -> None:
-    icon = payload.get("icon", {}) if isinstance(payload, dict) else {}
-    db = load_icons()
-    packs = db.get("iconpacks", [])
-    if not isinstance(packs, list):
-        return
-
-    for p in packs:
-        if not isinstance(p, dict):
-            continue
-        if (p.get("slug") or "").strip().lower() != (slug or "").strip().lower():
-            continue
-
-        ru_locale = p.setdefault("ru", {})
-        en_locale = p.setdefault("en", {})
-        authors = p.setdefault("authors", {})
-
-        name = icon.get("name")
-        if name:
-            ru_locale["name"] = name
-            en_locale["name"] = name
-
-        author_text = icon.get("author")
-        if author_text:
-            authors["ru"] = author_text
-            authors["en"] = author_text
-            authors["handles"] = list(set(re.findall(r"@[\w]+", author_text)))
-
-        version = icon.get("version")
-        if version is not None:
-            ru_locale["version"] = version
-            en_locale["version"] = version
-
-        count = icon.get("count")
-        if count is not None:
-            p["count"] = count
-
-        channel_msg = p.setdefault("channel_message", {})
-        channel_msg["message_id"] = message_id
-
-        p["updated_at"] = datetime.utcnow().isoformat()
-        break
-
-    save_icons(db)
-    _invalidate_all_icons()
-
-
 def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int) -> None:
     payload = entry.get("payload", {})
     plugin = payload.get("plugin", {})

@@ -52,11 +52,6 @@ def get_config() -> Dict[str, Any]:
     return _get_cached_sync("config", load_config, ttl=300)
 
 
-def get_plugins() -> List[Dict[str, Any]]:
-    data = _get_cached_sync("plugins", load_plugins)
-    return data.get("plugins", [])
-
-
 def get_icons() -> List[Dict[str, Any]]:
     data = _get_cached_sync("icons", load_icons)
     return data.get("iconpacks", [])
@@ -108,11 +103,7 @@ def get_admins_super() -> set:
 
 
 def get_admins_regular() -> set:
-    return (
-        _get_admin_list("admins")
-        | _get_admin_list("admins_plugins")
-        | _get_admin_list("admins_icons")
-    )
+    return _get_admin_list("admins")
 
 
 def get_admins() -> set:
@@ -139,10 +130,6 @@ def get_admin_role(user_id: int) -> Optional[str]:
     return None
 
 
-def get_channel_config() -> Dict[str, Any]:
-    return get_config().get("channel", {})
-
-
 async def get_config_async() -> Dict[str, Any]:
     return await _get_cached_async("config", load_config, ttl=300)
 
@@ -155,12 +142,6 @@ async def get_plugins_async() -> List[Dict[str, Any]]:
 async def get_icons_async() -> List[Dict[str, Any]]:
     data = await _get_cached_async("icons", load_icons)
     return data.get("iconpacks", [])
-
-
-async def get_admins_async() -> set:
-    config = await get_config_async()
-    fallback = set(config.get("admins", []))
-    return set(config.get("admins_super", [])) | set(config.get("admins_plugins", [])) | set(config.get("admins_icons", [])) | fallback
 
 
 async def preload_cache() -> None:

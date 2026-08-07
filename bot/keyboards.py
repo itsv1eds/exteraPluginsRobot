@@ -179,18 +179,6 @@ def categories_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def notify_all_kb(lang: str, enabled: bool, back: str = "profile") -> InlineKeyboardMarkup:
-    toggle_cb = "profile:notify_all:toggle"
-    toggle_label = t("btn_notify_all_on", lang) if enabled else t("btn_notify_all_off", lang)
-    toggle_style = "success" if enabled else "danger"
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_btn(toggle_label, callback_data=toggle_cb, style=toggle_style, icon="bell")],
-            [_btn(t("btn_back", lang), callback_data=back, style="danger", icon="back")],
-        ]
-    )
-
-
 def broadcast_kb(
     lang: str,
     enabled: bool,
@@ -551,7 +539,7 @@ def profile_kb(
 
 
 def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMarkup:
-    is_super = role in {"super", None}
+    is_super = role == "super"
     rows = [
         [_btn(t("admin_btn_plugins", lang), callback_data="adm:section:plugins", icon="plugin")],
         [
@@ -569,12 +557,36 @@ def admin_menu_kb(role: str | None = None, lang: str = "ru") -> InlineKeyboardMa
             _btn(t("admin_btn_config", lang), callback_data="adm:config", icon="settings"),
         ])
     else:
-        rows.append([
-            _btn(t("admin_btn_stats", lang), callback_data="adm:stats", icon="stats"),
-            _btn(t("admin_btn_audit", lang), callback_data="adm:audit:all:0", icon="file"),
-        ])
-        rows.append([_btn(t("admin_btn_audit_log", lang), callback_data="adm:auditlog:0", icon="file")])
+        rows.append([_btn(t("admin_btn_stats", lang), callback_data="adm:stats", icon="stats")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_quiz_list_kb(items: List[Tuple[str, str]], page: int, total_pages: int,
+                       lang: str = "ru") -> InlineKeyboardMarkup:
+    rows = [[_btn(label, callback_data=f"adm:quiz:view:{qid}", icon="file")] for label, qid in items]
+    nav = []
+    if page > 0:
+        nav.append(_btn("<", callback_data=f"adm:quiz:{page - 1}", icon="back"))
+    if page < total_pages - 1:
+        nav.append(_btn(">", callback_data=f"adm:quiz:{page + 1}", icon="forward"))
+    if nav:
+        rows.append(nav)
+    rows.append([_btn(t("admin_quiz_btn_add", lang), callback_data="adm:quiz:add", icon="add", style="success")])
+    rows.append([_btn(t("admin_quiz_btn_restore", lang), callback_data="adm:quiz:restore", icon="updates")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def admin_quiz_item_kb(question_id: str, lang: str = "ru", edit_lang: str = "ru") -> InlineKeyboardMarkup:
+    other = "en" if edit_lang == "ru" else "ru"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [_btn(t("admin_quiz_btn_lang", lang, value=edit_lang.upper()),
+              callback_data=f"adm:quiz:lang:{question_id}:{other}", icon="settings")],
+        [_btn(t("admin_quiz_btn_text", lang), callback_data=f"adm:quiz:edit_text:{question_id}", icon="edit")],
+        [_btn(t("admin_quiz_btn_options", lang), callback_data=f"adm:quiz:edit_options:{question_id}", icon="edit")],
+        [_btn(t("btn_delete", lang), callback_data=f"adm:quiz:del:{question_id}", icon="delete", style="danger")],
+        [_btn(t("btn_back", lang), callback_data="adm:quiz:0", style="danger", icon="back")],
+    ])
 
 
 def admin_backup_kb(cfg: dict, lang: str = "ru") -> InlineKeyboardMarkup:
@@ -677,22 +689,23 @@ def admin_notification_settings_kb(prefs: dict[str, bool], labels: list[tuple[st
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_plugins_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+def admin_plugins_section_kb(lang: str = "ru", role: str | None = None) -> InlineKeyboardMarkup:
+    rows = [
         [
             _btn(t("admin_btn_requests", lang), callback_data="adm:queue:plugins:0", icon="requests"),
             _btn(t("admin_btn_updates", lang), callback_data="adm:section:updates", icon="updates"),
         ],
-        [
-            _btn(t("admin_btn_scheduled", lang), callback_data="adm:scheduled:0", icon="clock"),
-        ],
-        [
+        [_btn(t("admin_btn_scheduled", lang), callback_data="adm:scheduled:0", icon="clock")],
+    ]
+    if role == "super":
+        rows.append([
             _btn(t("admin_btn_edit_plugins", lang), callback_data="adm:edit_plugins", icon="edit"),
             _btn(t("admin_btn_link_author_search", lang), callback_data="adm:link_author", icon="link"),
-        ],
-        [_btn(t("admin_btn_audit", lang), callback_data="adm:audit:0", icon="file")],
-        [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
-    ])
+        ])
+        rows.append([_btn(t("admin_btn_audit", lang), callback_data="adm:audit:0", icon="file")])
+        rows.append([_btn(t("admin_btn_quiz", lang), callback_data="adm:quiz:0", icon="requests")])
+    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 _AUDIT_FILTER_BUTTONS = (
@@ -740,13 +753,6 @@ def admin_rejected_detail_kb(request_id: str, lang: str = "ru") -> InlineKeyboar
         [_btn(t("admin_rej_review", lang), callback_data=f"adm:review:{request_id}", icon="edit", style="success")],
         [_btn(t("admin_rej_delete", lang), callback_data=f"adm:rejdel:{request_id}", icon="delete", style="danger")],
         [_btn(t("btn_back", lang), callback_data="adm:audit:0", style="danger", icon="back")],
-    ])
-
-
-def admin_updates_section_kb(lang: str = "ru") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("admin_btn_updates", lang), callback_data="adm:queue:update:0", icon="updates")],
-        [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
 
@@ -1096,9 +1102,8 @@ def admin_reject_kb(request_id: str, lang: str = "ru", show_votes: bool = False)
     ])
 
 
-def _tpl_label(text: str, limit: int = 28) -> str:
-    text = " ".join(str(text or "").split())
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+def _tpl_label(text: str) -> str:
+    return " ".join(str(text or "").split())
 
 
 def admin_reject_templates_kb(

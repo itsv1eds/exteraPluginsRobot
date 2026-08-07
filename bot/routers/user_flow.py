@@ -42,7 +42,7 @@ from bot.keyboards import (
     submit_type_kb,
     user_plugins_kb,
 )
-from storage import load_stenka, save_stenka
+from storage import QUIZ_QUESTIONS_PER_RUN, build_quiz, load_stenka, save_stenka
 from bot.cache import get_admins, get_admins_plugins, get_categories
 from bot.services.submission import (
     PluginData,
@@ -1020,9 +1020,7 @@ async def on_submit(cb: CallbackQuery, state: FSMContext) -> None:
 
 
 async def _start_quiz(target, state: FSMContext, lang: str) -> None:
-    from bot.services.quiz import QUESTIONS_PER_QUIZ, build_quiz
-
-    quiz = build_quiz(lang, QUESTIONS_PER_QUIZ)
+    quiz = build_quiz(lang, QUIZ_QUESTIONS_PER_RUN)
     await state.set_state(UserFlow.passing_quiz)
     await state.update_data(quiz=quiz, quiz_index=0)
     await _render_quiz_question(target, state, lang)
@@ -1080,10 +1078,8 @@ async def on_submit_plugin(cb: CallbackQuery, state: FSMContext) -> None:
     if not await _ensure_not_banned(cb, state):
         return
     lang = await get_language(cb, state)
-    from bot.services.quiz import QUESTIONS_PER_QUIZ
-
     await state.set_state(UserFlow.passing_quiz)
-    await answer(cb, t("quiz_intro", lang, count=QUESTIONS_PER_QUIZ), quiz_start_kb(lang), "new")
+    await answer(cb, t("quiz_intro", lang, count=QUIZ_QUESTIONS_PER_RUN), quiz_start_kb(lang), "new")
     await ack(cb)
 
 

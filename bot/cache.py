@@ -103,7 +103,11 @@ def get_admins_super() -> set:
 
 
 def get_admins_regular() -> set:
-    return _get_admin_list("admins")
+    return (
+        _get_admin_list("admins")
+        | _get_admin_list("admins_plugins")
+        | _get_admin_list("admins_icons")
+    )
 
 
 def get_admins() -> set:

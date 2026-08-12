@@ -737,6 +737,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Напишите вопрос модерации по удалённому плагину «{name}».\nОтветит один из модераторов — вы увидите, кто именно.",
         "en": "Write your question about the removed plugin «{name}».\nA moderator will reply — you'll see who exactly.",
     },
+    "admin_btn_show_media": {"ru": "Показать медиа ({count})", "en": "Show media ({count})"},
+    "admin_media_empty": {"ru": "К заявке не приложено медиа", "en": "No media attached to this request"},
     "admin_request_comment_media": {
         "ru": "\n<b>Приложено медиа:</b> {count}",
         "en": "\n<b>Attached media:</b> {count}",

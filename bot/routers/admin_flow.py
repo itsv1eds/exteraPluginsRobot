@@ -370,8 +370,32 @@ def _publish_not_before_dt_utc(entry: dict | None) -> datetime | None:
     return _parse_dt_utc(payload.get("publish_not_before"))
 
 
+def _comment_media_of_entry(entry: dict) -> list:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    if not isinstance(payload, dict):
+        return []
+    return [m for m in (payload.get("comment_media") or []) if isinstance(m, dict) and m.get("file_id")]
+
+
+def _author_comment_block(entry: dict) -> str:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    if not isinstance(payload, dict):
+        return ""
+    parts: list[str] = []
+    comment = str(payload.get("admin_comment") or "").strip()
+    if comment:
+        parts.append(t("admin_request_comment", "ru", comment=strip_blockquote_tags(telegram_html(comment))))
+    media = [m for m in (payload.get("comment_media") or []) if isinstance(m, dict) and m.get("file_id")]
+    if media:
+        parts.append(t("admin_request_comment_media", "ru", count=len(media)))
+    return "\n".join(parts)
+
+
 def _review_meta_block(entry: dict) -> str:
     parts: list[str] = []
+    author_comment = _author_comment_block(entry)
+    if author_comment:
+        parts.append(author_comment)
     not_before = _publish_not_before_dt_utc(entry)
     if not_before:
         dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
@@ -1147,7 +1171,8 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
         if _is_super_admin(cb):
             kb = icon_draft_edit_kb(lang=lang)
         else:
-            kb = admin_review_kb(request_id, payload.get("user_id", 0), lang=lang, allow_publish=False)
+            kb = admin_review_kb(request_id, payload.get("user_id", 0), lang=lang, allow_publish=False,
+                                    media_count=len(_comment_media_of_entry(entry)))
         msg = await answer(cb, draft_text, kb, "iconpacks")
         if msg:
             await state.update_data(draft_message_id=msg.message_id)
@@ -1163,6 +1188,7 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
             payload.get("user_id", 0),
             lang=lang,
             allow_publish=_is_super_admin(cb),
+            media_count=len(_comment_media_of_entry(entry)),
         ),
         "new",
     )
@@ -4852,7 +4878,8 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
         if allow_publish:
             kb = icon_draft_edit_kb(lang=lang)
         else:
-            kb = admin_review_kb(request_id, payload.get("user_id", 0), lang=lang, allow_publish=False)
+            kb = admin_review_kb(request_id, payload.get("user_id", 0), lang=lang, allow_publish=False,
+                                    media_count=len(_comment_media_of_entry(entry)))
         await answer(cb, draft_text, kb, "iconpacks")
         try:
             await cb.answer()
@@ -4930,9 +4957,11 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
             submit_callback=f"adm:delete:{request_id}",
             lang=lang,
             allow_publish=allow_publish,
+            media_count=len(_comment_media_of_entry(entry)),
         )
     else:
-        kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish)
+        kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish,
+                             media_count=len(_comment_media_of_entry(entry)))
 
     text = f"{text}\n\n{_review_meta_block(entry)}"
     review_img = {"update": "update", "delete": "delete"}.get(entry.get("type"), "new")
@@ -5003,7 +5032,8 @@ async def on_admin_back_review(cb: CallbackQuery, state: FSMContext) -> None:
             allow_publish=_is_super_admin(cb),
         )
     else:
-        kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=_is_super_admin(cb))
+        kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=_is_super_admin(cb),
+                             media_count=len(_comment_media_of_entry(entry)))
 
     await cb.message.edit_reply_markup(reply_markup=kb)
     await ack(cb)
@@ -7194,3 +7224,21 @@ async def on_admin_quiz_add_value(message: Message, state: FSMContext) -> None:
         await message.answer(_tr(message, "admin_quiz_bad_id"), parse_mode=ParseMode.HTML)
         return
     await _render_quiz_item(message, state, lines[0])
+
+
+@router.callback_query(F.data.startswith("adm:media:"))
+async def on_admin_show_media(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin(cb):
+        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+        return
+    entry = get_request_by_id(cb.data.split(":", 2)[2])
+    media = _comment_media_of_entry(entry) if entry else []
+    if not media:
+        await cb.answer(_tr(cb, "admin_media_empty"), show_alert=True)
+        return
+    from bot.services.moderation import send_media_group
+
+    chat_id = cb.message.chat.id if cb.message else (cb.from_user.id if cb.from_user else 0)
+    thread_id = getattr(cb.message, "message_thread_id", None) if cb.message else None
+    await send_media_group(cb.bot, chat_id, media, topic_id=thread_id)
+    await ack(cb)

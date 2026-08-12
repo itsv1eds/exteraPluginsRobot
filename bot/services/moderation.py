@@ -10,7 +10,7 @@ from aiogram.enums import ParseMode
 from aiogram.types import FSInputFile
 
 from bot.cache import get_admins, get_config
-from bot.formatting import code_html, quote_html, strip_blockquote_tags, telegram_html
+from bot.formatting import code_html, quote_html, split_html, strip_blockquote_tags, telegram_html
 from bot.helpers import blank_and_delete, link_preview_options
 from bot.keyboards import moderation_appeal_kb, moderation_vote_kb
 from bot import limits
@@ -402,16 +402,25 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     topic_id = cfg["topic_id"]
     img_key = _forum_image_key(entry)
 
-    msg = await bot.send_message(
-        chat_id,
-        rendered_text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=reply_markup,
-        disable_web_page_preview=False,
-        link_preview_options=link_preview_options(img_key),
-        message_thread_id=topic_id,
-    )
-    sent_message_ids = [int(msg.message_id)]
+    parts = split_html(rendered_text, limits.MESSAGE_TEXT)
+    sent_message_ids: list[int] = []
+    msg = None
+    for index, part in enumerate(parts):
+        last = index == len(parts) - 1
+        msg = await bot.send_message(
+            chat_id,
+            part,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup if last else None,
+            disable_web_page_preview=False,
+            link_preview_options=link_preview_options(img_key) if last else None,
+            message_thread_id=topic_id,
+        )
+        sent_message_ids.append(int(msg.message_id))
+    if msg is None:
+        return
+    if len(parts) > 1:
+        logger.info("forum request sent in parts request_id=%s parts=%s", request_id, len(parts))
     file_msg = None
     try:
         if file_path and Path(file_path).exists():
@@ -443,6 +452,9 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
             "message_id": int(msg.message_id),
         }
         payload_update: dict[str, object] = {"moderation_forum_message": info}
+        head_ids = [i for i in sent_message_ids if i != int(msg.message_id)]
+        if head_ids:
+            info["extra_message_ids"] = head_ids
         if media_ids:
             info["comment_media_message_ids"] = media_ids
         if file_msg:
@@ -561,6 +573,13 @@ async def delete_forum_request_message(bot, entry: dict | None) -> None:
             message_id = int(info.get(key) or 0)
         except Exception:
             message_id = 0
+        if message_id and message_id not in message_ids:
+            message_ids.append(message_id)
+    for raw in (info.get("extra_message_ids") or []):
+        try:
+            message_id = int(raw or 0)
+        except Exception:
+            continue
         if message_id and message_id not in message_ids:
             message_ids.append(message_id)
 

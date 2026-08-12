@@ -221,3 +221,82 @@ def user_mention(user_id: object, username: object = None) -> str:
 
 def join_plain(values: Iterable[object], sep: str = " | ") -> str:
     return sep.join(plain_html(value) for value in values if str(value or "").strip())
+
+
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9-]+)((?:\s[^>]*)?)/?>")
+_VOID_TAGS = {"br", "hr", "img", "video", "audio", "tg-map", "input"}
+
+
+def utf16_length(value: str) -> int:
+    return len(value.encode("utf-16-le")) // 2
+
+
+def _open_tag_source(name: str, attrs: str) -> str:
+    return f"<{name}{attrs}>"
+
+
+def split_html(text: str, limit: int) -> list[str]:
+    text = str(text or "")
+    if utf16_length(text) <= limit:
+        return [text] if text else []
+
+    parts: list[str] = []
+    stack: list[tuple[str, str]] = []
+    chunk: list[str] = []
+    chunk_len = 0
+    break_at: int | None = None
+    break_stack: list[tuple[str, str]] = []
+
+    def opened_prefix(items: list[tuple[str, str]]) -> str:
+        return "".join(_open_tag_source(n, a) for n, a in items)
+
+    def closing_suffix(items: list[tuple[str, str]]) -> str:
+        return "".join(f"</{n}>" for n, _ in reversed(items))
+
+    def flush() -> None:
+        nonlocal chunk, chunk_len, break_at, break_stack
+        body = "".join(chunk)
+        if break_at is not None and 0 < break_at < len(body):
+            head, tail, at_cut = body[:break_at], body[break_at:], break_stack
+        else:
+            head, tail, at_cut = body, "", stack
+        parts.append(head + closing_suffix(at_cut))
+        carry = opened_prefix(at_cut) + tail.lstrip("\n")
+        chunk = [carry]
+        chunk_len = utf16_length(re.sub(r"<[^>]+>", "", carry))
+        break_at = None
+        break_stack = []
+
+    index = 0
+    while index < len(text):
+        match = _TAG_RE.match(text, index)
+        token = match.group(0) if match else text[index]
+        token_len = 0 if match else utf16_length(token)
+
+        if chunk_len + token_len > limit and chunk:
+            flush()
+
+        chunk.append(token)
+        chunk_len += token_len
+
+        if match:
+            closing, name, attrs = match.group(1), match.group(2).lower(), match.group(3)
+            if not closing and name not in _VOID_TAGS:
+                stack.append((name, attrs))
+            elif closing:
+                for position in range(len(stack) - 1, -1, -1):
+                    if stack[position][0] == name:
+                        del stack[position:]
+                        break
+            index = match.end()
+            continue
+
+        if token in "\n ":
+            break_at = sum(len(piece) for piece in chunk)
+            break_stack = list(stack)
+        index += 1
+
+    tail = "".join(chunk)
+    if re.sub(r"<[^>]+>", "", tail).strip():
+        parts.append(tail + closing_suffix(stack))
+    return parts

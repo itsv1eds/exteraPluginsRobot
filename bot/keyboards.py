@@ -988,6 +988,7 @@ def admin_review_kb(
     submit_callback: str | None = None,
     lang: str = "ru",
     allow_publish: bool = True,
+    media_count: int = 0,
 ) -> InlineKeyboardMarkup:
     vote_token = request_callback_token(request_id)
     submit_callback = submit_callback or f"adm:prepublish:{request_id}"
@@ -1002,6 +1003,9 @@ def admin_review_kb(
         _btn(t("btn_vote_yes", lang), callback_data=f"modvote:yes:{vote_token}", icon="yes", style="success"),
         _btn(t("btn_vote_no", lang), callback_data=f"modvote:no:{vote_token}", icon="no", style="danger"),
     ])
+    if media_count:
+        rows.append([_btn(t("admin_btn_show_media", lang, count=media_count),
+                          callback_data=f"adm:media:{request_id}", icon="art")])
     if user_id:
         rows.append([_btn(t("kb_admin_msg_author", lang), callback_data=f"adm:msgauthor:{request_id}", icon="edit")])
     rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])

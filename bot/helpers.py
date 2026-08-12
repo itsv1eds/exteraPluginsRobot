@@ -19,7 +19,7 @@ from aiogram.types import (
 from bot import limits
 from bot.cache import get_config
 from bot.context import get_lang
-from bot.formatting import telegram_html
+from bot.formatting import split_html, telegram_html
 from bot.texts import t
 from storage import DATA_DIR
 
@@ -220,6 +220,28 @@ def spawn_background(coro) -> None:
 
 
 BLANK_SETTLE_DELAY = 1.5
+
+
+async def send_in_parts(bot, chat_id: int, text: str, kb=None, *,
+                        disable_web_page_preview: bool = True,
+                        link_preview_options=None, **kwargs):
+    parts = split_html(text, limits.MESSAGE_TEXT)
+    if not parts:
+        return None
+    sent = None
+    for index, part in enumerate(parts):
+        last = index == len(parts) - 1
+        sent = await bot.send_message(
+            chat_id,
+            text=part,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb if last else None,
+            disable_web_page_preview=disable_web_page_preview,
+            link_preview_options=link_preview_options if last else None,
+            **kwargs,
+        )
+    logger.info("event=message.sent_in_parts chat_id=%s parts=%s", chat_id, len(parts))
+    return sent
 
 
 async def blank_and_delete(bot, chat_id: int, message_id: int) -> bool:
@@ -491,16 +513,12 @@ async def answer(
 
             if isinstance(exc, TelegramBadRequest) and _is_too_long_error(exc):
                 try:
-                    sent = await bot.send_message(
-                        chat_id,
-                        text=text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=kb,
+                    sent = await send_in_parts(
+                        bot, chat_id, text, kb,
                         disable_web_page_preview=disable_web_page_preview,
                         link_preview_options=preview_options,
                         **thread_kwargs,
                     )
-                    await target.answer(t("err_text_too_long_resent", get_lang(getattr(target.from_user, "id", None))), show_alert=True)
                     return sent
                 except Exception as send_exc:
                     logger.exception(
@@ -558,6 +576,13 @@ async def answer(
     try:
         return await _message_send(text)
     except TelegramBadRequest as exc:
+        if _is_too_long_error(exc):
+            return await send_in_parts(
+                bot, chat_id, text, kb,
+                disable_web_page_preview=disable_web_page_preview,
+                link_preview_options=preview_options,
+                **thread_kwargs,
+            )
         if not _is_entities_error(exc):
             raise
         repaired = telegram_html(text)

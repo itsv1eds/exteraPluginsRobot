@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
+from uuid import uuid4
 from typing import Dict, Optional
 
 from aiogram import Bot
@@ -173,8 +174,8 @@ async def try_react_pray(message: Message) -> None:
         return
 
 
-BLANK_CHAR = "\u17b5"
-BLANK_CANDIDATES = ("\u17b5", "\u3164", "\u2800", "\u2060", "\u200b", "\u00b7")
+BLANK_CHAR = "."
+BLANK_CANDIDATES = (BLANK_CHAR,)
 _EMPTY_TEXT_MARKERS = (
     "text must be non-empty",
     "message text is empty",
@@ -321,8 +322,12 @@ async def blank_and_delete_message(msg) -> bool:
 async def download_document(bot: Bot, file_id: str, dest_dir: Path) -> Path:
     file = await bot.get_file(file_id)
     name = Path(file.file_path).name if file.file_path else f"{file_id}.plugin"
-    dest = dest_dir / name
-    await bot.download_file(file.file_path, dest)
+    dest = dest_dir / f"{uuid4().hex}-{name}"
+    try:
+        await bot.download_file(file.file_path, dest)
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        raise
     return dest
 
 

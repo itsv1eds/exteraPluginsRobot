@@ -2,6 +2,7 @@ import asyncio
 import re
 import html
 import logging
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -51,7 +52,7 @@ from bot.services.submission import (
 )
 from bot.services.publish import build_channel_post
 from bot.services.admin_notifications import send_review_notifications
-from bot.services.moderation import can_accept_vote, can_vote_in_context, send_request_to_forum
+from bot.services.moderation import can_accept_vote, can_vote_in_context, delete_forum_request_message, send_request_to_forum
 from bot.services.versioning import get_min_supported_version, is_valid_version, meets_min_supported, normalize_version
 from bot.services.validation import (
     check_duplicate_pending,
@@ -91,6 +92,7 @@ logger = logging.getLogger(__name__)
 TZ_UTC_PLUS_5 = timezone(timedelta(hours=5))
 _COMMENT_MEDIA_GROUP_SETTLE_SECONDS = 0.8
 _comment_media_group_buffers: dict[tuple[int, int, str], dict[str, Any]] = {}
+_EDITABLE_REQUEST_STATUSES = {"pending", "rework"}
 
 
 @router.pre_checkout_query()
@@ -553,7 +555,8 @@ async def _sync_pending_update_request(state: FSMContext, request_id: str) -> No
     update_request_payload(request_id, payload)
 
 
-async def _notify_admins_request_updated(bot, entry: Dict[str, Any]) -> None:
+async def _notify_admins_request_updated(bot, entry: Dict[str, Any], note: str = "") -> bool:
+    previous = deepcopy(entry)
     payload = entry.get("payload", {})
     plugin = payload.get("plugin", {})
     user_id = payload.get("user_id", 0)
@@ -561,11 +564,19 @@ async def _notify_admins_request_updated(bot, entry: Dict[str, Any]) -> None:
     request_id = entry.get("id", "?")
     user_link = user_mention(user_id, username)
     name = plugin.get("name") or plugin.get("id") or "—"
-    text = t("admin_request_updated", "ru", id=request_id, name=name, user=user_link)
+    text = t("admin_request_updated", "ru", id=plain_html(request_id), name=plain_html(name), user=user_link)
+    if note:
+        text += t("admin_request_update_note", "ru", note=strip_blockquote_tags(telegram_html(note)))
     try:
         await send_request_to_forum(bot, entry, text, plugin.get("file_path"))
     except Exception:
         logger.warning("event=submission.notify_forum_update.failed request_id=%s", request_id, exc_info=True)
+        return False
+    try:
+        await delete_forum_request_message(bot, previous)
+    except Exception:
+        logger.warning("event=submission.update_old_forum_delete_failed request_id=%s", request_id, exc_info=True)
+    return True
 
 
 @router.message(CommandStart())
@@ -903,7 +914,7 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
     if not isinstance(req, dict):
         await cb.answer(t("not_found", lang), show_alert=True)
         return
-    if req.get("status") != "pending" or req.get("type") != "update":
+    if req.get("status") not in _EDITABLE_REQUEST_STATUSES or req.get("type") != "update":
         await cb.answer(t("not_found", lang), show_alert=True)
         return
     payload = req.get("payload", {})
@@ -1137,7 +1148,7 @@ async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
     if not isinstance(req, dict):
         await cb.answer(t("not_found", lang), show_alert=True)
         return
-    if req.get("status") != "pending" or req.get("type") != "new":
+    if req.get("status") not in _EDITABLE_REQUEST_STATUSES or req.get("type") != "new":
         await cb.answer(t("not_found", lang), show_alert=True)
         return
     payload = req.get("payload", {})
@@ -1483,12 +1494,14 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         if prefix == "pendupd":
             data = await state.get_data()
             req_id = str(data.get("pending_request_id") or "")
-            if req_id:
-                await _sync_pending_update_request(state, req_id)
-                entry = get_request_by_id(req_id)
-                if isinstance(entry, dict):
-                    spawn_background(_notify_admins_request_updated(cb.bot, entry))
-            await cb.answer(t("pending_saved", lang), show_alert=True)
+            if not req_id:
+                await cb.answer(t("not_found", lang), show_alert=True)
+                return
+            await _sync_pending_update_request(state, req_id)
+            await state.update_data(update_note_request_id=req_id)
+            await state.set_state(UserFlow.entering_update_note)
+            await answer(cb, t("ask_update_note", lang), cancel_kb(lang), "update")
+            await ack(cb)
             return
 
         data = await state.get_data()
@@ -1643,9 +1656,6 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
 
     await state.update_data(plugin=merged)
     await _sync_pending_update_request(state, req_id)
-    entry = get_request_by_id(req_id)
-    if isinstance(entry, dict):
-        spawn_background(_notify_admins_request_updated(message.bot, entry))
 
     await state.set_state(UserFlow.confirming_update)
     draft_text = _render_update_text(await state.get_data())
@@ -1969,9 +1979,6 @@ async def on_draft_not_before_value(message: Message, state: FSMContext) -> None
         req_id = str(data.get("pending_request_id") or "")
         if req_id:
             await _sync_pending_plugin_request(state, req_id)
-            entry = get_request_by_id(req_id)
-            if isinstance(entry, dict):
-                spawn_background(_notify_admins_request_updated(message.bot, entry))
     else:
         await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
 
@@ -2228,9 +2235,6 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
 
     await state.update_data(plugin=merged)
     await _sync_pending_plugin_request(state, req_id)
-    entry = get_request_by_id(req_id)
-    if isinstance(entry, dict):
-        spawn_background(_notify_admins_request_updated(message.bot, entry))
 
     await state.set_state(UserFlow.confirming_submission)
     draft_text = _render_draft_text(await state.get_data())
@@ -2267,12 +2271,14 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
     if prefix == "pend":
         data = await state.get_data()
         req_id = str(data.get("pending_request_id") or "")
-        if req_id:
-            await _sync_pending_plugin_request(state, req_id)
-            entry = get_request_by_id(req_id)
-            if isinstance(entry, dict):
-                spawn_background(_notify_admins_request_updated(cb.bot, entry))
-        await cb.answer(t("pending_saved", lang), show_alert=True)
+        if not req_id:
+            await cb.answer(t("not_found", lang), show_alert=True)
+            return
+        await _sync_pending_plugin_request(state, req_id)
+        await state.update_data(update_note_request_id=req_id)
+        await state.set_state(UserFlow.entering_update_note)
+        await answer(cb, t("ask_update_note", lang), cancel_kb(lang), "new")
+        await ack(cb)
         return
 
     data = await state.get_data()
@@ -2817,3 +2823,47 @@ async def on_resubmit_request(cb: CallbackQuery, state: FSMContext) -> None:
     except Exception:
         pass
     await ack(cb)
+
+
+@router.message(UserFlow.entering_update_note)
+async def on_update_note(message: Message, state: FSMContext) -> None:
+    if not await _ensure_not_banned(message, state):
+        return
+    lang = await get_language(message, state)
+    note = strip_blockquote_tags(telegram_html(message.html_text or message.text or "")).strip()
+    if not note:
+        await message.answer(t("need_text", lang), parse_mode=ParseMode.HTML)
+        return
+
+    data = await state.get_data()
+    req_id = str(data.get("update_note_request_id") or "")
+    entry = get_request_by_id(req_id) if req_id else None
+    if (
+        not entry
+        or entry.get("status") not in _EDITABLE_REQUEST_STATUSES
+        or entry.get("type") not in {"new", "update"}
+        or entry.get("payload", {}).get("user_id") != (message.from_user.id if message.from_user else None)
+    ):
+        await state.set_state(UserFlow.idle)
+        await message.answer(t("resubmit_expired", lang))
+        return
+
+    payload = entry.get("payload") or {}
+    if missing_draft_fields(payload):
+        await message.answer(t("resubmit_missing_fields", lang))
+        return
+    if entry.get("status") == "rework":
+        snapshot = str(payload.get("rework_fingerprint") or "")
+        if snapshot and submission_fingerprint(payload) == snapshot:
+            await message.answer(t("resubmit_no_changes", lang))
+            return
+        from bot.services.moderation import archive_votes_for_rework
+
+        archive_votes_for_rework(req_id)
+        update_request_status(req_id, "pending")
+    update_request_payload(req_id, {"last_update_note": note})
+    entry = get_request_by_id(req_id) or entry
+    await state.update_data(update_note_request_id=None)
+    await state.set_state(UserFlow.idle)
+    delivered = await _notify_admins_request_updated(message.bot, entry, note)
+    await message.answer(t("update_note_saved" if delivered else "update_note_delivery_failed", lang), parse_mode=ParseMode.HTML)

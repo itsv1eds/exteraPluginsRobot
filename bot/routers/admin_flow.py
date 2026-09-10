@@ -747,6 +747,11 @@ async def on_admin_menu(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
+def _is_resubmit_appeal(entry: dict) -> bool:
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    return bool(isinstance(payload, dict) and payload.get("is_appeal"))
+
+
 def _is_appeal(entry: dict) -> bool:
     return isinstance(entry, dict) and entry.get("type") == "unban_appeal"
 
@@ -1089,6 +1094,7 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
 
     viewer_id = cb.from_user.id if cb.from_user else 0
     requests.sort(key=lambda r: (
+        1 if _is_resubmit_appeal(r) else 0,
         1 if _has_my_vote(r, viewer_id) else 0,
         str(r.get("submitted_at") or ""),
     ))
@@ -4202,6 +4208,7 @@ async def on_admin_queue(cb: CallbackQuery, state: FSMContext) -> None:
 
     viewer_id = cb.from_user.id if cb.from_user else 0
     requests.sort(key=lambda r: (
+        1 if _is_resubmit_appeal(r) else 0,
         1 if _has_my_vote(r, viewer_id) else 0,
         str(r.get("submitted_at") or ""),
     ))
@@ -5096,6 +5103,7 @@ async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
                 "adm",
                 _tr(cb, "admin_submit_publish"),
                 include_back=True,
+                include_file=True,
                 include_schedule=include_schedule,
                 include_force_publish=include_force_publish,
                 checked_on_set=checked_on_set,
@@ -5219,6 +5227,16 @@ async def on_admin_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
 
     await _nav_push(state, f"adm:edit:{field}")
 
+    if field == "file":
+        data = await state.get_data()
+        if not data.get("current_request"):
+            await cb.answer(_tr(cb, "not_found"), show_alert=True)
+            return
+        await state.set_state(AdminFlow.uploading_request_file)
+        await answer(cb, _tr(cb, "admin_send_plugin_file"), admin_cancel_kb(lang), None)
+        await ack(cb)
+        return
+
     if field == "checked_on":
         data = await state.get_data()
         request_id = data.get("current_request")
@@ -5246,6 +5264,7 @@ async def on_admin_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
                 "adm",
                 _tr(cb, "admin_submit_publish"),
                 include_back=True,
+                include_file=True,
                 include_schedule=include_schedule,
                 checked_on_set=checked_on_set,
                 lang=lang,
@@ -5319,7 +5338,6 @@ async def on_admin_catalog_edit(cb: CallbackQuery, state: FSMContext) -> None:
         await answer(cb, _tr(cb, "admin_send_plugin_file"), admin_cancel_kb(lang), None)
         await ack(cb)
         return
-
     if field in {"description", "usage"}:
         await state.update_data(edit_field=field)
         await answer(cb, _tr(cb, "admin_choose_language"), draft_lang_kb("adm_edit", field, lang=lang), None)
@@ -5594,6 +5612,7 @@ async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
                 "adm",
                 _tr(cb, "admin_submit_publish"),
                 include_back=True,
+                include_file=True,
                 include_schedule=include_schedule,
                 lang=lang,
             ),
@@ -5603,7 +5622,7 @@ async def on_admin_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "adm:back")
 async def on_admin_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _is_super_admin(cb):
+    if not _ensure_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     prev = await _nav_prev(state)
@@ -7242,3 +7261,74 @@ async def on_admin_show_media(cb: CallbackQuery, state: FSMContext) -> None:
     thread_id = getattr(cb.message, "message_thread_id", None) if cb.message else None
     await send_media_group(cb.bot, chat_id, media, topic_id=thread_id)
     await ack(cb)
+
+
+@router.message(AdminFlow.uploading_request_file, F.document)
+async def on_admin_request_file_upload(message: Message, state: FSMContext) -> None:
+    if not _ensure_admin_role(message, "plugins"):
+        return
+    data = await state.get_data()
+    request_id = str(data.get("current_request") or "")
+    entry = get_request_by_id(request_id) if request_id else None
+    if not entry:
+        await state.set_state(AdminFlow.menu)
+        await answer(message, _tr(message, "not_found"), admin_menu_kb(_admin_menu_role(message), lang=_lang_for(message)), "admin")
+        return
+
+    from bot.services.submission import process_plugin_file
+    from bot.services.validation import validate_request_replacement
+    from bot.services.versioning import get_min_supported_version
+
+    if entry.get("status") not in {"pending", "rework"} or entry.get("type") not in {"new", "update"}:
+        await state.set_state(AdminFlow.menu)
+        await message.answer(_tr(message, "resubmit_expired"))
+        return
+
+    try:
+        parsed = await process_plugin_file(message.bot, message.document)
+    except ValueError as exc:
+        await message.answer(_tr(message, "admin_generic_error", error=plain_html(exc)), parse_mode=ParseMode.HTML)
+        return
+
+    current = get_request_by_id(request_id)
+    valid, error = validate_request_replacement(current or {}, parsed.to_dict())
+    if not valid:
+        Path(parsed.file_path).unlink(missing_ok=True)
+        await message.answer(_tr(
+            message, error, current=plain_html(parsed.min_version),
+            min=get_min_supported_version(),
+        ), parse_mode=ParseMode.HTML)
+        return
+    entry = current
+
+    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    plugin = dict(payload.get("plugin") or {})
+    plugin.update(parsed.to_dict())
+    update_request_payload(request_id, {"plugin": plugin, "file_replaced_by": _admin_actor_label(message)})
+    add_audit_event(
+        "moderation.file_replaced",
+        actor_id=_actor_id(message),
+        actor=_admin_actor_label(message),
+        request_id=request_id,
+        details={"file": plugin.get("file_path") or ""},
+    )
+    await state.set_state(AdminFlow.reviewing)
+    await answer(
+        message,
+        f"{_render_request_draft(get_request_by_id(request_id) or entry)}\n\n"
+        f"{_review_meta_block(get_request_by_id(request_id) or entry)}",
+        admin_review_kb(
+            request_id,
+            payload.get("user_id", 0),
+            lang=_lang_for(message),
+            allow_publish=_is_super_admin(message),
+            media_count=len(_comment_media_of_entry(entry)),
+        ),
+        "update" if entry.get("type") == "update" else "new",
+    )
+
+
+@router.message(AdminFlow.uploading_request_file)
+async def on_admin_request_file_invalid(message: Message, state: FSMContext) -> None:
+    if _ensure_admin_role(message, "plugins"):
+        await message.answer(_tr(message, "admin_send_plugin_file"), parse_mode=ParseMode.HTML)

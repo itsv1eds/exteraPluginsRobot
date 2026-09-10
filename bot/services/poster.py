@@ -819,7 +819,8 @@ def recover_stuck_posts() -> int:
     fixed = 0
     for post in doc.get("posts", []):
         if isinstance(post, dict) and post.get("status") == "sending":
-            post["status"] = "scheduled"
+            post["status"] = "failed"
+            post["error"] = "Delivery interrupted by restart. Check the channel before retrying; the post may already be published."
             fixed += 1
     if fixed:
         save_poster(doc)

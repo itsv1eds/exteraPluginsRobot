@@ -64,7 +64,6 @@ async def start_log_worker() -> None:
 
 
 async def stop_log_worker() -> None:
-    global _log_task, _log_queue
     if _log_queue:
         await _log_queue.put(None)
     if _log_task:
@@ -77,7 +76,6 @@ async def stop_log_worker() -> None:
 BOT_COMMANDS = {"start", "admin", "lang", "new", "settings", "unlockchat", "help", "cancel"}
 
 _COMMAND_RE = re.compile(r"^/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s|$)")
-_BARE_COMMAND_RE = re.compile(r"^/[A-Za-z0-9_]+(?:@[A-Za-z0-9_]+)?$")
 
 
 def parse_command(text: str | None) -> Optional[str]:
@@ -86,10 +84,6 @@ def parse_command(text: str | None) -> Optional[str]:
         return None
     name = match.group(1).lower()
     return name if name in BOT_COMMANDS else None
-
-
-def is_bare_command(text: str | None) -> bool:
-    return bool(_BARE_COMMAND_RE.match((text or "").strip()))
 
 
 class CommandStateResetMiddleware(BaseMiddleware):
@@ -122,10 +116,10 @@ class CommandStateResetMiddleware(BaseMiddleware):
                         )
                     except Exception:
                         logger.exception("command state reset failed")
-            elif in_input and is_bare_command(raw):
+            elif in_input and _COMMAND_RE.match((raw or "").strip()):
                 logger.info(
                     "event=command.ignored_in_input text=%s user_id=%s",
-                    str(raw)[:32], event.from_user.id if event.from_user else None,
+                    "command", event.from_user.id if event.from_user else None,
                 )
                 try:
                     from bot.context import get_lang
@@ -201,7 +195,23 @@ class UserActionLoggingMiddleware(BaseMiddleware):
         elif isinstance(event, Message):
             user = event.from_user
             username = f"@{user.username}" if user and user.username else ""
-            text = (event.text or event.caption or "")[:50]
-            return f"MSG uid={user.id if user else '?'} {username} chat={event.chat.id} text={text}"
+            content_type = event.content_type
+            return f"MSG uid={user.id if user else '?'} {username} chat={event.chat.id} type={content_type}"
         
         return None
+
+
+class RequestCallbackMiddleware(BaseMiddleware):
+
+    async def __call__(self, handler, event, data):
+        if isinstance(event, CallbackQuery) and event.data and event.data.startswith(("adm:", "usr:", "dlg:")):
+            from request_store import get_request_by_callback_token
+
+            parts = event.data.split(":")
+            for index, part in enumerate(parts):
+                if re.fullmatch(r"q[0-9a-f]{20}", part):
+                    entry = get_request_by_callback_token(part)
+                    if entry:
+                        parts[index] = str(entry["id"])
+            event = event.model_copy(update={"data": ":".join(parts)})
+        return await handler(event, data)

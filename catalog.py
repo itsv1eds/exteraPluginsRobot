@@ -45,7 +45,6 @@ OFFICIAL_SOURCE_USERNAME = "exteraPluginsSup"
 
 def invalidate_catalog_cache() -> None:
     global _plugins_cache, _icons_cache, _published_plugins_cache, _published_icons_cache
-    global _slug_index, _icon_slug_index
     _plugins_cache = None
     _icons_cache = None
     _published_plugins_cache = None
@@ -55,7 +54,7 @@ def invalidate_catalog_cache() -> None:
 
 
 def _load_plugins() -> List[CatalogEntry]:
-    global _plugins_cache, _slug_index
+    global _plugins_cache
     if _plugins_cache is not None:
         return _plugins_cache
     
@@ -72,7 +71,7 @@ def _load_plugins() -> List[CatalogEntry]:
 
 
 def _load_icons() -> List[CatalogEntry]:
-    global _icons_cache, _icon_slug_index
+    global _icons_cache
     if _icons_cache is not None:
         return _icons_cache
     

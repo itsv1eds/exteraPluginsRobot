@@ -34,6 +34,7 @@ class UserFlow(StatesGroup):
     entering_appeal = State()
     entering_moderation_contact = State()
     entering_request_appeal = State()
+    entering_update_note = State()
     passing_quiz = State()
 
     choosing_plugin_to_update = State()
@@ -68,6 +69,7 @@ class AdminFlow(StatesGroup):
     editing_catalog_plugin = State()
     editing_catalog_field = State()
     uploading_catalog_file = State()
+    uploading_request_file = State()
     entering_post = State()
     confirming_post = State()
     scheduling_post = State()

@@ -7,6 +7,7 @@ import sqlite3
 import threading
 import time
 from copy import deepcopy
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -294,7 +295,7 @@ def _ensure_db() -> None:
             return
 
         _ensure_data_dir()
-        with _connect() as conn:
+        with closing(_connect()) as conn, conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
 
@@ -890,7 +891,7 @@ _WRITERS = {
 
 def _read_sqlite_doc_sync(doc_key: str) -> Dict[str, Any]:
     _ensure_db()
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         data = _READERS[doc_key](conn)
         if _is_initialized(conn, doc_key):
             return data
@@ -906,7 +907,7 @@ def _write_sqlite_doc_sync(doc_key: str, data: Dict[str, Any]) -> None:
     _ensure_db()
     payload = dict(data) if isinstance(data, dict) else {}
     payload.setdefault("updated_at", _now_iso())
-    with _connect() as conn:
+    with closing(_connect()) as conn, conn:
         _WRITERS[doc_key](conn, payload)
         conn.commit()
 
@@ -1005,7 +1006,7 @@ def load_config() -> Dict[str, Any]:
 
     try:
         _ensure_db()
-        with _connect() as conn:
+        with closing(_connect()) as conn, conn:
             data = _get_meta_json(conn, _CONFIG_META_KEY, {})
     except Exception:
         data = {}
@@ -1018,7 +1019,7 @@ def load_config() -> Dict[str, Any]:
     data, changed = _normalize_config_defaults(data)
     if changed:
         try:
-            with _connect() as conn:
+            with closing(_connect()) as conn, conn:
                 _set_meta_json(conn, _CONFIG_META_KEY, data)
                 conn.commit()
         except Exception:
@@ -1038,7 +1039,7 @@ def _write_config_sync(payload: Dict[str, Any], generation: int) -> None:
         if generation < _config_generation:
             return
         _ensure_db()
-        with _connect() as conn:
+        with closing(_connect()) as conn, conn:
             _set_meta_json(conn, _CONFIG_META_KEY, payload)
             conn.commit()
         _config_persisted_generation = max(_config_persisted_generation, generation)

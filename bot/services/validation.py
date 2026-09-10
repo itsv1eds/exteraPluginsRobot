@@ -168,3 +168,19 @@ def block_plugin(plugin_id: str) -> bool:
     save_config(cfg)
     invalidate("config")
     return True
+
+
+def validate_request_replacement(entry: Dict[str, Any], plugin: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    if entry.get("status") not in {"pending", "rework"} or entry.get("type") not in {"new", "update"}:
+        return False, "resubmit_expired"
+    payload = entry.get("payload") or {}
+    expected_id = str((payload.get("plugin") or {}).get("id") or "").strip()
+    if not expected_id or str(plugin.get("id") or "").strip() != expected_id:
+        return False, "pending_file_id_mismatch"
+    if is_plugin_blocked(expected_id):
+        return False, "plugin_blocked"
+    if not meets_min_supported(plugin.get("min_version")):
+        return False, "min_version_too_low"
+    if entry.get("type") == "update":
+        return validate_update_submission(plugin, payload.get("old_plugin") or {})
+    return True, None

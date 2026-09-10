@@ -18,7 +18,7 @@ from catalog import invalidate_catalog_cache
 
 logger = logging.getLogger(__name__)
 
-BLANK_CHAR = "\u17b5"
+BLANK_CHAR = "."
 
 CONFIG = load_config()
 SYNC_CHANNEL_USERNAME = CONFIG.get("channel", {}).get("username", "exteraPluginsSup")

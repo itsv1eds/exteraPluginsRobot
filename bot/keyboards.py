@@ -135,7 +135,7 @@ def admin_scheduled_list_kb(
     back_callback: str = "adm:section:plugins",
     lang: str = "ru",
 ) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=label, callback_data=f"adm:review:{rid}")] for label, rid in items]
+    rows = [[InlineKeyboardButton(text=label, callback_data=f"adm:review:{request_callback_token(rid)}")] for label, rid in items]
 
     nav = []
     if page > 0:
@@ -152,12 +152,12 @@ def admin_scheduled_list_kb(
 def admin_scheduled_item_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text=t("btn_change_time", lang), callback_data=f"adm:scheduled:change_time:{request_id}"),
-            InlineKeyboardButton(text=t("btn_unschedule", lang), callback_data=f"adm:scheduled:unschedule:{request_id}"),
+            InlineKeyboardButton(text=t("btn_change_time", lang), callback_data=f"adm:scheduled:change_time:{request_callback_token(request_id)}"),
+            InlineKeyboardButton(text=t("btn_unschedule", lang), callback_data=f"adm:scheduled:unschedule:{request_callback_token(request_id)}"),
         ],
         [
-            InlineKeyboardButton(text=t("btn_move_up", lang), callback_data=f"adm:scheduled:up:{request_id}"),
-            InlineKeyboardButton(text=t("btn_move_down", lang), callback_data=f"adm:scheduled:down:{request_id}"),
+            InlineKeyboardButton(text=t("btn_move_up", lang), callback_data=f"adm:scheduled:up:{request_callback_token(request_id)}"),
+            InlineKeyboardButton(text=t("btn_move_down", lang), callback_data=f"adm:scheduled:down:{request_callback_token(request_id)}"),
         ],
         [InlineKeyboardButton(text=t("btn_back", lang), callback_data="adm:scheduled:back", style="danger")],
     ])
@@ -725,7 +725,7 @@ def admin_rejected_kb(
     status: str = "all",
     lang: str = "ru",
 ) -> InlineKeyboardMarkup:
-    rows = [[_btn(label, callback_data=f"adm:rejreq:{rid}", icon="file")] for label, rid in items]
+    rows = [[_btn(label, callback_data=f"adm:rejreq:{request_callback_token(rid)}", icon="file")] for label, rid in items]
 
     filters: List[InlineKeyboardButton] = []
     for key, text_key in _AUDIT_FILTER_BUTTONS:
@@ -750,8 +750,8 @@ def admin_rejected_kb(
 
 def admin_rejected_detail_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("admin_rej_review", lang), callback_data=f"adm:review:{request_id}", icon="edit", style="success")],
-        [_btn(t("admin_rej_delete", lang), callback_data=f"adm:rejdel:{request_id}", icon="delete", style="danger")],
+        [_btn(t("admin_rej_review", lang), callback_data=f"adm:review:{request_callback_token(request_id)}", icon="edit", style="success")],
+        [_btn(t("admin_rej_delete", lang), callback_data=f"adm:rejdel:{request_callback_token(request_id)}", icon="delete", style="danger")],
         [_btn(t("btn_back", lang), callback_data="adm:audit:0", style="danger", icon="back")],
     ])
 
@@ -764,7 +764,7 @@ def admin_updates_list_kb(
     lang: str = "ru",
 ) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
-    rows.extend([[InlineKeyboardButton(text=label, callback_data=f"adm:review:{rid}")] for label, rid in items])
+    rows.extend([[InlineKeyboardButton(text=label, callback_data=f"adm:review:{request_callback_token(rid)}")] for label, rid in items])
 
     nav: list[InlineKeyboardButton] = []
     if page > 0:
@@ -902,9 +902,9 @@ def admin_queue_kb(
         rid = item[1]
         icon = item[2] if len(item) > 2 else None
         if icon:
-            rows.append([_btn(label, callback_data=f"adm:review:{rid}", icon=icon)])
+            rows.append([_btn(label, callback_data=f"adm:review:{request_callback_token(rid)}", icon=icon)])
         else:
-            rows.append([InlineKeyboardButton(text=label, callback_data=f"adm:review:{rid}")])
+            rows.append([InlineKeyboardButton(text=label, callback_data=f"adm:review:{request_callback_token(rid)}")])
     
     nav = []
     if page > 0:
@@ -953,7 +953,7 @@ def admin_banned_kb(
 
 
 def admin_rejected_appeals_kb(items: List[Tuple[str, str]], page: int, total_pages: int, lang: str = "ru") -> InlineKeyboardMarkup:
-    rows = [[_btn(label, callback_data=f"adm:appd:{rid}", icon="profile")] for label, rid in items]
+    rows = [[_btn(label, callback_data=f"adm:appd:{request_callback_token(rid)}", icon="profile")] for label, rid in items]
     nav = []
     if page > 0:
         nav.append(_btn("<", callback_data=f"adm:rejapp:{page-1}", icon="back"))
@@ -967,8 +967,8 @@ def admin_rejected_appeals_kb(items: List[Tuple[str, str]], page: int, total_pag
 
 def admin_rejected_appeal_detail_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("kb_appeal_unban", lang), callback_data=f"adm:appunb:{request_id}", icon="yes", style="success")],
-        [_btn(t("admin_rej_delete", lang), callback_data=f"adm:appdel:{request_id}", icon="delete", style="danger")],
+        [_btn(t("kb_appeal_unban", lang), callback_data=f"adm:appunb:{request_callback_token(request_id)}", icon="yes", style="success")],
+        [_btn(t("admin_rej_delete", lang), callback_data=f"adm:appdel:{request_callback_token(request_id)}", icon="delete", style="danger")],
         [_btn(t("btn_back", lang), callback_data="adm:rejapp:0", style="danger", icon="back")],
     ])
 
@@ -991,13 +991,15 @@ def admin_review_kb(
     media_count: int = 0,
 ) -> InlineKeyboardMarkup:
     vote_token = request_callback_token(request_id)
-    submit_callback = submit_callback or f"adm:prepublish:{request_id}"
+    submit_callback = submit_callback or f"adm:prepublish:{vote_token}"
+    if request_id in submit_callback:
+        submit_callback = submit_callback.replace(request_id, vote_token)
     submit_label = submit_label or t("btn_publish", lang)
     rows: list[list[InlineKeyboardButton]] = []
     if allow_publish:
         rows.append([
             _btn(submit_label, callback_data=submit_callback, icon="yes"),
-            _btn(t("btn_more", lang), callback_data=f"adm:actions:{request_id}", icon="menu"),
+            _btn(t("btn_more", lang), callback_data=f"adm:actions:{request_callback_token(request_id)}", icon="menu"),
         ])
     rows.append([
         _btn(t("btn_vote_yes", lang), callback_data=f"modvote:yes:{vote_token}", icon="yes", style="success"),
@@ -1005,9 +1007,9 @@ def admin_review_kb(
     ])
     if media_count:
         rows.append([_btn(t("admin_btn_show_media", lang, count=media_count),
-                          callback_data=f"adm:media:{request_id}", icon="art")])
+                          callback_data=f"adm:media:{request_callback_token(request_id)}", icon="art")])
     if user_id:
-        rows.append([_btn(t("kb_admin_msg_author", lang), callback_data=f"adm:msgauthor:{request_id}", icon="edit")])
+        rows.append([_btn(t("kb_admin_msg_author", lang), callback_data=f"adm:msgauthor:{request_callback_token(request_id)}", icon="edit")])
     rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1025,17 +1027,17 @@ def moderation_vote_kb(request_id: str, yes_count: int = 0, no_count: int = 0, l
 def author_rejected_kb(request_id: str, can_appeal: bool = False, lang: str = "ru") -> InlineKeyboardMarkup:
     rows = []
     if can_appeal:
-        rows.append([_btn(t("kb_submit_appeal", lang), callback_data=f"usr:appeal:{request_id}",
+        rows.append([_btn(t("kb_submit_appeal", lang), callback_data=f"usr:appeal:{request_callback_token(request_id)}",
                           icon="updates", style="success")])
-    rows.append([_btn(t("kb_contact_moderation", lang), callback_data=f"usr:modcontact:{request_id}", icon="support")])
+    rows.append([_btn(t("kb_contact_moderation", lang), callback_data=f"usr:modcontact:{request_callback_token(request_id)}", icon="support")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def dialog_author_reply_kb(request_id: str, author_id: int, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("kb_dialog_reject_appeal", lang), callback_data=f"dlg:rejapp:{author_id}:{request_id}",
+        [_btn(t("kb_dialog_reject_appeal", lang), callback_data=f"dlg:rejapp:{author_id}:{request_callback_token(request_id)}",
               icon="no", style="danger")],
-        [_btn(t("kb_dialog_ban_author", lang), callback_data=f"dlg:ban:{author_id}:{request_id}",
+        [_btn(t("kb_dialog_ban_author", lang), callback_data=f"dlg:ban:{author_id}:{request_callback_token(request_id)}",
               icon="ban", style="danger")],
     ])
 
@@ -1082,9 +1084,9 @@ def moderation_inline_vote_url_kb(bot_username: str, request_id: str, yes_count:
 
 
 def admin_actions_kb(request_id: str, allow_ban: bool = False, lang: str = "ru") -> InlineKeyboardMarkup:
-    row = [_btn(t("kb_admin_reject", lang), callback_data=f"adm:reject:{request_id}", icon="no", style="danger")]
+    row = [_btn(t("kb_admin_reject", lang), callback_data=f"adm:reject:{request_callback_token(request_id)}", icon="no", style="danger")]
     if allow_ban:
-        row.append(_btn(t("kb_admin_ban", lang), callback_data=f"adm:ban:{request_id}", icon="ban", style="danger"))
+        row.append(_btn(t("kb_admin_ban", lang), callback_data=f"adm:ban:{request_callback_token(request_id)}", icon="ban", style="danger"))
     return InlineKeyboardMarkup(inline_keyboard=[
         row,
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
@@ -1095,13 +1097,13 @@ def admin_reject_kb(request_id: str, lang: str = "ru", show_votes: bool = False)
     votes_key = "kb_admin_reject_votes_on" if show_votes else "kb_admin_reject_votes_off"
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            _btn(t("kb_admin_reject_with_reason", lang), callback_data=f"adm:reject_comment:{request_id}", icon="edit"),
-            _btn(t("kb_admin_reject_silent", lang), callback_data=f"adm:reject_silent:{request_id}", icon="no"),
+            _btn(t("kb_admin_reject_with_reason", lang), callback_data=f"adm:reject_comment:{request_callback_token(request_id)}", icon="edit"),
+            _btn(t("kb_admin_reject_silent", lang), callback_data=f"adm:reject_silent:{request_callback_token(request_id)}", icon="no"),
         ],
-        [_btn(t("kb_admin_reject_template", lang), callback_data=f"adm:rejtpl_pick:{request_id}", icon="file")],
-        [_btn(t(votes_key, lang), callback_data=f"adm:reject_votes:{request_id}",
+        [_btn(t("kb_admin_reject_template", lang), callback_data=f"adm:rejtpl_pick:{request_callback_token(request_id)}", icon="file")],
+        [_btn(t(votes_key, lang), callback_data=f"adm:reject_votes:{request_callback_token(request_id)}",
               icon=("yes" if show_votes else "no"), style=("success" if show_votes else None))],
-        [_btn(t("kb_admin_rework", lang), callback_data=f"adm:rework:{request_id}", icon="updates")],
+        [_btn(t("kb_admin_rework", lang), callback_data=f"adm:rework:{request_callback_token(request_id)}", icon="updates")],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
 
@@ -1124,10 +1126,10 @@ def admin_reject_templates_kb(
         else:
             label = f"{idx + 1}. {_tpl_label(tpl)}"
             style = None
-        rows.append([_btn(label, callback_data=f"adm:rejtpl_t:{request_id}:{idx}", style=style)])
+        rows.append([_btn(label, callback_data=f"adm:rejtpl_t:{request_callback_token(request_id)}:{idx}", style=style)])
     if selected:
         rows.append([_btn(t("kb_admin_reject_tpl_send", lang),
-                          callback_data=f"adm:rejtpl_go:{request_id}", icon="yes", style="success")])
+                          callback_data=f"adm:rejtpl_go:{request_callback_token(request_id)}", icon="yes", style="success")])
     rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -1156,8 +1158,8 @@ def admin_confirm_delete_plugin_kb(slug: str, lang: str = "ru") -> InlineKeyboar
 
 def admin_confirm_ban_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("kb_admin_ban_delete", lang), callback_data=f"adm:ban_confirm:{request_id}:del", icon="delete", style="danger")],
-        [_btn(t("kb_admin_ban_keep", lang), callback_data=f"adm:ban_confirm:{request_id}:keep", icon="ban")],
+        [_btn(t("kb_admin_ban_delete", lang), callback_data=f"adm:ban_confirm:{request_callback_token(request_id)}:del", icon="delete", style="danger")],
+        [_btn(t("kb_admin_ban_keep", lang), callback_data=f"adm:ban_confirm:{request_callback_token(request_id)}:keep", icon="ban")],
         [_btn(t("btn_cancel", lang), callback_data="adm:cancel", icon="back")],
     ])
 
@@ -1170,10 +1172,10 @@ def moderation_appeal_kb(request_id: str, yes_count: int = 0, no_count: int = 0,
             _btn(f"{t('btn_vote_no', lang)} ({no_count})", callback_data=f"modvote:no:{vote_token}", icon="no", style="danger"),
         ],
         [
-            _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_id}", icon="yes", style="success"),
-            _btn(t("kb_appeal_deny", lang), callback_data=f"adm:appeal:deny:{request_id}", icon="no", style="danger"),
+            _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_callback_token(request_id)}", icon="yes", style="success"),
+            _btn(t("kb_appeal_deny", lang), callback_data=f"adm:appeal:deny:{request_callback_token(request_id)}", icon="no", style="danger"),
         ],
-        [_btn(t("kb_appeal_banfinal", lang), callback_data=f"adm:appeal:banfinal:{request_id}", icon="ban", style="danger")],
+        [_btn(t("kb_appeal_banfinal", lang), callback_data=f"adm:appeal:banfinal:{request_callback_token(request_id)}", icon="ban", style="danger")],
     ])
 
 
@@ -1186,10 +1188,10 @@ def banned_appeal_kb(lang: str = "ru") -> InlineKeyboardMarkup:
 def admin_appeal_decision_kb(request_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_id}", icon="yes", style="success"),
-            _btn(t("kb_appeal_deny", lang), callback_data=f"adm:appeal:deny:{request_id}", icon="no", style="danger"),
+            _btn(t("kb_appeal_unban", lang), callback_data=f"adm:appeal:approve:{request_callback_token(request_id)}", icon="yes", style="success"),
+            _btn(t("kb_appeal_deny", lang), callback_data=f"adm:appeal:deny:{request_callback_token(request_id)}", icon="no", style="danger"),
         ],
-        [_btn(t("kb_appeal_banfinal", lang), callback_data=f"adm:appeal:banfinal:{request_id}", icon="ban", style="danger")],
+        [_btn(t("kb_appeal_banfinal", lang), callback_data=f"adm:appeal:banfinal:{request_callback_token(request_id)}", icon="ban", style="danger")],
     ])
 
 

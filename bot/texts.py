@@ -1237,6 +1237,19 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Request deleted.",
     },
 
+    "ask_update_note": {
+        "ru": "Опишите, что вы изменили в заявке — это увидят модераторы.",
+        "en": "Describe what you changed in the request — moderators will see it.",
+    },
+    "update_note_delivery_failed": {
+        "ru": "Изменения сохранены, но отправить обновлённую заявку модерации не удалось. Попробуйте отправить её ещё раз из профиля.",
+        "en": "Changes were saved, but the updated request could not be sent to moderation. Try submitting it again from your profile.",
+    },
+    "update_note_saved": {"ru": "Изменения отправлены модерации", "en": "Changes sent to the moderators"},
+    "admin_request_update_note": {
+        "ru": "\n\n<b>Что изменил автор:</b>\n<blockquote expandable>{note}</blockquote>",
+        "en": "\n\n<b>What the author changed:</b>\n<blockquote expandable>{note}</blockquote>",
+    },
     "admin_request_updated": {
         "ru": "Обновили заявку\n\nID: <code>{id}</code>\nПлагин: <b>{name}</b>\nПользователь: {user}",
         "en": "Request updated\n\nID: <code>{id}</code>\nPlugin: <b>{name}</b>\nUser: {user}",

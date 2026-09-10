@@ -405,24 +405,24 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     parts = split_html(rendered_text, limits.MESSAGE_TEXT)
     sent_message_ids: list[int] = []
     msg = None
-    for index, part in enumerate(parts):
-        last = index == len(parts) - 1
-        msg = await bot.send_message(
-            chat_id,
-            part,
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup if last else None,
-            disable_web_page_preview=False,
-            link_preview_options=link_preview_options(img_key) if last else None,
-            message_thread_id=topic_id,
-        )
-        sent_message_ids.append(int(msg.message_id))
-    if msg is None:
-        return
-    if len(parts) > 1:
-        logger.info("forum request sent in parts request_id=%s parts=%s", request_id, len(parts))
     file_msg = None
     try:
+        for index, part in enumerate(parts):
+            last = index == len(parts) - 1
+            msg = await bot.send_message(
+                chat_id,
+                part,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup if last else None,
+                disable_web_page_preview=False,
+                link_preview_options=link_preview_options(img_key) if last else None,
+                message_thread_id=topic_id,
+            )
+            sent_message_ids.append(int(msg.message_id))
+        if msg is None:
+            return
+        if len(parts) > 1:
+            logger.info("forum request sent in parts request_id=%s parts=%s", request_id, len(parts))
         if file_path and Path(file_path).exists():
             file_msg = await bot.send_document(
                 chat_id,

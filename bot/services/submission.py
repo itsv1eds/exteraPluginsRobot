@@ -5,6 +5,7 @@ from uuid import uuid4
 from aiogram import Bot
 from aiogram.types import Document
 
+from bot import limits
 from plugin_parser import PluginParseError, parse_plugin_file
 from bot.helpers import download_document, get_uploads_subdir, sanitize_filename
 
@@ -49,6 +50,9 @@ async def process_plugin_file(bot: Bot, document: Document) -> PluginData:
     if not document.file_name or not document.file_name.endswith(".plugin"):
         raise ValueError("invalid_file")
 
+    if document.file_size and document.file_size > limits.PLUGIN_FILE_BYTES:
+        raise ValueError("file_too_large")
+
     uploads = get_uploads_subdir("plugins")
 
     try:
@@ -56,6 +60,10 @@ async def process_plugin_file(bot: Bot, document: Document) -> PluginData:
     except Exception as e:
         raise ValueError("download_error") from e
     
+    if temp_path.stat().st_size > limits.PLUGIN_FILE_BYTES:
+        temp_path.unlink(missing_ok=True)
+        raise ValueError("file_too_large")
+
     try:
         meta = parse_plugin_file(temp_path)
     except (FileNotFoundError, PluginParseError) as e:

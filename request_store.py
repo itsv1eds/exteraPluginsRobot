@@ -56,7 +56,7 @@ def _scheduled_time_is_due(value: Any, now: Optional[datetime] = None) -> bool:
 
 
 def _get_requests_list() -> List[Dict[str, Any]]:
-    global _requests_cache, _id_index, _route_tokens_ready, _route_tokens_source_id
+    global _requests_cache, _route_tokens_ready, _route_tokens_source_id
     
     if _requests_cache is not None:
         return _requests_cache
@@ -747,7 +747,6 @@ async def stop_scheduled_publish_worker() -> None:
 
 
 def delete_request(request_id: str) -> bool:
-    global _requests_cache
     
     requests = _get_requests_list()
     

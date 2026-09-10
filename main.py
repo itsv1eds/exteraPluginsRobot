@@ -8,6 +8,7 @@ from aiogram.enums import ParseMode
 from bot.cache import get_config, preload_cache
 from bot.routers import admin_flow, author_flow, catalog_flow, dialog_flow, user_flow, joinly_flow, moderation_flow, poster_flow
 from bot.middlewares import (
+    RequestCallbackMiddleware,
     CallbackAckWatchdogMiddleware,
     CommandStateResetMiddleware,
     UserActionLoggingMiddleware,
@@ -161,6 +162,7 @@ async def main() -> None:
     
     dp.update.middleware(UserActionLoggingMiddleware(enabled=True))
     dp.callback_query.outer_middleware(CallbackAckWatchdogMiddleware(delay=1.5))
+    dp.callback_query.outer_middleware(RequestCallbackMiddleware())
     dp.message.outer_middleware(CommandStateResetMiddleware())
     
     dp.include_router(dialog_flow.router)

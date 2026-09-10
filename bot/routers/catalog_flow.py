@@ -2,6 +2,7 @@ import html
 import logging
 import time
 import math
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List
@@ -425,6 +426,11 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
         lines.append(f"<b>{t('catalog_field_icons', lang)}:</b> {count}")
 
     return "\n".join(lines)
+
+
+def _inline_description(value: str) -> str:
+    text = strip_html(value).replace("\\n", " ")
+    return " ".join(re.sub(r"(?<![\w/:])/n", " ", text).split())
 
 
 def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin") -> str:
@@ -1609,7 +1615,7 @@ async def on_inline(query: InlineQuery) -> None:
         title = f"{category_fallback} {name}"
         preview_url = _plugin_category_preview_url(category_key)
         preview = _with_hidden_preview_link(build_inline_preview(plugin, lang, "plugin"), preview_url)
-        description = strip_html(locale.get("description") or t("catalog_inline_no_description", lang))
+        description = _inline_description(locale.get("description") or t("catalog_inline_no_description", lang))
         link = plugin.get("channel_message", {}).get("link")
         reply_markup = None
         deeplink = f"tg://resolve?domain={BOT_USERNAME}&start={slug}"

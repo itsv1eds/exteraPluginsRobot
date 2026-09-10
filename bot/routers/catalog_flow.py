@@ -407,7 +407,7 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
             count = len(icons)
 
     name = html.escape(str(name_value))
-    author_safe = html.escape(str(author))
+    author_safe = html.escape(str(author)).replace("\\n","\n")
     lines = [f"<b>{name}</b> by {author_safe}"]
 
     description = (locale.get("description") or "").strip()
@@ -447,7 +447,7 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
         or (raw_locale.get("author_channel") if isinstance(raw_locale, dict) else None)
         or t("catalog_inline_no_description", lang)
     )
-    author = html.escape(author_value)
+    author = html.escape(str(author_value).replace("\\n", "\n"))
     count = entry.get("count")
     if count is None:
         count = entry.get("icons_count") or entry.get("icon_count")

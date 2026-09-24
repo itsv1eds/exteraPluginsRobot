@@ -1,4 +1,3 @@
-import asyncio
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -7,8 +6,8 @@ from aiogram import Bot
 from aiogram.types import Document
 
 from bot import limits
-from plugin_parser import PluginParseError, parse_plugin_file
-from bot.helpers import download_document, get_uploads_subdir, sanitize_filename
+from plugin_parser import PluginParseError, parse_plugin_text
+from bot.helpers import get_uploads_subdir, sanitize_filename
 
 
 def _unique_upload_name(base_id: str, ext: str) -> str:
@@ -54,29 +53,31 @@ async def process_plugin_file(bot: Bot, document: Document) -> PluginData:
     if document.file_size and document.file_size > limits.PLUGIN_FILE_BYTES:
         raise ValueError("file_too_large")
 
-    uploads = get_uploads_subdir("plugins")
-
     try:
-        temp_path = await download_document(bot, document.file_id, uploads)
+        bio = await bot.download(document)
+        if bio is None:
+            raise ValueError("download_error")
+        content_bytes = bio.getvalue() if hasattr(bio, "getvalue") else bio.read()
     except Exception as e:
         raise ValueError("download_error") from e
-    
-    if temp_path.stat().st_size > limits.PLUGIN_FILE_BYTES:
-        temp_path.unlink(missing_ok=True)
+
+    if len(content_bytes) > limits.PLUGIN_FILE_BYTES:
         raise ValueError("file_too_large")
 
     try:
-        meta = await asyncio.to_thread(parse_plugin_file, temp_path)
-    except (FileNotFoundError, PluginParseError, UnicodeDecodeError) as e:
-        temp_path.unlink(missing_ok=True)
+        text = content_bytes.decode("utf-8")
+    except UnicodeDecodeError as e:
         raise ValueError(f"parse_error:{e}") from e
-    
+
+    try:
+        meta = parse_plugin_text(text)
+    except PluginParseError as e:
+        raise ValueError(f"parse_error:{e}") from e
+
+    uploads = get_uploads_subdir("plugins")
     final_name = _unique_upload_name(meta.id, "plugin")
     final_path = uploads / final_name
-
-    if temp_path != final_path:
-        final_path.unlink(missing_ok=True)
-        temp_path.rename(final_path)
+    final_path.write_bytes(content_bytes)
 
     return PluginData(
         id=meta.id,

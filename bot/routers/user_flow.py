@@ -1715,7 +1715,7 @@ async def on_file(message: Message, state: FSMContext) -> None:
         return
     lang = await get_language(message, state)
 
-    await try_react_pray(message)
+    spawn_background(try_react_pray(message))
     await state.update_data(author_message_id=message.message_id)
 
     if message.document and message.document.file_size:

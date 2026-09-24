@@ -863,7 +863,8 @@ async def on_settings(message: Message) -> None:
     await _ensure_post_guard_unlock(message.bot, message.chat.id)
     if not await _is_chat_admin(message):
         return
-    await try_react_pray(message)
+    from bot.helpers import spawn_background
+    spawn_background(try_react_pray(message))
     lang = _lang_for(message)
     current_welcome = _get_setting(message.chat.id, "WelcomeText")
     if not isinstance(current_welcome, str) or not current_welcome.strip():

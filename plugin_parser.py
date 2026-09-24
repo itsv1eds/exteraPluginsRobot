@@ -122,8 +122,18 @@ def _strip_literal(raw_value: str) -> Optional[str]:
     if not raw_value:
         return None
 
-    if raw_value[0] in {'"', "'"}:
+    raw_value = raw_value.strip()
+    if raw_value.startswith(('"""', "'''")):
+        quote = raw_value[:3]
+        if raw_value.endswith(quote) and len(raw_value) >= 6:
+            return raw_value[3:-3]
+        parts = raw_value.split(quote)
+        if len(parts) >= 3:
+            return parts[1]
+    elif raw_value.startswith(('"', "'")):
         quote = raw_value[0]
+        if raw_value.endswith(quote) and len(raw_value) >= 2:
+            return raw_value[1:-1]
         parts = raw_value.split(quote)
         if len(parts) >= 3:
             return parts[1]
@@ -134,7 +144,7 @@ def _strip_literal(raw_value: str) -> Optional[str]:
             return raw_value
     try:
         return json.loads(raw_value)
-    except json.JSONDecodeError:
+    except Exception:
         return raw_value.strip()
 
 

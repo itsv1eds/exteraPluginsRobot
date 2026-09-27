@@ -43,3 +43,39 @@ def get_dialog_ref(chat_id: int, message_id: int) -> Optional[Dict[str, Any]]:
     doc = load_dialogs()
     ref = doc.get("threads", {}).get(_key(chat_id, message_id))
     return ref if isinstance(ref, dict) else None
+
+
+def has_dialog_media(message) -> bool:
+    return any(getattr(message, kind, None) for kind in (
+        "photo", "video", "animation", "document", "audio", "voice", "video_note", "sticker",
+    ))
+
+
+async def send_dialog_message(bot, chat_id: int, text: str, *, source=None, reply_markup=None, **kwargs):
+    from aiogram.enums import ParseMode
+
+    delivered = await bot.send_message(
+        chat_id, text, parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True, reply_markup=reply_markup, **kwargs,
+    )
+    messages = [delivered]
+    if source is not None and has_dialog_media(source):
+        copy_kwargs = {
+            "reply_to_message_id": delivered.message_id,
+            "allow_sending_without_reply": True,
+        }
+        if kwargs.get("message_thread_id"):
+            copy_kwargs["message_thread_id"] = kwargs["message_thread_id"]
+        if any(getattr(source, kind, None) for kind in (
+            "photo", "video", "animation", "document", "audio", "voice",
+        )):
+            copy_kwargs["caption"] = ""
+        try:
+            copied = await source.copy_to(chat_id, **copy_kwargs)
+        except Exception:
+            from bot.helpers import blank_and_delete
+
+            await blank_and_delete(bot, chat_id, delivered.message_id)
+            raise
+        messages.append(copied)
+    return messages

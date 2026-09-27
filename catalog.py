@@ -71,7 +71,7 @@ def _load_plugins() -> List[CatalogEntry]:
             _slug_index[slug] = plugin
         if plugin.get("status") == "published" and not is_external_plugin(plugin):
             localized = plugin.get("ru") if isinstance(plugin.get("ru"), dict) else {}
-            plugin_id = str(localized.get("id") or plugin.get("slug") or "").strip().lower()
+            plugin_id = str(plugin.get("plugin_id") or localized.get("id") or plugin.get("slug") or "").strip().lower()
             if plugin_id:
                 _official_plugin_id_index.add(plugin_id)
     

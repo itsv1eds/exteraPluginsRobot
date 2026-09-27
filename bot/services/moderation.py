@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from bot.services.plugin_files import plugin_document
+from bot.services.request_context import archive_context
+
 import logging
 
 from datetime import datetime, timezone
@@ -7,7 +10,6 @@ from pathlib import Path
 from typing import Literal
 
 from aiogram.enums import ParseMode
-from aiogram.types import FSInputFile
 
 from bot.cache import get_admins, get_config
 from bot.formatting import code_html, quote_html, split_html, strip_blockquote_tags, telegram_html, user_mention
@@ -190,6 +192,9 @@ def forum_text_with_votes(entry: dict | None) -> str:
         base = f"<b>Заявка:</b> {telegram_html(request_title(entry))}"
 
     parts = [base]
+    archive = archive_context(payload.get("plugin") or {}) if isinstance(payload, dict) else ""
+    if archive and archive not in base:
+        parts.append(archive)
     if is_unban_appeal(entry):
         from bot.texts import t as _t
 
@@ -447,7 +452,7 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
         if file_path and Path(file_path).exists():
             file_msg = await bot.send_document(
                 chat_id,
-                FSInputFile(file_path),
+                plugin_document({**(entry.get("payload", {}).get("plugin") or {}), "file_path": file_path}),
                 message_thread_id=topic_id,
                 reply_to_message_id=msg.message_id,
                 allow_sending_without_reply=True,

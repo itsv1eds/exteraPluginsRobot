@@ -13,7 +13,7 @@ from bot.helpers import ack
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.menu_owner import MenuOwnerMiddleware
 from bot.services.audit import add_audit_event
-from bot.services.dialogs import register_dialog_message
+from bot.services.dialogs import register_dialog_message, has_dialog_media, send_dialog_message
 from bot.services.moderation import moderation_config, request_title
 from bot.states import UserFlow
 from bot.texts import t
@@ -32,7 +32,7 @@ def _question_plugin_context(entry: dict | None) -> tuple[str, str | None, str]:
     description = str(payload.get("description_ru") or payload.get("description_en") or plugin.get("description") or "—")
     file_path = str(plugin.get("file_path") or "").strip()
     file_id = str(payload.get("moderation_file_id") or plugin.get("file_id") or "").strip()
-    if file_path and Path(file_path).exists():
+    if file_path and Path(file_path).exists() and Path(file_path).stat().st_size <= 50 * 1024 * 1024:
         return description, file_path, ""
     return description, None, file_id
 
@@ -84,8 +84,8 @@ async def on_moderation_contact_text(message: Message, state: FSMContext) -> Non
         return
 
     lang = get_lang(user.id)
-    text = telegram_html(message.html_text or message.text or "").strip()
-    if not text:
+    text = telegram_html(message.html_text or message.html_caption or message.text or message.caption or "").strip()
+    if not text and not has_dialog_media(message):
         await message.answer(t("dialog_need_text", lang), disable_web_page_preview=True)
         return
 
@@ -96,15 +96,14 @@ async def on_moderation_contact_text(message: Message, state: FSMContext) -> Non
         name=plain_html(request_title(entry) if entry else slug),
         sender=user_mention(user.id, user.username),
         description=strip_blockquote_tags(telegram_html(description)),
-        text=strip_blockquote_tags(text),
+        text=strip_blockquote_tags(text) or t("dialog_media_body", "ru"),
     )
     try:
-        delivered = await message.bot.send_message(
-            cfg["chat_id"], body,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            message_thread_id=cfg["topic_id"],
+        delivered_messages = await send_dialog_message(
+            message.bot, cfg["chat_id"], body,
+            source=message, message_thread_id=cfg["topic_id"],
         )
+        delivered = delivered_messages[0]
     except Exception:
         logger.exception("event=modcontact.deliver_failed user_id=%s request_id=%s", user.id, request_id)
         await message.answer(t("modcontact_failed", lang), disable_web_page_preview=True)
@@ -130,11 +129,12 @@ async def on_moderation_contact_text(message: Message, state: FSMContext) -> Non
     except Exception:
         logger.exception("event=modcontact.plugin_file_failed user_id=%s request_id=%s", user.id, request_id)
 
-    register_dialog_message(
-        int(cfg["chat_id"]), int(delivered.message_id),
-        peer_id=int(user.id), request_id=str(request_id or slug),
-        author_id=int(user.id), admin_id=0,
-    )
+    for sent in delivered_messages:
+        register_dialog_message(
+            int(cfg["chat_id"]), int(sent.message_id),
+            peer_id=int(user.id), request_id=str(request_id or slug),
+            author_id=int(user.id), admin_id=0,
+        )
     try:
         from bot.services.admin_notifications import notify_admins_event
 

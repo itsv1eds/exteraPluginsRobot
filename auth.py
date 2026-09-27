@@ -1,117 +1,124 @@
+import argparse
 import asyncio
+import getpass
+import os
+from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
+
 from telethon import TelegramClient
 from telethon.errors import (
-    SessionPasswordNeededError,
+    AuthKeyDuplicatedError,
     FloodWaitError,
-    PhoneCodeInvalidError,
+    PasswordHashInvalidError,
     PhoneCodeExpiredError,
+    PhoneCodeInvalidError,
     PhoneNumberBannedError,
+    SessionPasswordNeededError,
 )
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from storage import load_config
 
-CONFIG = load_config()
+from storage import flush_all, load_config, save_config
 
-async def authorize():
-    userbot_config = CONFIG.get("userbot", {})
-    api_id = userbot_config.get("api_id")
-    api_hash = userbot_config.get("api_hash")
-   
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Авторизация отдельной сессии юзербота")
+    session = parser.add_mutually_exclusive_group()
+    session.add_argument("--new-session", action="store_true")
+    session.add_argument("--session-name")
+    parser.add_argument("--session-dir", type=Path)
+    parser.add_argument("--activate", action="store_true", help="Сохранить новую сессию в конфигурации после входа")
+    return parser.parse_args()
+
+
+async def authorize(args):
+    config = load_config()
+    userbot = config.get("userbot", {})
+    file_bot = config.get("bot_mtproto", {})
+    api_id = userbot.get("api_id") or file_bot.get("api_id")
+    api_hash = userbot.get("api_hash") or file_bot.get("api_hash")
     if not api_id or not api_hash:
-        print("❌ Не настроены api_id и api_hash в config.json")
-        print("   Создай новые на https://my.telegram.org → API development tools")
-        return
-   
-    session_dir = Path(str(userbot_config.get("session_dir") or "sessions").strip() or "sessions")
-    session_name = str(userbot_config.get("session_name") or "userbot_session").strip() or "userbot_session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-
-    session_path = str(session_dir / session_name)
-   
-    client = TelegramClient(session_path, int(api_id), str(api_hash))
-   
-    print("🔐 Авторизация юзербота...")
-    print()
-   
-    await client.connect()
-   
-    if await client.is_user_authorized():
-        me = await client.get_me()
-        print(f"✅ Уже авторизован как: {me.first_name} (@{me.username or 'нет'})")
-        await client.disconnect()
-        return
-   
-    phone = input("📱 Введите номер телефона (с +): ").strip()
-   
-    for attempt in range(1, 4):
-        try:
-            print(f"🔄 Попытка {attempt}/3: запрос кода...")
-            sent_code = await client.send_code_request(
-                phone,
-                force_sms=True,
-            )
-            print("✅ Запрос кода прошёл успешно!")
-            print(f"   Тип доставки: {sent_code.type}")
-            print(f"   Таймаут: {sent_code.timeout} секунд")
-            if sent_code.type == "app":
-                print("   → Код должен прийти в чат 'Telegram' в официальном приложении")
-            elif sent_code.type == "sms":
-                print("   → Код должен прийти по SMS")
-            break
-        except FloodWaitError as e:
-            print(f"⏳ FloodWait: нужно подождать {e.seconds} секунд")
-            await asyncio.sleep(e.seconds + 10)
-        except PhoneNumberBannedError:
-            print("🚫 Номер забанен в Telegram")
-            return
-        except Exception as e:
-            print(f"❌ Ошибка при запросе кода: {type(e).__name__}: {e}")
-            if attempt < 3:
-                print("   Повторяем через 30 секунд...")
-                await asyncio.sleep(30)
-            else:
-                print("   Слишком много ошибок. Проверь api_id/api_hash и номер.")
-                return
+        print("В конфигурации SQLite не настроены api_id и api_hash. Получите их на https://my.telegram.org.")
+        return False
+    session_dir = (args.session_dir or Path(userbot.get("session_dir") or "sessions")).resolve()
+    session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if args.new_session:
+        session_name = f"userbot_{datetime.now():%Y%m%d_%H%M%S}_{uuid4().hex[:8]}"
     else:
-        print("❌ Не удалось запросить код после 3 попыток.")
-        return
+        session_name = str(args.session_name or userbot.get("session_name") or "userbot_session")
+    if Path(session_name).name != session_name:
+        raise ValueError("Некорректное имя сессии")
+    session_path = session_dir / session_name
+    client = TelegramClient(str(session_path), int(api_id), str(api_hash))
+    try:
+        await asyncio.wait_for(client.connect(), timeout=30)
+        if not await client.is_user_authorized():
+            phone = input("Номер телефона (+...): ").strip()
+            sent_code = await client.send_code_request(phone)
+            print(f"Код запрошен. Способ доставки: {type(sent_code.type).__name__}.")
+            signed_in = False
+            for _ in range(5):
+                code = getpass.getpass("Код Telegram (ввод скрыт): ").strip().replace(" ", "")
+                try:
+                    await client.sign_in(phone=phone, code=code, phone_code_hash=sent_code.phone_code_hash)
+                    signed_in = True
+                    break
+                except PhoneCodeInvalidError:
+                    print("Неверный код. Попробуйте ещё раз.")
+                except SessionPasswordNeededError:
+                    for _ in range(3):
+                        password = getpass.getpass("Пароль двухэтапной защиты (ввод скрыт): ")
+                        try:
+                            await client.sign_in(password=password)
+                            signed_in = True
+                            break
+                        except PasswordHashInvalidError:
+                            print("Неверный пароль.")
+                    break
+            if not signed_in:
+                print("Вход не завершён. Конфигурация не изменена.")
+                return False
+        me = await client.get_me()
+        if me is None or me.bot:
+            print("Нужна сессия пользовательского аккаунта Telegram.")
+            return False
+        print(f"Вход выполнен: @{me.username}" if me.username else f"Вход выполнен: {me.first_name}")
+        print(f"Сессия: {session_path}.session")
+        if args.activate:
+            config["userbot"] = {
+                **userbot,
+                "api_id": int(api_id),
+                "api_hash": str(api_hash),
+                "session_dir": str(session_dir),
+                "session_name": session_name,
+            }
+            save_config(config)
+            await flush_all()
+            print("Новая сессия сохранена в конфигурации. Теперь перезапустите бота.")
+        return True
+    except AuthKeyDuplicatedError:
+        print("Ключ сессии отозван. Запустите вход с --new-session. Не копируйте сессию между работающими экземплярами.")
+    except PhoneCodeExpiredError:
+        print("Код истёк. Запустите авторизацию заново.")
+    except PhoneNumberBannedError:
+        print("Telegram заблокировал вход для этого номера.")
+    except FloodWaitError as exc:
+        print(f"Telegram требует подождать {exc.seconds} секунд перед следующей попыткой.")
+    finally:
+        await client.disconnect()
+        for suffix in (".session", ".session-journal"):
+            path = Path(str(session_path) + suffix)
+            if path.exists():
+                os.chmod(path, 0o600)
+    return False
 
-    print()
-    print("📨 Ожидаем код...")
-   
-    for _ in range(5):
-        code = input("🔢 Введите код из Telegram (или SMS): ").strip()
-       
-        try:
-            await client.sign_in(phone, code)
-            break
-        except SessionPasswordNeededError:
-            password = input("🔑 Введите 2FA пароль: ").strip()
-            await client.sign_in(password=password)
-            break
-        except PhoneCodeInvalidError:
-            print("❌ Неверный код. Попробуйте ещё раз.")
-        except PhoneCodeExpiredError:
-            print("❌ Код истёк. Запустите скрипт заново.")
-            return
-        except FloodWaitError as e:
-            print(f"⏳ FloodWait при входе: подождите {e.seconds} секунд")
-            await asyncio.sleep(e.seconds + 10)
-        except Exception as e:
-            print(f"❌ Ошибка при входе: {type(e).__name__}: {e}")
-            return
-   
-    me = await client.get_me()
-    print()
-    print(f"✅ Авторизован как: {me.first_name} (@{me.username or 'нет'})")
-    print(f"   ID: {me.id}")
-    print()
-    print("Сессия сохранена в sessions/userbot_session.session")
-    print("   Если код всё равно не приходит — создай НОВЫЕ api_id и api_hash!")
-   
-    await client.disconnect()
 
 if __name__ == "__main__":
-    asyncio.run(authorize())
+    try:
+        success = asyncio.run(authorize(parse_args()))
+    except (KeyboardInterrupt, EOFError):
+        print("\nАвторизация отменена.")
+        success = False
+    except Exception as exc:
+        print(f"Авторизация не завершена: {type(exc).__name__}. Конфигурация не изменена.")
+        success = False
+    raise SystemExit(0 if success else 1)

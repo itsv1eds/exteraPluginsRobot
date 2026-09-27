@@ -23,6 +23,7 @@ from aiogram.types import (
 
 from bot.context import get_language, get_lang
 from bot.callback_tokens import decode_slug, encode_slug
+from plugin_formats import plugin_file_limit
 from bot import limits
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import ack, answer, extract_html_text, spawn_background, try_react_pray
@@ -45,6 +46,7 @@ from bot.keyboards import (
 )
 from storage import QUIZ_QUESTIONS_PER_RUN, build_quiz, load_stenka, save_stenka
 from bot.cache import get_admins, get_admins_plugins, get_categories
+from bot.services.request_context import author_context
 from bot.services.submission import (
     PluginData,
     build_submission_payload,
@@ -239,6 +241,9 @@ def _render_draft_text(data: Dict[str, Any]) -> str:
         "description_en": data.get("description_en") or fallback_desc,
     }
     text = build_channel_post({"payload": payload})
+    context = author_context(data, data.get("lang") or "ru")
+    if context:
+        text += "\n\n" + context
     not_before = _format_publish_not_before(data.get("publish_not_before"))
     if not_before:
         text += f"\n\n<b>Не публиковать раньше:</b> <code>{not_before} UTC+5</code>"
@@ -255,7 +260,9 @@ def _render_update_text(data: Dict[str, Any]) -> str:
         "usage_en": data.get("usage_en"),
         "category_key": data.get("category_key"),
     }
-    return build_channel_post({"payload": payload})
+    text = build_channel_post({"payload": payload})
+    context = author_context(data, data.get("lang") or "ru")
+    return text + ("\n\n" + context if context else "")
 
 
 async def _render_home(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
@@ -951,6 +958,10 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
         usage_en=payload.get("usage_en", ""),
         category_key=payload.get("category_key", ""),
         category_label=payload.get("category_label", ""),
+        admin_comment=payload.get("admin_comment", ""),
+        comment_media=payload.get("comment_media", []),
+        is_appeal=payload.get("is_appeal", False),
+        appeal_comment=payload.get("appeal_comment", ""),
         draft_prefix="pendupd",
         pending_request_id=request_id,
         edit_field=None,
@@ -1183,6 +1194,10 @@ async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
         category_key=payload.get("category_key", ""),
         category_label=payload.get("category_label", ""),
         publish_not_before=payload.get("publish_not_before"),
+        admin_comment=payload.get("admin_comment", ""),
+        comment_media=payload.get("comment_media", []),
+        is_appeal=payload.get("is_appeal", False),
+        appeal_comment=payload.get("appeal_comment", ""),
         draft_prefix="pend",
         pending_request_id=request_id,
         edit_field=None,
@@ -1284,7 +1299,7 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
     is_admin = message.from_user.id in get_admins_plugins() if message.from_user else False
 
     if message.document and message.document.file_size:
-        if message.document.file_size > limits.PLUGIN_FILE_BYTES:
+        if message.document.file_size > plugin_file_limit(message.document.file_name or ""):
             await message.answer(t("file_too_large", lang))
             return
 
@@ -1641,7 +1656,7 @@ async def on_pending_update_file(message: Message, state: FSMContext) -> None:
     old_version = data.get("old_version", "")
 
     if message.document and message.document.file_size:
-        if message.document.file_size > limits.PLUGIN_FILE_BYTES:
+        if message.document.file_size > plugin_file_limit(message.document.file_name or ""):
             await message.answer(t("file_too_large", lang))
             return
 
@@ -1719,7 +1734,7 @@ async def on_file(message: Message, state: FSMContext) -> None:
     await state.update_data(author_message_id=message.message_id)
 
     if message.document and message.document.file_size:
-        if message.document.file_size > limits.PLUGIN_FILE_BYTES:
+        if message.document.file_size > plugin_file_limit(message.document.file_name or ""):
             await message.answer(t("file_too_large", lang))
             return
 
@@ -2227,7 +2242,7 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
     expected_id = (existing.get("id") or "").strip()
 
     if message.document and message.document.file_size:
-        if message.document.file_size > limits.PLUGIN_FILE_BYTES:
+        if message.document.file_size > plugin_file_limit(message.document.file_name or ""):
             await message.answer(t("file_too_large", lang))
             return
 
@@ -2335,6 +2350,9 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         has_settings=plugin_dict.get("has_ui_settings", False),
         file_path=plugin_dict.get("file_path", ""),
         file_id=plugin_dict.get("file_id"),
+        file_extension=plugin_dict.get("file_extension", "plugin"),
+        app_version=plugin_dict.get("app_version", ""),
+        metadata={k: plugin_dict[k] for k in ("sdk_version", "elyx_version", "requirements", "requires", "localized", "compiled", "main", "metainfo", "icon", "link") if k in plugin_dict},
     )
 
     payload = build_submission_payload(

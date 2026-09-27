@@ -4,10 +4,11 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
+from plugin_formats import plugin_extension
 from typing import Any, Dict, List, Optional
 
 from telethon import TelegramClient, __version__ as TELETHON_VERSION, utils
-from telethon.errors.rpcerrorlist import MessageIdInvalidError, MessageNotModifiedError
+from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError, MessageIdInvalidError, MessageNotModifiedError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from telethon.tl.types import DocumentAttributeFilename, Message, MessageEntityBlockquote
 from telethon.extensions import html as telethon_html
@@ -47,17 +48,18 @@ def _invalidate_all() -> None:
 OPERATION_TIMEOUT = 180.0
 
 
-async def _guard(coro, what: str):
+async def _guard(coro, what: str, timeout: float = OPERATION_TIMEOUT):
     try:
-        return await asyncio.wait_for(coro, timeout=OPERATION_TIMEOUT)
+        return await asyncio.wait_for(coro, timeout=timeout)
     except asyncio.TimeoutError as exc:
-        logger.error("Userbot operation timed out after %.0fs: %s", OPERATION_TIMEOUT, what)
+        logger.error("Userbot operation timed out after %.0fs: %s", timeout, what)
         raise TimeoutError(f"userbot {what} timed out") from exc
 
 
 class UserbotClient:
     _instance: Optional["UserbotClient"] = None
     _lock = asyncio.Lock()
+    _missing_credentials_logged = False
     
     def __init__(
         self,
@@ -100,7 +102,9 @@ class UserbotClient:
                 api_hash = userbot_config.get("api_hash")
                 
                 if not api_id or not api_hash:
-                    logger.warning("Userbot credentials not configured")
+                    if not cls._missing_credentials_logged:
+                        logger.warning("Userbot credentials not configured")
+                        cls._missing_credentials_logged = True
                     return None
 
                 session_dir = str(userbot_config.get("session_dir") or "sessions").strip() or "sessions"
@@ -110,7 +114,10 @@ class UserbotClient:
                     session_name=session_name, session_dir=Path(session_dir),
                 )
             
-            if not cls._instance._started:
+            if cls._instance._disabled:
+                return None
+            if not cls._instance._started or not cls._instance.client.is_connected():
+                cls._instance._started = False
                 started = await cls._instance.start()
                 if not started:
                     return None
@@ -124,7 +131,15 @@ class UserbotClient:
             return False
 
         await self.client.connect()
-        if not await self.client.is_user_authorized():
+        try:
+            authorized = await self.client.is_user_authorized()
+        except AuthKeyDuplicatedError:
+            self._disabled = True
+            self._started = False
+            await self.client.disconnect()
+            logger.error("Userbot session revoked after use from multiple IP addresses. Create a new session for this host.")
+            return False
+        if not authorized:
             self._disabled = True
             await self.client.disconnect()
             logger.warning(
@@ -276,36 +291,42 @@ class UserbotClient:
     def _format_text_for_telegram(self, text: str) -> tuple[str, list]:
         return self._parse_html(text or "")
     
+    async def send_plugin_file(self, chat_ref, text: str, file_path: str, download_name: str):
+        entity = await self.client.get_entity(chat_ref)
+        parsed_text, entities = self._format_text_for_telegram(text)
+        me = await self.client.get_me()
+        caption_limit = 4096 if getattr(me, "premium", False) else 1024
+        split = len(parsed_text.encode("utf-16-le")) // 2 > caption_limit
+        message = await _guard(self.client.send_file(
+            entity, file=file_path, caption="" if split else parsed_text,
+            formatting_entities=[] if split else entities,
+            attributes=[DocumentAttributeFilename(download_name)], force_document=True,
+        ), "send_plugin_file", timeout=600)
+        if split:
+            try:
+                await _guard(self.client.send_message(
+                    entity, parsed_text, formatting_entities=entities,
+                    reply_to=message.id, link_preview=False,
+                ), "send_plugin_description")
+            except BaseException:
+                await self.client.delete_messages(entity, [message.id])
+                raise
+        return message
+
     async def publish_plugin(
-        self,
-        text: str,
-        file_path: Optional[str] = None,
+        self, text: str, file_path: Optional[str] = None, download_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
-        parsed_text, entities = self._format_text_for_telegram(text)
-
         if file_path and Path(file_path).exists():
-            message = await _guard(self.client.send_file(
-                entity,
-                file=file_path,
-                caption=parsed_text,
-                formatting_entities=entities,
-            ), "send_file")
+            message = await self.send_plugin_file(entity, text, file_path, download_name or Path(file_path).name)
         else:
+            parsed_text, entities = self._format_text_for_telegram(text)
             message = await _guard(self.client.send_message(
-                entity,
-                parsed_text,
-                formatting_entities=entities,
-                link_preview=False,
+                entity, parsed_text, formatting_entities=entities, link_preview=False,
             ), "send_message")
-        
         channel_username = CONFIG.get("publish_channel", "xzcvzxa")
-        
-        return {
-            "message_id": message.id,
-            "chat_id": entity.id,
-            "link": f"https://t.me/{channel_username}/{message.id}",
-        }
+        return {"message_id": message.id, "chat_id": entity.id,
+                "link": f"https://t.me/{channel_username}/{message.id}"}
 
 
     async def publish_post(self, text: str) -> Dict[str, Any]:
@@ -392,6 +413,7 @@ class UserbotClient:
         text: str,
         schedule_date: datetime,
         file_path: Optional[str] = None,
+        download_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
         parsed_text, entities = self._format_text_for_telegram(text)
@@ -403,7 +425,9 @@ class UserbotClient:
                 caption=parsed_text,
                 formatting_entities=entities,
                 schedule=schedule_date,
-            ), "send_file")
+                attributes=[DocumentAttributeFilename(download_name or Path(file_path).name)],
+                force_document=True,
+            ), "send_file", timeout=600)
         else:
             message = await _guard(self.client.send_message(
                 entity,
@@ -511,14 +535,14 @@ class UserbotClient:
                     file=file_path,
                     attributes=attributes,
                     formatting_entities=entities,
-                ), "edit_message")
+                ), "edit_message", timeout=600)
             else:
                 await _guard(self.client.edit_message(
                     entity,
                     message_id,
                     parsed_text,
                     formatting_entities=entities,
-                ), "edit_message")
+                ), "edit_message", timeout=600)
 
             channel_username = CONFIG.get("publish_channel", "xzcvzxa")
 
@@ -706,6 +730,7 @@ class UserbotClient:
             "file_id": str(message.document.id),
             "access_hash": str(message.document.access_hash),
             "file_name": self._get_file_name(message),
+            "file_extension": plugin_extension(self._get_file_name(message) or ""),
             "file_size": message.document.size,
             "message_id": message.id,
         }
@@ -715,7 +740,7 @@ class UserbotClient:
         if not file_name:
             return None
         fn_lower = file_name.lower()
-        if fn_lower.endswith(".plugin"):
+        if plugin_extension(fn_lower):
             return "plugin"
         elif fn_lower.endswith(".icons"):
             return "icon"
@@ -760,6 +785,7 @@ class UserbotClient:
             file_info = self._get_file_info(file_msg)
             if file_info:
                 entry["file"] = file_info
+                entry["format"] = "elyx" if file_info.get("file_extension") in ("elyx", "eaf", "elyx.zip", "eaf.zip") else "python"
         
         result_type = "plugin" if parsed.is_plugin else "icon"
         return entry, result_type, main_msg.id
@@ -783,6 +809,7 @@ class UserbotClient:
         file_info = self._get_file_info(msg)
         if file_info:
             entry["file"] = file_info
+            entry["format"] = "elyx" if file_info.get("file_extension") in ("elyx", "eaf", "elyx.zip", "eaf.zip") else "python"
         
         result_type = "plugin" if parsed.is_plugin else "icon"
         return entry, result_type

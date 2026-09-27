@@ -1,3 +1,4 @@
+from plugin_formats import plugin_extension
 import asyncio
 import hashlib
 import logging
@@ -515,12 +516,14 @@ def cleanup_orphan_plugin_files() -> int:
             if isinstance(item, dict) and item.get("file_path"):
                 active_paths.add(Path(item["file_path"]).resolve())
     removed = 0
-    for file_path in attachments_dir.rglob("*.plugin"):
+    for file_path in attachments_dir.rglob("*"):
+        if not file_path.is_file() or not plugin_extension(file_path):
+            continue
         if file_path.resolve() not in active_paths:
             file_path.unlink(missing_ok=True)
             removed += 1
     if removed:
-        logger.info("Removed %s orphan .plugin files", removed)
+        logger.info("Removed %s orphan plugin files", removed)
     return removed
 
 

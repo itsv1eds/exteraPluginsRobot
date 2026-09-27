@@ -23,7 +23,10 @@ services:
     command: ["python", "auth.py"]
     stdin_open: true
     tty: true
+    environment:
+      DATA_DIR: /app/data/data
     network_mode: bridge
     volumes:
       - ./config.json:/app/config.json
+      - ./data:/app/data
       - ./sessions:/app/sessions

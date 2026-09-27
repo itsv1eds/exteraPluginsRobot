@@ -124,7 +124,7 @@ def _pending_vote_remaining(item: dict | None, now: datetime | None = None) -> f
 
 
 def _pending_vote_is_active(item: dict | None, now: datetime | None = None) -> bool:
-    return _pending_vote_remaining(item, now) > 0
+    return bool(isinstance(item, dict) and item.get("reason_in_progress")) or _pending_vote_remaining(item, now) > 0
 
 
 async def _leave_vote_reason_state(state: FSMContext) -> None:
@@ -143,6 +143,8 @@ def _cancel_prompt_timer(request_id: str, user_id: int) -> None:
 def _schedule_prompt_expiry(bot, request_id: str, user_id: int) -> None:
     _cancel_prompt_timer(request_id, user_id)
     item = get_pending_vote(request_id, user_id)
+    if item and item.get("reason_in_progress"):
+        return
     remaining = _pending_vote_remaining(item)
     if remaining <= 0:
         return
@@ -480,6 +482,8 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
         if not templates:
             await cb.answer(t("admin_rejtpl_empty", lang), show_alert=True)
             return
+        _cancel_prompt_timer(request_id, int(user.id))
+        update_pending_vote(request_id, int(user.id), reason_in_progress=True)
         try:
             await cb.message.edit_text(
                 t("vote_reason_pick_tpl", lang, moderator=user_mention(user.id, user.username or "")),
@@ -493,6 +497,10 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "back":
+        update_pending_vote(
+            request_id, int(user.id), reason_in_progress=False,
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
         await _leave_vote_reason_state(state)
         entry = get_request_by_id(request_id)
         try:
@@ -540,6 +548,8 @@ async def on_vote_reason_action(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     if action == "own":
+        _cancel_prompt_timer(request_id, int(user.id))
+        update_pending_vote(request_id, int(user.id), reason_in_progress=True)
         entry = get_request_by_id(request_id)
         try:
             await cb.message.edit_text(

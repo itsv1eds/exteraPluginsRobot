@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from bot.services.plugin_files import plugin_document
+
 import html
 import logging
 from datetime import datetime, timezone
@@ -8,7 +10,6 @@ from typing import Any
 
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramForbiddenError
-from aiogram.types import FSInputFile
 
 from bot.cache import (
     get_admins_icons,
@@ -169,6 +170,14 @@ def _comment_media_count(entry: dict[str, Any] | None) -> int:
 async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], text: str, file_path: str | None) -> None:
     request_id = str(entry.get("id") or "")
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+    if payload.get("moderation_forum_text"):
+        text = forum_text_with_votes(entry)
+    else:
+        from bot.services.request_context import author_context
+
+        context = author_context(payload, existing_text=text)
+        if context:
+            text += "\n\n" + context
     user_id = int(payload.get("user_id") or 0)
     sent_message_ids: list[int] = []
     request_type = str(entry.get("type") or "new")
@@ -195,7 +204,7 @@ async def send_review_notification(bot, chat_id: int, entry: dict[str, Any], tex
         if file_path and Path(file_path).exists():
             file_msg = await bot.send_document(
                 chat_id,
-                FSInputFile(file_path),
+                plugin_document({**(entry.get("payload", {}).get("plugin") or {}), "file_path": file_path}),
                 reply_to_message_id=msg.message_id,
                 allow_sending_without_reply=True,
                 disable_notification=True,

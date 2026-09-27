@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     preview = subparsers.add_parser("preview", help="Show metadata template for plugin file")
-    preview.add_argument("plugin", help="Path to .plugin file")
+    preview.add_argument("plugin", help="Path to .plugin, .elyx or .eaf file")
     preview.set_defaults(func=cmd_preview)
 
     return parser

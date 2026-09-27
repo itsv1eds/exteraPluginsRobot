@@ -4,12 +4,11 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.enums import ParseMode
 from aiogram.types import Message
 
 from bot.context import get_lang
 from bot.formatting import plain_html, strip_blockquote_tags, telegram_html, user_mention
-from bot.services.dialogs import get_dialog_ref, register_dialog_message
+from bot.services.dialogs import get_dialog_ref, register_dialog_message, has_dialog_media, send_dialog_message
 from bot.texts import t
 from request_store import get_request_by_id
 
@@ -36,8 +35,8 @@ async def on_dialog_reply(message: Message) -> None:
     sender = message.from_user
     lang = get_lang(sender.id)
 
-    text = telegram_html(message.html_text or message.text or "")
-    if not text:
+    text = telegram_html(message.html_text or message.html_caption or message.text or message.caption or "")
+    if not text and not has_dialog_media(message):
         await message.answer(t("dialog_need_text", lang), disable_web_page_preview=True)
         return
 
@@ -54,7 +53,7 @@ async def on_dialog_reply(message: Message) -> None:
     plugin_name = plain_html(item.get("name") or "—")
 
     sender_label = user_mention(sender.id, sender.username)
-    body = strip_blockquote_tags(text)
+    body = strip_blockquote_tags(text) or t("dialog_media_body", lang)
     author_is_sender = int(sender.id) == author_id
 
     if author_is_sender:
@@ -71,11 +70,11 @@ async def on_dialog_reply(message: Message) -> None:
 
                 reply_markup = dialog_author_reply_kb(request_id, author_id)
         try:
-            delivered = await message.bot.send_message(
+            delivered_messages = await send_dialog_message(
+                message.bot,
                 peer_id,
                 t("dialog_msg_to_admin", moderator_lang, name=plugin_name, sender=sender_label, text=body),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+                source=message,
                 reply_markup=reply_markup,
             )
         except Exception:
@@ -86,11 +85,12 @@ async def on_dialog_reply(message: Message) -> None:
             await message.answer(t("dialog_deliver_failed", lang), disable_web_page_preview=True)
             return
 
-        register_dialog_message(
-            int(peer_id), delivered.message_id,
-            peer_id=int(sender.id), request_id=request_id,
-            author_id=author_id, admin_id=int(peer_id),
-        )
+        for delivered in delivered_messages:
+            register_dialog_message(
+                int(peer_id), delivered.message_id,
+                peer_id=int(sender.id), request_id=request_id,
+                author_id=author_id, admin_id=int(peer_id),
+            )
         await message.answer(t("dialog_delivered", lang), disable_web_page_preview=True)
         return
 
@@ -106,11 +106,11 @@ async def on_dialog_reply(message: Message) -> None:
 
     peer_lang = get_lang(peer_id)
     try:
-        delivered = await message.bot.send_message(
+        delivered_messages = await send_dialog_message(
+            message.bot,
             peer_id,
             t("dialog_msg_to_author", peer_lang, name=plugin_name, sender=sender_label, text=body),
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
+            source=message,
         )
     except Exception:
         logger.exception(
@@ -120,9 +120,10 @@ async def on_dialog_reply(message: Message) -> None:
         await message.answer(t("dialog_deliver_failed", lang), disable_web_page_preview=True)
         return
 
-    register_dialog_message(
-        peer_id, delivered.message_id,
-        peer_id=sender.id, request_id=request_id,
-        author_id=author_id, admin_id=sender.id,
-    )
+    for delivered in delivered_messages:
+        register_dialog_message(
+            peer_id, delivered.message_id,
+            peer_id=sender.id, request_id=request_id,
+            author_id=author_id, admin_id=sender.id,
+        )
     await message.answer(t("dialog_delivered", lang), disable_web_page_preview=True)

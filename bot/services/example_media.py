@@ -7,6 +7,7 @@ from typing import Any
 
 from aiogram.exceptions import TelegramRetryAfter
 from aiogram.enums import ParseMode
+from telethon.errors import MessageIdInvalidError, MsgIdInvalidError
 
 from bot import limits
 from bot.formatting import plain_html, split_html, strip_blockquote_tags, telegram_html
@@ -118,6 +119,13 @@ async def publish_example_media(bot, request_id: str) -> str:
         try:
             userbot = await _get_userbot()
             discussion = await userbot.resolve_discussion_message(channel_message_id) if userbot else None
+        except (MessageIdInvalidError, MsgIdInvalidError):
+            update_request_payload(request_id, {
+                "example_media_status": "uncertain",
+                "example_media_error": "discussion_message_invalid",
+            })
+            logger.warning("event=example_media.discussion_invalid request_id=%s manual_retry_required", request_id)
+            return "uncertain"
         except Exception as exc:
             logger.warning("event=example_media.resolve_failed request_id=%s error=%s", request_id, exc)
             discussion = None

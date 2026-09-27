@@ -78,6 +78,9 @@ def validate_update_submission(
     plugin: Dict[str, Any],
     old_plugin: Dict[str, Any],
 ) -> Tuple[bool, Optional[str]]:
+    old_id = str(old_plugin.get("plugin_id") or (old_plugin.get("ru") or {}).get("id") or "").strip()
+    if old_id and plugin.get("id") != old_id:
+        return False, "pending_file_id_mismatch"
     new_version = plugin.get("version", "")
     old_version = old_plugin.get("ru", {}).get("version") or old_plugin.get("en", {}).get("version") or ""
     

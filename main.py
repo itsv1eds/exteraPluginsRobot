@@ -150,6 +150,9 @@ async def on_shutdown(bot: Bot) -> None:
     
     await stop_log_worker()
     
+    from bot.services.bot_mtproto import stop_file_client
+    await stop_file_client()
+
     from userbot.client import UserbotClient
     if UserbotClient._instance:
         await UserbotClient._instance.stop()

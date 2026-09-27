@@ -2,6 +2,8 @@ import re
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from plugin_formats import payload_extension
 from typing import Any, Dict, Optional
 
 from aiogram import Bot
@@ -46,6 +48,14 @@ async def _send_channel_post(
             channel_id, post_text, parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
         )
+
+    if Path(file_path).stat().st_size > limits.BOT_UPLOAD_BYTES:
+        from userbot.client import UserbotClient
+        userbot = await UserbotClient.get_instance()
+        if not userbot:
+            raise ValueError("large_file_transfer_unavailable")
+        message = await userbot.send_plugin_file(channel_id, post_text, file_path, download_name or Path(file_path).name)
+        return SimpleNamespace(message_id=message.id)
 
     document = FSInputFile(file_path, filename=download_name) if download_name else FSInputFile(file_path)
     try:
@@ -111,7 +121,6 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
     checked = checked_on or payload.get("checked_on")
 
     author = plain_html(plugin.get("author", ""))
-    name = plain_html(plugin.get("name", "")) or "—"
 
     desc_fallback = plain_html(plugin.get("description", ""))
     desc_ru = telegram_html(payload.get("description_ru")) or desc_fallback or "—"
@@ -128,7 +137,7 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
     min_version_line_en = f"<b>Min.version:</b> {min_ver}" if min_ver else ""
 
     ru_lines = [
-        f"<b>Название:</b> {name}",
+        f"<b>Название:</b> {plain_html((plugin.get('localized') or {}).get('ru', {}).get('name') or plugin.get('name') or '—')}",
         f"<b>Автор:</b> {author}",
         f"<b>Описание:</b> {desc_ru}",
         f"<b>Использование:</b> {usage_ru}",
@@ -138,10 +147,16 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
         ru_lines.append(min_version_line)
     if checked_line:
         ru_lines.append(checked_line)
+    if payload_extension(plugin) != "plugin":
+        ru_lines.append(f"<b>Формат:</b> Elyx (.{payload_extension(plugin)})")
+        if plugin.get("app_version"):
+            ru_lines.append(f"<b>Версия клиента:</b> {plain_html(plugin['app_version'])}")
+        if plugin.get("sdk_version"):
+            ru_lines.append(f"<b>Версия SDK:</b> {plain_html(plugin['sdk_version'])}")
     ru_block = strip_blockquote_tags("\n".join(ru_lines))
 
     en_lines = [
-        f"<b>Title:</b> {name}",
+        f"<b>Title:</b> {plain_html((plugin.get('localized') or {}).get('en', {}).get('name') or plugin.get('name') or '—')}",
         f"<b>Author:</b> {author}",
         f"<b>Description:</b> {desc_en}",
         f"<b>Usage:</b> {usage_en}",
@@ -151,6 +166,12 @@ def build_channel_post(entry: Dict[str, Any], checked_on: Optional[str] = None) 
         en_lines.append(min_version_line_en)
     if checked_line_en:
         en_lines.append(checked_line_en)
+    if payload_extension(plugin) != "plugin":
+        en_lines.append(f"<b>Format:</b> Elyx (.{payload_extension(plugin)})")
+        if plugin.get("app_version"):
+            en_lines.append(f"<b>Client version:</b> {plain_html(plugin['app_version'])}")
+        if plugin.get("sdk_version"):
+            en_lines.append(f"<b>SDK version:</b> {plain_html(plugin['sdk_version'])}")
     en_block = strip_blockquote_tags("\n".join(en_lines))
 
     tags_line = join_plain(tags)
@@ -225,7 +246,7 @@ async def publish_plugin(
     post_text = build_channel_post(entry)
     file_path = plugin.get("file_path")
     slug = make_slug(plugin.get("name") or plugin.get("id"))
-    download_name = fit_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'), "plugin")
+    download_name = fit_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'), payload_extension(plugin))
 
     try:
         me = await bot.me()
@@ -360,7 +381,7 @@ async def update_plugin(
     if links_line and "Открыть в боте" not in post_text:
         post_text = f"{post_text}\n\n{links_line}"
 
-    download_name = fit_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'), "plugin")
+    download_name = fit_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'), payload_extension(plugin))
     result = await userbot.update_message(old_message_id, post_text, file_path, download_name)
 
     update_request_status(entry.get("id"), "published", actor=actor, actor_id=actor_id)
@@ -414,7 +435,7 @@ def add_to_catalog(
         },
         "submitters": submitters,
         "ru": {
-            "name": plugin.get("name"),
+            "name": (plugin.get("localized") or {}).get("ru", {}).get("name") or plugin.get("name"),
             "description": payload.get("description_ru") or plugin.get("description"),
             "usage": payload.get("usage_ru"),
             "min_version": plugin.get("min_version"),
@@ -422,7 +443,7 @@ def add_to_catalog(
             "settings_label": "✅" if plugin.get("has_ui_settings") else "❌",
         },
         "en": {
-            "name": plugin.get("name"),
+            "name": (plugin.get("localized") or {}).get("en", {}).get("name") or plugin.get("name"),
             "description": payload.get("description_en") or plugin.get("description"),
             "usage": payload.get("usage_en"),
             "min_version": plugin.get("min_version"),
@@ -430,7 +451,10 @@ def add_to_catalog(
             "settings_label": "✅" if plugin.get("has_ui_settings") else "❌",
         },
         "settings": {"has_ui": plugin.get("has_ui_settings", False)},
-        "requirements": {"min_version": plugin.get("min_version")},
+        "requirements": {k: plugin.get(k) for k in ("min_version", "app_version", "sdk_version", "elyx_version", "requirements", "requires")},
+        "plugin_id": plugin.get("id"),
+        "format": plugin.get("format", "python"),
+        "file": {"file_id": plugin.get("file_id"), "file_name": fit_filename(str(plugin.get("id") or "plugin"), payload_extension(plugin)), "file_extension": payload_extension(plugin)},
         "channel_message": {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -666,8 +690,8 @@ def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int) -> N
             if payload.get("category_key"):
                 p["category"] = payload.get("category_key")
 
-            ru_locale["name"] = plugin.get("name") or ru_locale.get("name")
-            en_locale["name"] = plugin.get("name") or en_locale.get("name")
+            ru_locale["name"] = (plugin.get("localized") or {}).get("ru", {}).get("name") or plugin.get("name") or ru_locale.get("name")
+            en_locale["name"] = (plugin.get("localized") or {}).get("en", {}).get("name") or plugin.get("name") or en_locale.get("name")
 
             author_text = plugin.get("author")
             if author_text:
@@ -700,6 +724,11 @@ def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int) -> N
             en_locale["settings_label"] = "✅" if settings["has_ui"] else "❌"
 
             requirements["min_version"] = plugin.get("min_version") or requirements.get("min_version")
+            requirements.update({k: plugin.get(k) for k in ("app_version", "sdk_version", "elyx_version", "requirements", "requires")})
+            p["format"] = plugin.get("format", "python")
+            p["plugin_id"] = plugin.get("id") or p.get("plugin_id")
+            if plugin.get("file_id"):
+                p["file"] = {"file_id": plugin["file_id"], "file_name": fit_filename(str(plugin.get("id") or "plugin"), payload_extension(plugin)), "file_extension": payload_extension(plugin)}
             p["updated_at"] = datetime.utcnow().isoformat()
             
             changelog = payload.get("changelog", "")

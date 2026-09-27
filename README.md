@@ -14,7 +14,7 @@ Live bot: [@exteraPluginsRobot](https://t.me/exteraPluginsRobot)
 - **Subscriptions**: get notified when a plugin you follow is updated.
 
 ### Submissions
-- **Upload and parse** `.plugin` / `.icons` files (up to 8 MB).
+- **Upload and parse** `.plugin` (up to 8 MB) and Elyx `.elyx` / `.eaf` archives (up to 100 MB), including `.elyx.zip` / `.eaf.zip`. Updates can migrate from Python to Elyx with the same plugin id. Iconpacks remain in the catalog only.
 - **Rules quiz** before submitting: 3 random questions out of 20, four options each.
 - **Validation**: all fields required, minimum client version `12.1.1` (configurable), duplicate and blocklist checks.
 - **Updates and removal requests** for already published items, with a mandatory reason.
@@ -95,13 +95,13 @@ override paths at runtime with env vars:
 
 ## Userbot authorization (one-time)
 A Telegram Premium userbot publishes catalog posts (custom emoji, larger
-captions) alongside the bot. Before running authorization, set in `config.json`:
+captions) alongside the bot. Before running authorization, set in the SQLite configuration:
 - `userbot.api_id`
 - `userbot.api_hash`
 
-Run interactive authorization flow to create `sessions/userbot_session.session`:
+Create and activate a fresh session on the same host as the bot:
 
-`docker compose --profile tools run --rm auth`
+`docker compose --profile tools run --build --rm auth python auth.py --new-session --activate`
 
 In the prompt:
 - enter phone number in international format (`+...`)
@@ -113,6 +113,4 @@ After successful login, restart bot:
 `docker compose restart bot`
 
 ## Re-authorization
-If you need to log in with another account, remove previous session and run auth again:
-
-`sudo rm -f sessions/userbot_session.session*`
+For another account or a revoked key, repeat authorization with `--new-session --activate`. Each running instance must authorize independently: copying a `.session` file does not create a new key and can cause Telegram to revoke it. Enter the login code and 2FA password only in the terminal; both inputs are hidden.

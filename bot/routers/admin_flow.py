@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from bot.services.plugin_files import plugin_document
 from aiogram import F, Router
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramRetryAfter
@@ -107,7 +108,7 @@ from bot.services.admin_notifications import (
     finalize_admin_notify_messages,
     set_admin_notification_preference,
 )
-from bot.services.dialogs import register_dialog_message
+from bot.services.dialogs import register_dialog_message, has_dialog_media, send_dialog_message
 from bot.services.forum import answer_in_moderation_topic
 from bot.services.moderation import (
     author_reply_kwargs,
@@ -388,9 +389,8 @@ async def _send_review_document(cb: CallbackQuery, entry: dict, reply_message) -
         return
     payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
     plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
-    file_path = str(plugin.get("file_path") or "").strip()
     stored_file_id = str(payload.get("moderation_file_id") or plugin.get("file_id") or "").strip()
-    document = FSInputFile(file_path) if file_path and Path(file_path).is_file() else stored_file_id or None
+    document = plugin_document(plugin, stored_file_id)
     if not document:
         return
     try:
@@ -406,24 +406,14 @@ async def _send_review_document(cb: CallbackQuery, entry: dict, reply_message) -
 
 
 def _author_comment_block(entry: dict) -> str:
+    from bot.services.request_context import author_context
+
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
-    if not isinstance(payload, dict):
-        return ""
-    parts: list[str] = []
-    comment = str(payload.get("admin_comment") or "").strip()
-    if comment:
-        parts.append(t("admin_request_comment", "ru", comment=strip_blockquote_tags(telegram_html(comment))))
-    media = [m for m in (payload.get("comment_media") or []) if isinstance(m, dict) and m.get("file_id")]
-    if media:
-        parts.append(t("admin_request_comment_media", "ru", count=len(media)))
-    return "\n".join(parts)
+    return author_context(payload) if isinstance(payload, dict) else ""
 
 
 def _review_meta_block(entry: dict) -> str:
     parts: list[str] = []
-    author_comment = _author_comment_block(entry)
-    if author_comment:
-        parts.append(author_comment)
     not_before = _publish_not_before_dt_utc(entry)
     if not_before:
         dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
@@ -1520,7 +1510,7 @@ def _validate_request_before_publish(entry: dict | None) -> list[str]:
     return errors
 
 
-def _render_request_draft(entry: dict) -> str:
+def _render_request_draft(entry: dict, *, include_context: bool = True) -> str:
     payload = entry.get("payload", {})
     if _is_appeal(entry):
         username = str(payload.get("username") or "").strip()
@@ -1541,7 +1531,9 @@ def _render_request_draft(entry: dict) -> str:
         "description_ru": payload.get("description_ru") or fallback_desc,
         "description_en": payload.get("description_en") or fallback_desc,
     }
-    return build_channel_post({"payload": patched_payload})
+    text = build_channel_post({"payload": patched_payload})
+    context = _author_comment_block(entry) if include_context else ""
+    return text + ("\n\n" + context.strip() if context.strip() else "")
 
 
 def _forum_request_text_and_file(entry: dict) -> tuple[str, str | None]:
@@ -1606,7 +1598,7 @@ def _forum_request_text_and_file(entry: dict) -> tuple[str, str | None]:
             "admin_request_plugin",
             "ru",
             id=request_id,
-            draft=_render_request_draft(entry),
+            draft=_render_request_draft(entry, include_context=False),
             user=user_link,
         )
 
@@ -5316,6 +5308,10 @@ async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
         kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish,
                              media_count=len(_comment_media_of_entry(entry)))
 
+    if request_type in {"update", "delete"} or submission_type == "icon":
+        context = _author_comment_block(entry)
+        if context:
+            text += "\n\n" + context
     text = f"{text}\n\n{_review_meta_block(entry)}"
     review_img = {"update": "update", "delete": "delete"}.get(entry.get("type"), "new")
     review_msg = await answer(cb, text, kb, review_img)
@@ -7175,8 +7171,8 @@ async def on_admin_msg_author(cb: CallbackQuery, state: FSMContext) -> None:
 @router.message(AdminFlow.entering_author_message)
 async def on_admin_enter_author_message(message: Message, state: FSMContext) -> None:
     lang = _lang_for(message)
-    text = telegram_html(message.html_text or message.text or "")
-    if not text:
+    text = telegram_html(message.html_text or message.html_caption or message.text or message.caption or "")
+    if not text and not has_dialog_media(message):
         await message.answer(_tr(message, "need_text"), disable_web_page_preview=True)
         return
 
@@ -7200,14 +7196,14 @@ async def on_admin_enter_author_message(message: Message, state: FSMContext) -> 
     item = payload.get("plugin") or payload.get("icon") or {}
     plugin_name = plain_html(item.get("name") or "—")
     sender_label = user_mention(admin_user.id, admin_user.username)
-    body = strip_blockquote_tags(text)
-    delivered = None
+    body = strip_blockquote_tags(text) or t("dialog_media_body", author_lang)
+    delivered_messages = []
     try:
-        delivered = await message.bot.send_message(
+        delivered_messages = await send_dialog_message(
+            message.bot,
             user_id,
             t("dialog_msg_to_author", author_lang, name=plugin_name, sender=sender_label, text=body),
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
+            source=message,
         )
     except Exception:
         logger.exception(
@@ -7215,12 +7211,13 @@ async def on_admin_enter_author_message(message: Message, state: FSMContext) -> 
             user_id, request_id,
         )
 
-    if delivered:
-        register_dialog_message(
-            int(user_id), delivered.message_id,
-            peer_id=admin_user.id, request_id=str(request_id),
-            author_id=int(user_id), admin_id=admin_user.id,
-        )
+    if delivered_messages:
+        for delivered in delivered_messages:
+            register_dialog_message(
+                int(user_id), delivered.message_id,
+                peer_id=admin_user.id, request_id=str(request_id),
+                author_id=int(user_id), admin_id=admin_user.id,
+            )
         add_audit_event(
             "moderation.message_author",
             actor_id=admin_user.id,
@@ -7230,7 +7227,7 @@ async def on_admin_enter_author_message(message: Message, state: FSMContext) -> 
 
     await state.clear()
     await state.set_state(AdminFlow.menu)
-    result_key = "admin_author_message_sent" if delivered else "admin_author_message_failed"
+    result_key = "admin_author_message_sent" if delivered_messages else "admin_author_message_failed"
     await answer(message, _tr(message, result_key), admin_menu_kb(_admin_menu_role(message), lang=lang), "admin")
 
 

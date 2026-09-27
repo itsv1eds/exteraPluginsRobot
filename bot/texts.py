@@ -562,12 +562,12 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Choose category:",
     },
     "admin_send_plugin_file": {
-        "ru": "Отправьте файл плагина (.plugin):",
-        "en": "Send plugin file (.plugin):",
+        "ru": "Отправьте .plugin (до 8 МБ) или Elyx: .elyx/.eaf (до 100 МБ):",
+        "en": "Send .plugin (up to 8 MB) or Elyx: .elyx/.eaf (up to 100 MB):",
     },
     "admin_send_plugin_file_short": {
-        "ru": "Отправьте файл .plugin",
-        "en": "Send .plugin file",
+        "ru": "Отправьте .plugin, .elyx или .eaf",
+        "en": "Send a .plugin, .elyx or .eaf file",
     },
     "admin_banned_empty": {
         "ru": "Нет заблокированных",
@@ -810,8 +810,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "kb_admin_msg_author": {"ru": "Написать автору", "en": "Message author"},
     "admin_request_not_found": {"ru": "Заявка не найдена.", "en": "Request not found."},
     "admin_enter_author_message": {
-        "ru": "Введите сообщение для автора заявки:",
-        "en": "Enter a message for the submission author:",
+        "ru": "Отправьте текст или медиа для автора заявки:",
+        "en": "Send text or media to the submission author:",
     },
     "admin_author_message_sent": {
         "ru": "Сообщение отправлено автору",
@@ -835,8 +835,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "dialog_author_banned": {"ru": "Автор заблокирован", "en": "Author banned"},
     "kb_submit_appeal": {"ru": "Подать апелляцию", "en": "Submit an appeal"},
     "modcontact_prompt": {
-        "ru": "Напишите вопрос модерации по заявке «{name}».\nОтветит один из модераторов — вы увидите, кто именно.",
-        "en": "Write your question about the «{name}» submission.\nA moderator will reply — you'll see who exactly.",
+        "ru": "Напишите вопрос модерации по заявке «{name}». Можно приложить медиа с подписью.\nОтветит один из модераторов — вы увидите, кто именно.",
+        "en": "Write your question about the «{name}» submission. You can attach media with a caption.\nA moderator will reply — you'll see who exactly.",
     },
     "modcontact_sent": {
         "ru": "✅ Вопрос отправлен модерации. Ответ придёт сюда же.",
@@ -891,9 +891,10 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "ru": "Не удалось доставить сообщение.",
         "en": "Failed to deliver the message.",
     },
+    "dialog_media_body": {"ru": "Прикреплено медиа", "en": "Media attached"},
     "dialog_need_text": {
-        "ru": "Отправьте текстовое сообщение.",
-        "en": "Please send a text message.",
+        "ru": "Отправьте текст или медиа, можно с подписью.",
+        "en": "Send text or media, optionally with a caption.",
     },
     "kb_admin_reject_template": {"ru": "По шаблону", "en": "By template"},
     "kb_admin_reject_tpl_send": {"ru": "Отправить отказ", "en": "Send rejection"},
@@ -1274,12 +1275,12 @@ TEXTS: Dict[str, Dict[str, str]] = {
     "pending_saved": {"ru": "Сохранено.", "en": "Saved."},
 
     "pending_upload_plugin": {
-        "ru": "Пришли новый файл <code>.plugin</code> для этой заявки.",
-        "en": "Send a new <code>.plugin</code> file for this request.",
+        "ru": "Пришли новый файл <code>.plugin</code> / <code>.elyx</code> / <code>.eaf</code> для этой заявки.",
+        "en": "Send a new <code>.plugin</code> / <code>.elyx</code> / <code>.eaf</code> file for this request.",
     },
     "pending_upload_update_plugin": {
-        "ru": "Пришли новый файл <code>.plugin</code> для обновления.",
-        "en": "Send a new <code>.plugin</code> file for the update.",
+        "ru": "Пришли новый файл <code>.plugin</code> / <code>.elyx</code> / <code>.eaf</code> для обновления.",
+        "en": "Send a new <code>.plugin</code> / <code>.elyx</code> / <code>.eaf</code> file for the update.",
     },
     "pending_file_id_mismatch": {
         "ru": "ID плагина в файле не совпадает с заявкой.",
@@ -1369,9 +1370,27 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "Enter <b>usage in Russian</b>.\nExample (in Russian): <code>Откройте чат и напишите /calc 2+2</code>\nIf usage is automatic, write in passive voice (e.g. <code>Автоматически показывает погоду при открытии чата</code>).",
     },
 
+    "elyx_compiled_notice": {
+        "ru": "Сборка содержит байткод Python 3.11. Настройки и поведение требуют ручной проверки.",
+        "en": "This build contains Python 3.11 bytecode. Settings and behavior require manual review.",
+    },
+    "elyx_python_dependencies": {
+        "ru": "<b>Python-зависимости:</b> {dependencies}",
+        "en": "<b>Python dependencies:</b> {dependencies}",
+    },
+    "elyx_plugin_dependencies": {
+        "ru": "<b>Зависимости от плагинов:</b> {dependencies}",
+        "en": "<b>Plugin dependencies:</b> {dependencies}",
+    },
+
+    "large_file_transfer_unavailable": {
+        "ru": "Для больших файлов нужны api_id/api_hash и доступ бота к чату передачи. Обратитесь к администратору.",
+        "en": "Large files require api_id/api_hash and bot access to the transfer chat. Please contact an administrator.",
+    },
+
     "file_too_large": {
-        "ru": "Файл больше 8 МБ",
-        "en": "File is larger than 8 MB",
+        "ru": "Превышен лимит: .plugin — до 8 МБ, Elyx (.elyx/.eaf) — до 100 МБ",
+        "en": "Size limit exceeded: .plugin — up to 8 MB; Elyx (.elyx/.eaf) — up to 100 MB",
     },
 
     "icon_meta_invalid": {
@@ -1389,8 +1408,8 @@ TEXTS: Dict[str, Dict[str, str]] = {
 
 
     "invalid_file": {
-        "ru": "Отправьте файл <code>.plugin</code>",
-        "en": "Please send a <code>.plugin</code> file",
+        "ru": "Отправьте файл <code>.plugin</code> / <code>.elyx</code> / <code>.eaf</code>",
+        "en": "Please send a <code>.plugin</code> / <code>.elyx</code> / <code>.eaf</code> file",
     },
     "invalid_icon_file": {
         "ru": "Отправьте файл <code>.icons</code>",
@@ -1753,12 +1772,12 @@ TEXTS: Dict[str, Dict[str, str]] = {
         "en": "<b>Update submitted</b>",
     },
     "upload_plugin": {
-        "ru": "<b>Отправьте файл плагина</b>\n\nФайл должен иметь расширение <code>.plugin</code>\nМетаданные будут извлечены автоматически",
-        "en": "<b>Send your plugin file</b>\n\nFile must have <code>.plugin</code> extension\nMetadata will be extracted automatically",
+        "ru": "<b>Отправьте файл плагина</b>\n\nОбычный .plugin — до 8 МБ; Elyx (.elyx/.eaf/.elyx.zip/.eaf.zip) — до 100 МБ\nМетаданные будут извлечены автоматически",
+        "en": "<b>Send your plugin file</b>\n\nPython .plugin — up to 8 MB; Elyx (.elyx/.eaf/.elyx.zip/.eaf.zip) — up to 100 MB\nMetadata will be extracted automatically",
     },
     "upload_update_file": {
-        "ru": "<b>Отправьте обновлённый файл</b>\n\nТекущая версия: <b>{version}</b>",
-        "en": "<b>Send updated file</b>\n\nCurrent version: <b>{version}</b>",
+        "ru": "<b>Отправьте обновлённый файл</b>\n\nТекущая версия: <b>{version}</b>\n.plugin — до 8 МБ, .elyx/.eaf — до 100 МБ. Можно перейти на Elyx, сохранив id и повысив версию.",
+        "en": "<b>Send updated file</b>\n\nCurrent version: <b>{version}</b>\n.plugin — up to 8 MB, .elyx/.eaf — up to 100 MB. You can migrate to Elyx with the same id and a higher version.",
     },
 
     "user_banned": {

@@ -11,15 +11,14 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import FSInputFile
 
-from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html
+from bot.formatting import join_plain, plain_html, strip_blockquote_tags, telegram_html, visible_html_length
 from bot.helpers import blank_and_delete, fit_filename
+from bot.services.channel_text import editing_userbot, send_description, try_edit
 from storage import flush_all, load_icons, load_plugins, load_updated, save_icons, save_plugins, save_updated
 from request_store import update_request_status
 from bot.cache import get_categories, invalidate, get_config
 from bot import limits
 from catalog import invalidate_catalog_cache, plugin_deeplink_token
-
-_CAPTION_LIMIT = limits.CAPTION
 
 
 def _channel_links_line(bot_username: str, slug: str) -> str:
@@ -44,10 +43,7 @@ async def _send_channel_post(
 ):
     has_file = bool(file_path and Path(file_path).exists())
     if not has_file:
-        return await bot.send_message(
-            channel_id, post_text, parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-        )
+        return (await send_description(bot, channel_id, post_text or "—"))[0]
 
     if Path(file_path).stat().st_size > limits.BOT_UPLOAD_BYTES:
         from userbot.client import UserbotClient
@@ -58,33 +54,28 @@ async def _send_channel_post(
         return SimpleNamespace(message_id=message.id)
 
     document = FSInputFile(file_path, filename=download_name) if download_name else FSInputFile(file_path)
+    overflow = visible_html_length(post_text) > limits.CAPTION
+    userbot = await editing_userbot(post_text, caption=True) if overflow else None
     try:
-        return await bot.send_document(
-            channel_id, document, caption=post_text,
+        message = await bot.send_document(
+            channel_id, document, caption=None if overflow else post_text,
             parse_mode=ParseMode.HTML,
         )
     except TelegramBadRequest as exc:
-        if "caption is too long" not in str(exc).lower():
+        from bot.helpers import _is_too_long_error
+
+        if not _is_too_long_error(exc) or overflow:
             raise
-        logger.warning("event=publish.caption_overflow channel_id=%s len=%s", channel_id, len(post_text))
+        overflow = True
+        userbot = await editing_userbot(post_text, caption=True)
         message = await bot.send_document(channel_id, FSInputFile(file_path, filename=download_name) if download_name else FSInputFile(file_path))
+    if overflow and not await try_edit(userbot, channel_id, message.message_id, post_text):
         try:
-            await bot.send_message(
-                channel_id, post_text, parse_mode=ParseMode.HTML,
-                reply_to_message_id=message.message_id, disable_web_page_preview=True,
-            )
-        except Exception:
-            logger.exception("event=publish.caption_overflow_text_failed channel_id=%s", channel_id)
-            try:
-                await blank_and_delete(bot, channel_id, message.message_id)
-            except Exception:
-                logger.exception(
-                    "event=publish.caption_overflow_rollback_failed channel_id=%s message_id=%s",
-                    channel_id,
-                    message.message_id,
-                )
+            await send_description(bot, channel_id, post_text, reply_to_message_id=message.message_id)
+        except BaseException:
+            await blank_and_delete(bot, channel_id, message.message_id)
             raise
-        return message
+    return message
 
 logger = logging.getLogger(__name__)
 

@@ -10,15 +10,15 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from bot import limits
-from bot.formatting import telegram_html
+from bot.formatting import telegram_html, visible_html_length
 from bot.helpers import BLANK_CHAR
+from bot.services.channel_text import editing_userbot, send_description, try_edit
 
 from storage import load_poster, save_poster
 
 logger = logging.getLogger(__name__)
 
 POST_STATUSES = ("scheduled", "sending", "sent", "failed", "canceled")
-_RETRY_CAP_SECONDS = 5.0
 
 _TG_EMOJI_ANCHOR_RE = re.compile(
     r'<a\s+href="tg://emoji\?id=(\d+)"\s*>(.*?)</a>', re.IGNORECASE | re.DOTALL
@@ -353,7 +353,7 @@ async def _safe_send(factory, *, retries: int = 1):
             if attempt >= retries:
                 raise
             attempt += 1
-            await asyncio.sleep(min(float(exc.retry_after or 1), _RETRY_CAP_SECONDS))
+            await asyncio.sleep(float(exc.retry_after or 1))
         except TelegramBadRequest:
             raise
 
@@ -442,7 +442,7 @@ def _build_media_group(media: List[Dict[str, Any]], caption: str | None):
     return group
 
 
-async def send_content(bot, chat_id: int, content: Dict[str, Any]):
+async def send_content(bot, chat_id: int, content: Dict[str, Any], *, text_editor=None):
     from aiogram.enums import ParseMode
 
     content = dict(content)
@@ -462,72 +462,82 @@ async def send_content(bot, chat_id: int, content: Dict[str, Any]):
 
     async def _send():
         if content.get("rich"):
-            return await bot.send_rich_message(
-                chat_id=chat_id, rich_message=build_rich_message(content), reply_markup=kb)
-        if len(media) > 1:
-            sent: List[Any] = []
-            try:
+            return await _safe_send(lambda: bot.send_rich_message(
+                chat_id=chat_id, rich_message=build_rich_message(content), reply_markup=kb))
+
+        sent: List[Any] = []
+
+        def result(primary):
+            return SentContent(primary=primary, messages=sent) if len(sent) > 1 else primary
+
+        async def attach_keyboard(message, *, album=False):
+            if not kb:
+                return
+            if not album:
+                try:
+                    await _safe_send(lambda: bot.edit_message_reply_markup(
+                        chat_id=chat_id, message_id=message.message_id, reply_markup=kb))
+                    return
+                except Exception:
+                    logger.warning("poster: cannot attach markup chat=%s msg=%s",
+                                   chat_id, message.message_id, exc_info=True)
+            sent.append(await _safe_send(lambda: bot.send_message(
+                chat_id, BLANK_CHAR, reply_markup=kb, disable_web_page_preview=True)))
+
+        try:
+            if len(media) > 1:
                 caption = text if text and visible_len <= CAPTION_LIMIT else None
                 group = _build_media_group(media, caption)
                 if group is not None:
-                    sent.extend(await bot.send_media_group(chat_id, group))
+                    sent.extend(await _safe_send(lambda: bot.send_media_group(chat_id, group)))
                 else:
                     for item in media:
                         send_media = getattr(
                             bot,
                             MEDIA_SEND_METHODS.get(item.get("type"), "send_document"),
                         )
-                        sent.append(await send_media(chat_id, item["file_id"]))
+                        sent.append(await _safe_send(lambda: send_media(chat_id, item["file_id"])))
 
                 text_was_caption = bool(group is not None and caption)
                 if text and not text_was_caption:
-                    text_message = await bot.send_message(
-                        chat_id,
-                        text,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=kb,
-                        disable_web_page_preview=True,
-                    )
-                    sent.append(text_message)
-                    return SentContent(primary=text_message, messages=sent)
+                    text_was_caption = await try_edit(text_editor, chat_id, sent[0].message_id, text)
+                if text and not text_was_caption:
+                    sent.extend(await send_description(bot, chat_id, text, reply_markup=kb))
+                    return result(sent[-1])
+                await attach_keyboard(sent[0], album=group is not None)
+                return result(sent[0])
 
-                if kb:
-                    controls = await bot.send_message(
-                        chat_id,
-                        BLANK_CHAR,
-                        reply_markup=kb,
-                        disable_web_page_preview=True,
-                    )
-                    sent.append(controls)
-                return SentContent(primary=sent[0], messages=sent)
-            except Exception:
-                await _rollback_sent_messages(bot, chat_id, sent)
-                raise
+            if media:
+                item = media[0]
+                send_media = getattr(bot, MEDIA_SEND_METHODS.get(item.get("type"), "send_photo"))
+                if visible_len > CAPTION_LIMIT:
+                    media_message = await _safe_send(lambda: send_media(chat_id, item["file_id"]))
+                    sent.append(media_message)
+                    if await try_edit(text_editor, chat_id, media_message.message_id, text):
+                        await attach_keyboard(media_message)
+                        return result(media_message)
+                    sent.extend(await send_description(bot, chat_id, text, reply_markup=kb))
+                    return result(sent[-1])
+                return await _safe_send(lambda: send_media(
+                    chat_id, item["file_id"], caption=(text or None),
+                    parse_mode=ParseMode.HTML, reply_markup=kb))
 
-        if media:
-            item = media[0]
-            send_media = getattr(bot, MEDIA_SEND_METHODS.get(item.get("type"), "send_photo"))
-            if visible_len > CAPTION_LIMIT:
-                media_message = await send_media(chat_id, item["file_id"])
-                try:
-                    text_message = await bot.send_message(
-                        chat_id, text, parse_mode=ParseMode.HTML,
-                        reply_markup=kb, disable_web_page_preview=True)
-                except Exception:
-                    await _rollback_sent_messages(bot, chat_id, [media_message])
-                    raise
-                return SentContent(
-                    primary=text_message,
-                    messages=[media_message, text_message],
-                )
-            return await send_media(
-                chat_id, item["file_id"], caption=(text or None),
-                parse_mode=ParseMode.HTML, reply_markup=kb)
-        return await bot.send_message(
-            chat_id, text or "—", parse_mode=ParseMode.HTML,
-            reply_markup=kb, disable_web_page_preview=True)
+            if visible_len > limits.MESSAGE_TEXT and text_editor:
+                placeholder = await _safe_send(lambda: bot.send_message(
+                    chat_id, BLANK_CHAR, disable_web_page_preview=True))
+                sent.append(placeholder)
+                if await try_edit(text_editor, chat_id, placeholder.message_id, text):
+                    await attach_keyboard(placeholder)
+                    return result(placeholder)
+                await bot.delete_message(chat_id, placeholder.message_id)
+                sent.clear()
+            sent.extend(await send_description(bot, chat_id, text or "—", reply_markup=kb))
+            return result(sent[-1])
+        except BaseException:
+            await _rollback_sent_messages(bot, chat_id, sent)
+            raise
 
-    return await _safe_send(_send)
+    return await _send()
 
 
 async def _try_userbot_edit(chat_id: int, message_id: int, text: str) -> bool:
@@ -577,122 +587,28 @@ async def _apply_custom_emoji(bot, chat_id: int, message_id: int, text: str, kb)
 
 
 def visible_length(text: str) -> int:
-    return len(re.sub(r"<[^>]+>", "", text or ""))
-
-
-async def _userbot_available() -> bool:
-    from userbot.client import get_userbot
-
-    try:
-        return bool(await get_userbot())
-    except Exception:
-        logger.warning("poster: userbot unavailable", exc_info=True)
-        return False
-
-
-async def _send_via_premium_userbot(bot, chat_id: int, content: Dict[str, Any], text: str):
-    from aiogram.enums import ParseMode
-
-    media = content.get("media") or []
-    kb = _build_keyboard(content.get("buttons") or [])
-    visible = visible_length(text)
-
-    if len(media) > 1:
-        return None
-
-    if media:
-        if not CAPTION_LIMIT < visible <= limits.PREMIUM_CAPTION:
-            return None
-    elif not limits.MESSAGE_TEXT < visible <= limits.PREMIUM_MESSAGE_TEXT:
-        return None
-
-    if not await _userbot_available():
-        return None
-
-    if media:
-        item = media[0]
-        send_media = getattr(bot, MEDIA_SEND_METHODS.get(item.get("type"), "send_photo"))
-        message = await _safe_send(lambda: send_media(chat_id, item["file_id"]))
-    else:
-        message = await _safe_send(lambda: bot.send_message(
-            chat_id, BLANK_CHAR, parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True))
-
-    message_id = getattr(message, "message_id", None)
-    edited = False
-    try:
-        edited = bool(message_id and await _try_userbot_edit(chat_id, message_id, text))
-    except Exception:
-        logger.warning("poster: userbot long-text edit failed chat=%s msg=%s",
-                       chat_id, message_id, exc_info=True)
-
-    if edited:
-        if kb:
-            try:
-                await bot.edit_message_reply_markup(
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    reply_markup=kb,
-                )
-            except Exception:
-                logger.warning(
-                    "poster: failed to attach markup after userbot edit chat=%s msg=%s",
-                    chat_id,
-                    message_id,
-                    exc_info=True,
-                )
-                try:
-                    controls = await _safe_send(lambda: bot.send_message(
-                        chat_id,
-                        BLANK_CHAR,
-                        reply_markup=kb,
-                        disable_web_page_preview=True,
-                    ))
-                except Exception:
-                    await _rollback_sent_messages(bot, chat_id, [message])
-                    raise
-                logger.info(
-                    "poster: markup sent as companion message chat=%s msg=%s",
-                    chat_id,
-                    getattr(controls, "message_id", None),
-                )
-                return SentContent(primary=message, messages=[message, controls])
-        logger.info("poster: long text delivered via userbot chat=%s msg=%s len=%s",
-                    chat_id, message_id, visible)
-        return message
-
-    if media:
-        try:
-            text_message = await _safe_send(lambda: bot.send_message(
-                chat_id, text, parse_mode=ParseMode.HTML,
-                reply_markup=kb, disable_web_page_preview=True))
-        except Exception:
-            await _rollback_sent_messages(bot, chat_id, [message])
-            raise
-        return SentContent(primary=text_message, messages=[message, text_message])
-
-    if message_id:
-        from bot.helpers import blank_and_delete
-
-        await blank_and_delete(bot, chat_id, message_id)
-    raise RuntimeError(f"text of {visible} chars needs the userbot, but it is unavailable")
+    return visible_html_length(text)
 
 
 async def _send_content_for_delivery(bot, chat_id: int, content: Dict[str, Any]):
     content = dict(content)
     content["html_text"] = ensure_updated_plugins_quote(str(content.get("html_text") or ""))
+    if content.get("rich") and rich_unsupported_media(content):
+        content["rich"] = False
+        content["html_text"] = telegram_html(content.get("html_text") or "")
     text = normalize_custom_emoji(content.get("html_text") or "")
-
+    text_editor = None
     if not content.get("rich"):
-        message = await _send_via_premium_userbot(bot, chat_id, content, text)
-        if message is not None:
-            return message
+        media = [item for item in (content.get("media") or []) if isinstance(item, dict) and item.get("file_id")]
+        limit = CAPTION_LIMIT if media else limits.MESSAGE_TEXT
+        if visible_length(text) > limit:
+            text_editor = await editing_userbot(text, caption=bool(media))
 
-    message = await send_content(bot, chat_id, content)
+    message = await send_content(bot, chat_id, content, text_editor=text_editor)
     message_id = getattr(message, "message_id", None)
     if content.get("rich"):
         return message
-    if "tg-emoji" in text and message_id and not isinstance(message, SentContent):
+    if "tg-emoji" in text and message_id and not isinstance(message, SentContent) and text_editor is None:
         await _apply_custom_emoji(
             bot, chat_id, message_id, text, _build_keyboard(content.get("buttons") or [])
         )

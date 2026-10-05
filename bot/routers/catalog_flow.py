@@ -23,6 +23,7 @@ from aiogram.types import (
 from aiogram.exceptions import TelegramBadRequest
 
 from bot import limits
+from bot.routers import joinly_flow
 from bot.cache import get_admins_super, get_categories, get_icons
 from bot.constants import PAGE_SIZE
 from bot.context import get_language, get_lang
@@ -1307,7 +1308,7 @@ async def on_joinly_chat_input(message: Message, state: FSMContext) -> None:
 
     title = (getattr(chat, "title", None) or str(chat.id)).strip() or str(chat.id)
     await state.set_state(None)
-    await message.answer(t("joinly_add_ok", lang, title=title), parse_mode=ParseMode.HTML)
+    await message.answer(t("joinly_add_ok", lang, title=html.escape(title)), parse_mode=ParseMode.HTML)
     await _render_profile_joinly(message, state)
 
 
@@ -1323,33 +1324,53 @@ async def on_profile_joinly_chat(cb: CallbackQuery, state: FSMContext) -> None:
     try:
         chat_id = int(raw_chat_id)
     except Exception:
-        await cb.answer("Not found", show_alert=True)
+        await cb.answer(t("not_found", await get_language(cb, state)), show_alert=True)
         return
 
     await _render_joinly_chat_detail(cb, state, chat_id)
     await ack(cb)
 
 
-async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_id: int) -> None:
-    lang = await get_language(cb, state)
-
+async def _profile_joinly_chat(cb: CallbackQuery, chat_id: int, lang: str):
     db = load_joinly()
     chat_cfg = db.get(str(chat_id)) if isinstance(db, dict) else None
     if not isinstance(chat_cfg, dict):
-        await cb.answer("Not found", show_alert=True)
-        return
-
+        await cb.answer(t("not_found", lang), show_alert=True)
+        return None
     try:
-        chat = await cb.bot.get_chat(chat_id)
-        title = (getattr(chat, "title", None) or getattr(chat, "full_name", None) or str(chat_id)).strip() or str(chat_id)
+        member = await cb.bot.get_chat_member(chat_id, cb.from_user.id)
+        if member.status not in {"administrator", "creator"}:
+            await cb.answer(t("joinly_add_err_not_admin", lang), show_alert=True)
+            return None
+        return await cb.bot.get_chat(chat_id)
     except Exception:
-        title = str(chat_id)
+        await cb.answer(t("joinly_add_err_not_found", lang), show_alert=True)
+        return None
+
+
+async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_id: int, *, chat=None) -> None:
+    lang = await get_language(cb, state)
+    chat = chat or await _profile_joinly_chat(cb, chat_id, lang)
+    if chat is None:
+        return
+    chat_cfg = load_joinly().get(str(chat_id)) or {}
+    title = (getattr(chat, "title", None) or getattr(chat, "full_name", None) or str(chat_id)).strip() or str(chat_id)
 
     await state.update_data(joinly_current_chat_id=chat_id)
 
     text = f"{t('joinly_profile_title', lang)}\n\n"
-    text += f"<b>{title}</b>\n"
+    text += f"<b>{html.escape(title)}</b>\n"
     text += t("joinly_profile_chat", lang, chat_id=chat_id)
+
+    if chat.type == "channel":
+        text += "\n\n" + t("join_welcome_channel_help", lang)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [_btn(t("btn_back", lang), callback_data="profile:joinly", style="danger", icon="back")],
+        ])
+        await answer(cb, text, kb, "joinly")
+        return
+
+    text += "\n" + t("join_welcome_profile_mode", lang, mode=t(f"join_welcome_mode_{joinly_flow._welcome_mode(chat_id)}", lang))
 
     welcome_enabled = bool(chat_cfg.get("WelcomeEnabled"))
     cleanup_enabled = bool(chat_cfg.get("DeleteServiceMessages"))
@@ -1361,7 +1382,7 @@ async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_
             [
                 _btn(
                     f"{t('join_btn_welcome_toggle', lang)}: {_toggle_label(welcome_enabled, lang)}",
-                    callback_data=f"profile:joinly_toggle:{chat_id}:WelcomeEnabled",
+                    callback_data=f"profile:joinly_welcome:{chat_id}",
                     icon="yes" if welcome_enabled else "no",
                     style="success" if welcome_enabled else "danger",
                 )
@@ -1394,6 +1415,58 @@ async def _render_joinly_chat_detail(cb: CallbackQuery, state: FSMContext, chat_
     await answer(cb, text, kb, "joinly")
 
 
+async def _render_profile_joinly_welcome(cb: CallbackQuery, state: FSMContext, chat) -> None:
+    lang = await get_language(cb, state)
+    enabled = bool(joinly_flow._get_setting(chat.id, "WelcomeEnabled"))
+    rows = [
+        [_btn(f"{t('join_btn_welcome_toggle', lang)}: {_toggle_label(enabled, lang)}",
+              callback_data=f"profile:joinly_toggle:{chat.id}:WelcomeEnabled",
+              icon="yes" if enabled else "no", style="success" if enabled else "danger")],
+        *joinly_flow._welcome_mode_rows(chat.id, lang, f"profile:joinly_mode:{chat.id}:"),
+        [_btn(t("join_welcome_preview", lang), callback_data=f"profile:joinly_preview:{chat.id}", icon="search")],
+        [_btn(t("join_welcome_community_preset", lang), callback_data=f"profile:joinly_preset:{chat.id}", icon="file")],
+        [_btn(t("btn_back", lang), callback_data=f"profile:joinly_chat:{chat.id}", style="danger", icon="back")],
+    ]
+    text = f"<b>{html.escape(chat.title or str(chat.id))}</b>\n\n"
+    text += await joinly_flow._welcome_panel_text(cb.bot, chat.id, lang)
+    await answer(cb, text, InlineKeyboardMarkup(inline_keyboard=rows), "joinly")
+
+
+@router.callback_query(F.data.regexp(r"^profile:joinly_(welcome|mode|preview|preset):-?\d+(?::(?:public|personal))?$"))
+async def on_profile_joinly_welcome(cb: CallbackQuery, state: FSMContext) -> None:
+    lang = await get_language(cb, state)
+    parts = cb.data.split(":")
+    action = parts[1].removeprefix("joinly_")
+    chat_id = int(parts[2])
+    chat = await _profile_joinly_chat(cb, chat_id, lang)
+    if chat is None:
+        return
+    if chat.type not in {"group", "supergroup"}:
+        await _render_joinly_chat_detail(cb, state, chat_id, chat=chat)
+        await ack(cb)
+        return
+    if action == "mode":
+        error = await joinly_flow._set_welcome_mode(cb.bot, chat_id, parts[3] if len(parts) > 3 else "")
+        if error:
+            await cb.answer(t(error, lang), show_alert=True)
+            return
+    elif action == "preset":
+        joinly_flow._set_setting(chat_id, "WelcomeText", t("join_welcome_community_template", lang))
+    elif action == "preview":
+        error = await joinly_flow._personal_welcome_error(cb.bot, chat_id, refresh=True)
+        if error:
+            await cb.answer(t(error, lang), show_alert=True)
+            return
+        await ack(cb)
+        sent = await joinly_flow._send_welcome(cb.bot, chat, cb.from_user, lang, personal=True)
+        if sent is None:
+            logger.warning("event=joinly.welcome_preview_failed chat_id=%s", chat_id)
+            await ack(cb, t("join_welcome_preview_failed", lang), show_alert=True)
+        return
+    await _render_profile_joinly_welcome(cb, state, chat)
+    await ack(cb, t("join_saved", lang) if action == "preset" else None)
+
+
 @router.callback_query(F.data.startswith("profile:joinly_toggle:"))
 async def on_profile_joinly_toggle(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
@@ -1404,29 +1477,26 @@ async def on_profile_joinly_toggle(cb: CallbackQuery, state: FSMContext) -> None
 
     parts = cb.data.split(":", 3)
     if len(parts) < 4:
-        await cb.answer("Not found", show_alert=True)
+        await cb.answer(t("not_found", lang), show_alert=True)
         return
 
     raw_chat_id = parts[2]
     field = parts[3]
     if field not in {"WelcomeEnabled", "DeleteServiceMessages", "Enabled", "BanMembers"}:
-        await cb.answer("Not found", show_alert=True)
+        await cb.answer(t("not_found", lang), show_alert=True)
         return
 
     try:
         chat_id = int(raw_chat_id)
     except Exception:
-        await cb.answer("Not found", show_alert=True)
+        await cb.answer(t("not_found", lang), show_alert=True)
         return
-
-    try:
-        member = await cb.bot.get_chat_member(chat_id, user.id)
-        status = getattr(member, "status", None)
-        if status not in {"administrator", "creator"}:
-            await cb.answer("Недостаточно прав" if lang == "ru" else "Not enough rights", show_alert=True)
-            return
-    except Exception:
-        await cb.answer("Недостаточно прав" if lang == "ru" else "Not enough rights", show_alert=True)
+    chat = await _profile_joinly_chat(cb, chat_id, lang)
+    if chat is None:
+        return
+    if chat.type not in {"group", "supergroup"}:
+        await _render_joinly_chat_detail(cb, state, chat_id, chat=chat)
+        await ack(cb)
         return
 
     db = load_joinly()
@@ -1438,13 +1508,19 @@ async def on_profile_joinly_toggle(cb: CallbackQuery, state: FSMContext) -> None
         db[str(chat_id)] = chat_cfg
 
     current = bool(chat_cfg.get(field))
+    if field == "WelcomeEnabled" and not current and joinly_flow._welcome_mode(chat_id) == "personal":
+        error = await joinly_flow._personal_welcome_error(cb.bot, chat_id, refresh=True)
+        if error:
+            await cb.answer(t(error, lang), show_alert=True)
+            return
     chat_cfg[field] = (not current)
-    try:
-        save_joinly(db)
-    except Exception:
-        pass
+    save_joinly(db)
 
-    await _render_joinly_chat_detail(cb, state, chat_id)
+    if field == "WelcomeEnabled":
+        await _render_profile_joinly_welcome(cb, state, chat)
+    else:
+        await _render_joinly_chat_detail(cb, state, chat_id, chat=chat)
+    await ack(cb)
 
 
 @router.callback_query(F.data == "profile:joinly")

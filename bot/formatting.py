@@ -224,11 +224,16 @@ def join_plain(values: Iterable[object], sep: str = " | ") -> str:
 
 
 _TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9-]+)((?:\s[^>]*)?)/?>")
+_ENTITY_RE = re.compile(r"&(?:#[0-9]+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]+);")
 _VOID_TAGS = {"br", "hr", "img", "video", "audio", "tg-map", "input"}
 
 
 def utf16_length(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
+
+
+def visible_html_length(value: str) -> int:
+    return utf16_length(html.unescape(_TAG_RE.sub("", str(value or ""))))
 
 
 def _open_tag_source(name: str, attrs: str) -> str:
@@ -237,13 +242,16 @@ def _open_tag_source(name: str, attrs: str) -> str:
 
 def split_html(text: str, limit: int) -> list[str]:
     text = str(text or "")
-    if utf16_length(text) <= limit:
+    if limit < 2:
+        raise ValueError("HTML chunk limit must be at least 2")
+    if visible_html_length(text) <= limit:
         return [text] if text else []
 
     parts: list[str] = []
     stack: list[tuple[str, str]] = []
     chunk: list[str] = []
     chunk_len = 0
+    source_len = 0
     break_at: int | None = None
     break_stack: list[tuple[str, str]] = []
 
@@ -254,30 +262,33 @@ def split_html(text: str, limit: int) -> list[str]:
         return "".join(f"</{n}>" for n, _ in reversed(items))
 
     def flush() -> None:
-        nonlocal chunk, chunk_len, break_at, break_stack
+        nonlocal chunk, chunk_len, source_len, break_at, break_stack
         body = "".join(chunk)
         if break_at is not None and 0 < break_at < len(body):
             head, tail, at_cut = body[:break_at], body[break_at:], break_stack
         else:
             head, tail, at_cut = body, "", stack
         parts.append(head + closing_suffix(at_cut))
-        carry = opened_prefix(at_cut) + tail.lstrip("\n")
+        carry = opened_prefix(at_cut) + tail
         chunk = [carry]
-        chunk_len = utf16_length(re.sub(r"<[^>]+>", "", carry))
+        chunk_len = visible_html_length(carry)
+        source_len = len(carry)
         break_at = None
         break_stack = []
 
     index = 0
     while index < len(text):
         match = _TAG_RE.match(text, index)
-        token = match.group(0) if match else text[index]
-        token_len = 0 if match else utf16_length(token)
+        entity = _ENTITY_RE.match(text, index) if not match and text[index] == "&" else None
+        token = match.group(0) if match else entity.group(0) if entity else text[index]
+        token_len = 0 if match else utf16_length(html.unescape(token))
 
-        if chunk_len + token_len > limit and chunk:
+        while chunk_len + token_len > limit and chunk_len:
             flush()
 
         chunk.append(token)
         chunk_len += token_len
+        source_len += len(token)
 
         if match:
             closing, name, attrs = match.group(1), match.group(2).lower(), match.group(3)
@@ -292,9 +303,9 @@ def split_html(text: str, limit: int) -> list[str]:
             continue
 
         if token in "\n ":
-            break_at = sum(len(piece) for piece in chunk)
+            break_at = source_len
             break_stack = list(stack)
-        index += 1
+        index += len(token)
 
     tail = "".join(chunk)
     if re.sub(r"<[^>]+>", "", tail).strip():

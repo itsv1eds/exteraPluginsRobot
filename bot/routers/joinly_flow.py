@@ -3,6 +3,7 @@ import asyncio
 import re
 import time
 from copy import deepcopy
+from collections import OrderedDict
 from functools import partial
 from string import Formatter
 from typing import Any
@@ -14,7 +15,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.filters import ChatMemberUpdatedFilter
 from aiogram.filters.chat_member_updated import IS_MEMBER, IS_NOT_MEMBER
-from aiogram.types import CallbackQuery, ChatMemberUpdated, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, ChatPermissions, EphemeralMessageParameters, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from storage import load_joinly, save_joinly
 from bot.cache import get_admins_super
@@ -30,10 +31,15 @@ logger = logging.getLogger(__name__)
 _post_guard_unlock_tasks: dict[int, asyncio.Task] = {}
 _post_guard_permission_locks: dict[int, asyncio.Lock] = {}
 
-_RETRY_CAP_SECONDS = 5.0
 _ADMIN_STATUS_TTL = 60.0
+_WELCOME_DEDUPE_TTL = 60.0
+_WELCOME_CACHE_SIZE = 2000
+_SETTINGS_INPUT_FIELDS = ("WelcomeEditingUser", "PostRulesEditingUser", "PostLockEditingUser", "ReactionEditingUser")
 _me_cache: dict[int, Any] = {}
 _admin_status_cache: dict[int, tuple[float, bool]] = {}
+_welcome_permissions_cache: OrderedDict[tuple[int, int], tuple[float, str | None]] = OrderedDict()
+_recent_welcomes: OrderedDict[tuple[int, int, int], float] = OrderedDict()
+_welcome_in_flight: set[tuple[int, int, int]] = set()
 _WELCOME_FIELDS = {
     "first",
     "last",
@@ -47,7 +53,7 @@ _WELCOME_FIELDS = {
 _BUTTON_URL_PATTERN = re.compile(r"\[(?P<label>[^\]]+)\]\(buttonurl://(?P<url>[^)]+)\)")
 
 
-async def _safe_telegram(factory, *, retries: int = 1):
+async def _safe_telegram(factory, *, retries: int = 1, raise_bad_request: bool = False):
     attempt = 0
     while True:
         try:
@@ -57,8 +63,10 @@ async def _safe_telegram(factory, *, retries: int = 1):
                 logger.warning("joinly: giving up after RetryAfter=%ss", exc.retry_after)
                 return None
             attempt += 1
-            await asyncio.sleep(min(float(exc.retry_after or 1), _RETRY_CAP_SECONDS))
+            await asyncio.sleep(float(exc.retry_after or 1))
         except TelegramBadRequest as exc:
+            if raise_bad_request:
+                raise
             logger.debug("joinly: bad request: %s", exc)
             return None
         except Exception:
@@ -93,6 +101,7 @@ _DEFAULTS: dict[str, Any] = {
     "BanMembers": False,
     "Enabled": False,
     "WelcomeEnabled": False,
+    "WelcomeMode": "public",
     "WelcomeText": t("join_welcome_default", "ru"),
     "JoinReactionEmoji": "",
     "PostGuardEnabled": False,
@@ -145,20 +154,20 @@ def _lang_for(target: Message | CallbackQuery | int | None) -> str:
 
 
 def _escape_md_v2(text: str) -> str:
-    return "".join(("\\" + ch) if ch in "_[]()~`>#+-=|{}.!" else ch for ch in (text or ""))
+    return "".join(("\\" + ch) if ch in "_*[]()~`>#+-=|{}.!" else ch for ch in (text or ""))
 
 
 def _unescape_md_v2(text: str) -> str:
     return re.sub(r"\\([_\[\]\(\)~`>#+\-=|{}\.!*])", r"\1", text or "")
 
 
-def _build_welcome_vars(message: Message, user) -> dict[str, str]:
+def _build_welcome_vars(chat, user) -> dict[str, str]:
     first = (getattr(user, "first_name", None) or "").strip()
     last = (getattr(user, "last_name", None) or "").strip()
     fullname = (getattr(user, "full_name", None) or (first + (" " + last if last else ""))).strip()
     username_raw = (getattr(user, "username", None) or "").strip()
     username = f"@{username_raw}" if username_raw else "—"
-    chatname = (getattr(message.chat, "title", None) or "").strip() or "—"
+    chatname = (getattr(chat, "title", None) or "").strip() or "—"
     user_id = str(getattr(user, "id", "") or "")
     mention_name = _escape_md_v2(first or fullname or "user")
     mention = f"[{mention_name}](tg://user?id={user_id})" if user_id else mention_name
@@ -317,8 +326,8 @@ def _settings_kb(chat_id: int, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _panel_kb_back(lang: str = "ru") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[_btn(t("btn_back", lang), callback_data="join:back", icon="back")]])
+def _panel_kb_back(lang: str = "ru", callback: str = "join:back") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[_btn(t("btn_back", lang), callback_data=callback, icon="back")]])
 
 
 def _panel_kb_welcome(chat_id: int, lang: str) -> InlineKeyboardMarkup:
@@ -327,10 +336,156 @@ def _panel_kb_welcome(chat_id: int, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_btn(welcome_toggle_label, callback_data="join:welcome_toggle", icon=_status_icon(welcome_enabled), style=_status_style(welcome_enabled))],
+            *_welcome_mode_rows(chat_id, lang, "join:welcome_mode:"),
+            [_btn(t("join_welcome_preview", lang), callback_data="join:welcome_preview", icon="search")],
             [_btn(t("join_btn_edit", lang), callback_data="join:welcome_edit", icon="edit")],
+            [_btn(t("join_welcome_community_preset", lang), callback_data="join:welcome_preset", icon="file")],
             [_btn(t("btn_back", lang), callback_data="join:back", icon="back")],
         ]
     )
+
+
+def _welcome_mode(chat_id: int) -> str:
+    value = _get_setting(chat_id, "WelcomeMode")
+    return value if isinstance(value, str) and value in {"public", "personal"} else "public"
+
+
+def _welcome_mode_rows(chat_id: int, lang: str, prefix: str) -> list:
+    selected = _welcome_mode(chat_id)
+    return [[
+        _btn(t(f"join_welcome_mode_{mode}", lang), callback_data=f"{prefix}{mode}",
+             icon=_status_icon(selected == mode), style="success" if selected == mode else None)
+        for mode in ("public", "personal")
+    ]]
+
+
+async def _personal_welcome_error(bot, chat_id: int, *, refresh: bool = False) -> str | None:
+    key = (int(bot.id), int(chat_id))
+    cached = _welcome_permissions_cache.get(key)
+    if not refresh and cached and cached[0] > time.monotonic():
+        return cached[1]
+    try:
+        me = await _get_me_cached(bot)
+        member = await bot.get_chat_member(chat_id, me.id)
+        status = getattr(member, "status", None)
+        if status not in {"administrator", "creator"}:
+            error = "join_welcome_requires_admin"
+        elif status != "creator" and not getattr(member, "can_send_welcome_messages", False):
+            error = "join_welcome_requires_permission"
+        else:
+            error = None
+    except Exception:
+        logger.warning("event=joinly.welcome_permissions_failed chat_id=%s", chat_id, exc_info=True)
+        return "join_welcome_permissions_failed"
+    _welcome_permissions_cache[key] = time.monotonic() + _ADMIN_STATUS_TTL, error
+    _welcome_permissions_cache.move_to_end(key)
+    while len(_welcome_permissions_cache) > _WELCOME_CACHE_SIZE:
+        _welcome_permissions_cache.popitem(last=False)
+    return error
+
+
+async def _welcome_panel_text(bot, chat_id: int, lang: str) -> str:
+    text = t("join_welcome_delivery_help", lang, mode=t(f"join_welcome_mode_{_welcome_mode(chat_id)}", lang))
+    error = await _personal_welcome_error(bot, chat_id)
+    text += "\n\n" + t(error or "join_welcome_permission_ok", lang)
+    return text + "\n\n" + t("join_welcome_help", lang)
+
+
+async def _show_welcome_panel(cb: CallbackQuery, lang: str) -> None:
+    try:
+        await cb.message.edit_text(
+            await _welcome_panel_text(cb.bot, cb.message.chat.id, lang),
+            parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+            reply_markup=_panel_kb_welcome(cb.message.chat.id, lang),
+        )
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc).lower():
+            raise
+
+
+async def _set_welcome_mode(bot, chat_id: int, mode: str) -> str | None:
+    if mode not in {"public", "personal"}:
+        return "join_welcome_bad_mode"
+    if mode == "personal":
+        error = await _personal_welcome_error(bot, chat_id, refresh=True)
+        if error:
+            return error
+    _set_setting(chat_id, "WelcomeMode", mode)
+    return None
+
+
+def _cancel_settings_input(chat_id: int, user_id: int) -> bool:
+    db = _load_db()
+    chat_cfg = db.get(str(chat_id))
+    if not isinstance(chat_cfg, dict):
+        return False
+    active = [key for key in _SETTINGS_INPUT_FIELDS if chat_cfg.get(key) == user_id]
+    for key in active:
+        chat_cfg[key] = 0
+    if active:
+        _save_db(db)
+    return bool(active)
+
+
+async def _send_welcome(bot, chat, user, lang: str, *, personal: bool | None = None):
+    if getattr(user, "is_bot", False) or chat.type not in {"group", "supergroup"}:
+        return None
+    personal = _welcome_mode(chat.id) == "personal" if personal is None else personal
+    if personal:
+        error = await _personal_welcome_error(bot, chat.id)
+        if error:
+            logger.warning("event=joinly.personal_welcome_skipped chat_id=%s reason=%s", chat.id, error)
+            return None
+    raw_vars = _build_welcome_vars(chat, user)
+    template = str(_get_setting(chat.id, "WelcomeText") or t("join_welcome_default", lang))
+    if not _is_valid_welcome_template(template):
+        logger.warning("Invalid welcome template, using default: chat_id=%s", chat.id)
+        template = t("join_welcome_default", lang)
+    templ, flags = _extract_flags(template)
+    rendered, kb = _parse_buttonurl_md(templ.format(**_escape_vars_for_md(raw_vars)))
+    params = EphemeralMessageParameters(receiver_user_id=user.id) if personal else None
+    kwargs = {
+        "reply_markup": kb,
+        "disable_web_page_preview": not flags.get("preview"),
+        "disable_notification": bool(flags.get("nonotif")),
+        "protect_content": bool(flags.get("protect")),
+    }
+    if params is not None:
+        kwargs["ephemeral_message_parameters"] = params
+    try:
+        return await _safe_telegram(partial(
+            bot.send_message, chat.id, rendered or "—", parse_mode=ParseMode.MARKDOWN_V2, **kwargs,
+        ), raise_bad_request=True)
+    except TelegramBadRequest as exc:
+        if not any(marker in str(exc).lower() for marker in ("parse entities", "can't find end", "must be escaped")):
+            logger.warning("event=joinly.welcome_send_failed chat_id=%s error=%s", chat.id, exc)
+            return None
+        plain_text, safe_kb = _parse_buttonurl_md(_unescape_md_v2(templ).format(**raw_vars))
+        kwargs["reply_markup"] = safe_kb
+        return await _safe_telegram(partial(
+            bot.send_message, chat.id, plain_text or "—", parse_mode=None, **kwargs,
+        ))
+
+
+async def _welcome_new_member(bot, chat, user) -> None:
+    if chat.type not in {"group", "supergroup"} or getattr(user, "is_bot", False):
+        return
+    if not _get_setting(chat.id, "WelcomeEnabled"):
+        return
+    key = (int(bot.id), int(chat.id), int(user.id))
+    now = time.monotonic()
+    if key in _welcome_in_flight or _recent_welcomes.get(key, 0) > now:
+        return
+    _welcome_in_flight.add(key)
+    try:
+        sent = await _send_welcome(bot, chat, user, _lang_for(user.id))
+        if sent is not None:
+            _recent_welcomes[key] = time.monotonic() + _WELCOME_DEDUPE_TTL
+            _recent_welcomes.move_to_end(key)
+            while len(_recent_welcomes) > _WELCOME_CACHE_SIZE:
+                _recent_welcomes.popitem(last=False)
+    finally:
+        _welcome_in_flight.discard(key)
 
 
 def _panel_kb_post_guard(chat_id: int, lang: str) -> InlineKeyboardMarkup:
@@ -785,12 +940,6 @@ async def on_new_members(message: Message) -> None:
             t("joinly_bot_added", _lang_for(message)), parse_mode=ParseMode.HTML
         ))
 
-    if not _get_setting(message.chat.id, "WelcomeEnabled"):
-        return
-
-    if not gotme:
-        gotme = await _get_me_cached(message.bot)
-
     if not _get_setting(message.chat.id, "DeleteServiceMessages"):
         emoji = str(_get_setting(message.chat.id, "JoinReactionEmoji") or "").strip()
         if emoji and hasattr(message.bot, "set_message_reaction"):
@@ -811,43 +960,8 @@ async def on_new_members(message: Message) -> None:
         elif emoji:
             logger.info("Join reaction skipped: set_message_reaction is not available")
 
-    for u in list(message.new_chat_members or []):
-        if getattr(u, "id", None) == getattr(gotme, "id", None):
-            continue
-        raw_vars = _build_welcome_vars(message, u)
-        vars_map = _escape_vars_for_md(raw_vars)
-        template = str(_get_setting(message.chat.id, "WelcomeText") or _DEFAULTS["WelcomeText"])
-        if not _is_valid_welcome_template(template):
-            logger.warning("Invalid welcome template, using default: chat_id=%s", message.chat.id)
-            template = t("join_welcome_default", _lang_for(message))
-        templ, flags = _extract_flags(template)
-        rendered = templ.format(**vars_map)
-        rendered, kb = _parse_buttonurl_md(rendered)
-        sent = await _safe_telegram(
-            partial(
-                message.answer,
-                rendered,
-                parse_mode=ParseMode.MARKDOWN_V2,
-                reply_markup=kb,
-                disable_web_page_preview=(not flags.get("preview")),
-                disable_notification=bool(flags.get("nonotif")),
-                protect_content=bool(flags.get("protect")),
-            )
-        )
-        if sent is None:
-            plain_template = _unescape_md_v2(templ)
-            plain_text = plain_template.format(**raw_vars)
-            plain_text, safe_kb = _parse_buttonurl_md(plain_text)
-            await _safe_telegram(
-                partial(
-                    message.answer,
-                    plain_text,
-                    reply_markup=safe_kb,
-                    disable_web_page_preview=(not flags.get("preview")),
-                    disable_notification=bool(flags.get("nonotif")),
-                    protect_content=bool(flags.get("protect")),
-                )
-            )
+    for user in message.new_chat_members or []:
+        await _welcome_new_member(message.bot, message.chat, user)
 
     if _get_setting(message.chat.id, "DeleteServiceMessages"):
         try:
@@ -916,6 +1030,12 @@ async def on_settings_cb(cb: CallbackQuery) -> None:
     if not await _can_manage_chat_settings(cb.bot, cb.message.chat.id, cb.from_user.id):
         await cb.answer()
         return
+
+    if _get_panel_message_id(cb.message.chat.id, cb.from_user.id) != cb.message.message_id:
+        await cb.answer(t("menu_owner_mismatch", _lang_for(cb)), show_alert=True)
+        return
+
+    _cancel_settings_input(cb.message.chat.id, cb.from_user.id)
 
     action = cb.data.split(":", 1)[1]
     if action == "toggle_enabled":
@@ -1019,13 +1139,35 @@ async def on_settings_cb(cb: CallbackQuery) -> None:
         return
     elif action == "welcome":
         lang = _lang_for(cb)
-        await cb.message.edit_text(
-            t("join_welcome_help", lang),
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_markup=_panel_kb_welcome(cb.message.chat.id, lang),
-        )
+        await _show_welcome_panel(cb, lang)
         await cb.answer()
+        return
+    elif action.startswith("welcome_mode:"):
+        lang = _lang_for(cb)
+        error = await _set_welcome_mode(cb.bot, cb.message.chat.id, action.split(":", 1)[1])
+        if error:
+            await cb.answer(t(error, lang), show_alert=True)
+            return
+        await _show_welcome_panel(cb, lang)
+        await ack(cb)
+        return
+    elif action == "welcome_preview":
+        lang = _lang_for(cb)
+        error = await _personal_welcome_error(cb.bot, cb.message.chat.id, refresh=True)
+        if error:
+            await cb.answer(t(error, lang), show_alert=True)
+            return
+        await ack(cb)
+        sent = await _send_welcome(cb.bot, cb.message.chat, cb.from_user, lang, personal=True)
+        if sent is None:
+            logger.warning("event=joinly.welcome_preview_failed chat_id=%s", cb.message.chat.id)
+            await ack(cb, t("join_welcome_preview_failed", lang), show_alert=True)
+        return
+    elif action == "welcome_preset":
+        lang = _lang_for(cb)
+        _set_setting(cb.message.chat.id, "WelcomeText", t("join_welcome_community_template", lang))
+        await _show_welcome_panel(cb, lang)
+        await ack(cb, t("join_saved", lang))
         return
     elif action == "welcome_edit":
         _set_setting(cb.message.chat.id, "WelcomeEditingUser", int(cb.from_user.id))
@@ -1034,23 +1176,20 @@ async def on_settings_cb(cb: CallbackQuery) -> None:
             t("join_prompt_welcome", lang),
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True,
-            reply_markup=_panel_kb_back(lang),
+            reply_markup=_panel_kb_back(lang, "join:welcome"),
         )
         await cb.answer()
         return
     elif action == "welcome_toggle":
         current = bool(_get_setting(cb.message.chat.id, "WelcomeEnabled"))
+        if not current and _welcome_mode(cb.message.chat.id) == "personal":
+            error = await _personal_welcome_error(cb.bot, cb.message.chat.id, refresh=True)
+            if error:
+                await cb.answer(t(error, _lang_for(cb)), show_alert=True)
+                return
         _set_setting(cb.message.chat.id, "WelcomeEnabled", (not current))
         lang = _lang_for(cb)
-        try:
-            await cb.message.edit_text(
-                t("join_welcome_help", lang),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                reply_markup=_panel_kb_welcome(cb.message.chat.id, lang),
-            )
-        except Exception:
-            pass
+        await _show_welcome_panel(cb, lang)
         await cb.answer()
         return
     elif action == "reaction":
@@ -1098,6 +1237,14 @@ async def on_welcome_edit(message: Message) -> None:
     if await _handle_channel_post(message):
         return
     if not message.from_user:
+        return
+    if (message.text or "").lstrip().startswith("/"):
+        _cancel_settings_input(message.chat.id, message.from_user.id)
+        return
+    chat_cfg = _load_db().get(str(message.chat.id)) or {}
+    if not any(chat_cfg.get(key) == message.from_user.id for key in _SETTINGS_INPUT_FIELDS):
+        return
+    if not await _is_chat_admin(message):
         return
     lang = _lang_for(message)
     post_lock_editing_user = _get_setting(message.chat.id, "PostLockEditingUser")
@@ -1175,15 +1322,27 @@ async def on_welcome_edit(message: Message) -> None:
     panel_id = _get_panel_message_id(message.chat.id, message.from_user.id)
     if panel_id:
         try:
-            await _show_panel_main_by_id(message.bot, message.chat.id, panel_id, lang)
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id, message_id=panel_id,
+                text=await _welcome_panel_text(message.bot, message.chat.id, lang),
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                reply_markup=_panel_kb_welcome(message.chat.id, lang),
+            )
         except Exception:
-            await message.answer(t("join_saved", lang), reply_markup=_settings_kb(message.chat.id, lang))
+            sent = await message.answer(await _welcome_panel_text(message.bot, message.chat.id, lang),
+                                        parse_mode=ParseMode.HTML, reply_markup=_panel_kb_welcome(message.chat.id, lang))
+            if sent:
+                _set_panel_message_id(message.chat.id, message.from_user.id, sent.message_id)
     else:
-        await message.answer(t("join_saved", lang), reply_markup=_settings_kb(message.chat.id, lang))
+        sent = await message.answer(await _welcome_panel_text(message.bot, message.chat.id, lang),
+                                    parse_mode=ParseMode.HTML, reply_markup=_panel_kb_welcome(message.chat.id, lang))
+        if sent:
+            _set_panel_message_id(message.chat.id, message.from_user.id, sent.message_id)
 
 
 @router.chat_member(ChatMemberUpdatedFilter(IS_NOT_MEMBER >> IS_MEMBER))
 async def on_member_join(event: ChatMemberUpdated) -> None:
+    await _welcome_new_member(event.bot, event.chat, event.new_chat_member.user)
     if not _get_setting(event.chat.id, "Enabled"):
         return
     if not await _bot_is_admin(event.bot, event.chat.id):

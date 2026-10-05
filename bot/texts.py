@@ -1152,6 +1152,44 @@ TEXTS: Dict[str, Dict[str, str]] = {
 
     "join_settings_title": {"ru": "Настройки входа:", "en": "Join settings:"},
     "join_btn_welcome": {"ru": "Приветствие", "en": "Welcome"},
+    "join_welcome_mode_public": {"ru": "В общий чат", "en": "Visible to everyone"},
+    "join_welcome_mode_personal": {"ru": "Только новичку", "en": "New member only"},
+    "join_welcome_preview": {"ru": "Предпросмотр для меня", "en": "Preview for me"},
+    "join_welcome_community_preset": {"ru": "Шаблон exteraPlugins", "en": "exteraPlugins template"},
+    "join_welcome_delivery_help": {
+        "ru": "<b>Приветствие</b>\nРежим: {mode}\n\nВ общем режиме сообщение видят все. В персональном — только новый участник.\nПредпросмотр виден только вам. Персональное сообщение временное; Telegram не гарантирует доставку, если участник офлайн.",
+        "en": "<b>Welcome message</b>\nMode: {mode}\n\nPublic mode shows the message to everyone. Personal mode shows it only to the new member.\nOnly you can see the preview. Personal messages are temporary; Telegram does not guarantee delivery when the member is offline.",
+    },
+    "join_welcome_requires_admin": {
+        "ru": "Для персонального приветствия назначьте бота администратором чата.",
+        "en": "Make the bot a chat administrator to send personal welcome messages.",
+    },
+    "join_welcome_requires_permission": {
+        "ru": "В правах администратора бота включите разрешение отправлять приветствия.",
+        "en": "Enable the permission to send welcome messages in the bot's administrator rights.",
+    },
+    "join_welcome_permissions_failed": {
+        "ru": "Не удалось проверить права бота. Проверьте, что он добавлен в чат, и попробуйте снова.",
+        "en": "Could not check the bot's permissions. Make sure it is in the chat and try again.",
+    },
+    "join_welcome_permission_ok": {
+        "ru": "У бота есть права для персонального приветствия.",
+        "en": "The bot has the permissions for personal welcome messages.",
+    },
+    "join_welcome_bad_mode": {"ru": "Неизвестный режим приветствия.", "en": "Unknown welcome mode."},
+    "join_welcome_preview_failed": {
+        "ru": "Не удалось отправить предпросмотр. Проверьте права бота и попробуйте ещё раз.",
+        "en": "Could not send the preview. Check the bot's permissions and try again.",
+    },
+    "join_welcome_community_template": {
+        "ru": "*Привет, {first}\\!*\nЭтот чат — для обсуждения публикаций\\.\nПеред установкой прочитайте описание плагина и пост о безопасности\\.\nНе устанавливайте файлы из непроверенных источников\\.\n\n[Каталог](buttonurl://https://t.me/exteraPluginsRobot?start=catalog)\n[Безопасность](buttonurl://https://t.me/exteraPluginsSup/91) [Правила](buttonurl://https://t.me/exteraPluginsSup/93:same)\n[Где общаться](buttonurl://https://t.me/exteraForum)",
+        "en": "*Welcome, {first}\\!*\nThis chat is for discussing channel posts\\.\nRead the plugin description and the security post before installing\\.\nDo not install files from unverified sources\\.\n\n[Catalog](buttonurl://https://t.me/exteraPluginsRobot?start=catalog)\n[Security](buttonurl://https://t.me/exteraPluginsSup/91) [Rules](buttonurl://https://t.me/exteraPluginsSup/93:same)\n[Community chat](buttonurl://https://t.me/exteraForum)",
+    },
+    "join_welcome_channel_help": {
+        "ru": "<b>Приветствие канала</b>\n\nОткройте профиль канала → Изменить → Приветствие и добавьте текст со ссылками на каталог, безопасность и правила. Telegram покажет его только новым подписчикам.\nПерсональные приветствия через Joinly доступны в группах и супергруппах.",
+        "en": "<b>Channel welcome message</b>\n\nOpen the channel profile → Edit → Welcome Message and add text with links to the catalog, security post and rules. Telegram will show it only to new subscribers.\nPersonal welcome messages through Joinly are available in groups and supergroups.",
+    },
+    "join_welcome_profile_mode": {"ru": "Режим приветствия: {mode}", "en": "Welcome mode: {mode}"},
     "join_btn_enabled": {"ru": "Кик при заходе", "en": "Kick on join"},
     "join_btn_ban_on_join": {"ru": "Бан при заходе", "en": "Ban on join"},
     "join_btn_service_cleanup": {"ru": "Очищать сервисные", "en": "Clean service"},

@@ -2,20 +2,24 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from plugin_formats import plugin_extension
 from typing import Any, Dict, List, Optional
 
 from telethon import TelegramClient, __version__ as TELETHON_VERSION, utils
-from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError, MessageIdInvalidError, MessageNotModifiedError
+from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError, MediaCaptionTooLongError, MessageIdInvalidError, MessageNotModifiedError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
+from telethon.tl.functions.help import GetAppConfigRequest, GetConfigRequest
 from telethon.tl.types import DocumentAttributeFilename, Message, MessageEntityBlockquote
 from telethon.extensions import html as telethon_html
 
 from channel_parser import parse_channel_post
 from storage import load_plugins, save_plugins, load_icons, save_icons, load_config
 from bot.cache import invalidate
+from bot import limits
+from bot.formatting import split_html, utf16_length
 from catalog import invalidate_catalog_cache
 
 logger = logging.getLogger(__name__)
@@ -290,13 +294,56 @@ class UserbotClient:
 
     def _format_text_for_telegram(self, text: str) -> tuple[str, list]:
         return self._parse_html(text or "")
+
+    async def text_limits(self) -> tuple[int, int]:
+        cached = getattr(self, "_text_limits_cache", None)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        caption_limit, message_limit = limits.CAPTION, limits.MESSAGE_TEXT
+        try:
+            me = await _guard(self.client.get_me(), "get_me")
+            config = await _guard(self.client(GetConfigRequest()), "get_config")
+            caption_limit = int(config.caption_length_max or caption_limit)
+            message_limit = int(config.message_length_max or message_limit)
+            app_config = await _guard(self.client(GetAppConfigRequest(hash=0)), "get_app_config")
+            key = "caption_length_limit_premium" if getattr(me, "premium", False) else "caption_length_limit_default"
+            for item in getattr(getattr(app_config, "config", None), "value", ()):
+                value = getattr(item.value, "value", None)
+                if item.key == key and isinstance(value, (int, float)) and value > 0:
+                    caption_limit = int(value)
+                    break
+        except Exception:
+            logger.warning("Failed to read Telegram text limits; using available limits", exc_info=True)
+        result = max(2, caption_limit), max(2, message_limit)
+        self._text_limits_cache = time.monotonic() + 300, result
+        return result
+
+    async def _send_description(self, entity, text: str, reply_to: int):
+        _, message_limit = await self.text_limits()
+        sent = []
+        try:
+            for part in split_html(text, message_limit):
+                parsed_text, entities = self._format_text_for_telegram(part)
+                sent.append(await _guard(self.client.send_message(
+                    entity, parsed_text, formatting_entities=entities,
+                    reply_to=reply_to, link_preview=False,
+                ), "send_plugin_description"))
+        except BaseException:
+            if sent:
+                await self.client.delete_messages(entity, [message.id for message in sent])
+            raise
+        return sent
     
     async def send_plugin_file(self, chat_ref, text: str, file_path: str, download_name: str):
+        from bot.services.channel_text import try_edit
+
         entity = await self.client.get_entity(chat_ref)
         parsed_text, entities = self._format_text_for_telegram(text)
-        me = await self.client.get_me()
-        caption_limit = 4096 if getattr(me, "premium", False) else 1024
-        split = len(parsed_text.encode("utf-16-le")) // 2 > caption_limit
+        split = utf16_length(parsed_text) > limits.CAPTION
+        can_edit = False
+        if split:
+            caption_limit, _ = await self.text_limits()
+            can_edit = utf16_length(parsed_text) <= caption_limit
         message = await _guard(self.client.send_file(
             entity, file=file_path, caption="" if split else parsed_text,
             formatting_entities=[] if split else entities,
@@ -304,10 +351,9 @@ class UserbotClient:
         ), "send_plugin_file", timeout=600)
         if split:
             try:
-                await _guard(self.client.send_message(
-                    entity, parsed_text, formatting_entities=entities,
-                    reply_to=message.id, link_preview=False,
-                ), "send_plugin_description")
+                edited = can_edit and await try_edit(self, entity, message.id, text)
+                if not edited:
+                    await self._send_description(entity, text, message.id)
             except BaseException:
                 await self.client.delete_messages(entity, [message.id])
                 raise
@@ -523,47 +569,50 @@ class UserbotClient:
     ) -> Dict[str, Any]:
         entity = await self.get_publish_entity()
         parsed_text, entities = self._format_text_for_telegram(text)
+        has_file = bool(file_path and Path(file_path).exists())
+        is_caption = has_file
+        if not has_file and utf16_length(parsed_text) > limits.CAPTION:
+            existing = await _guard(self.client.get_messages(entity, ids=message_id), "get_messages")
+            is_caption = bool(getattr(existing, "media", None))
+        split = False
+        if is_caption and utf16_length(parsed_text) > limits.CAPTION:
+            caption_limit, _ = await self.text_limits()
+            split = utf16_length(parsed_text) > caption_limit
 
+        async def edit(separate: bool):
+            kwargs = {"formatting_entities": [] if separate else entities}
+            if has_file:
+                kwargs["file"] = file_path
+                kwargs["attributes"] = [DocumentAttributeFilename(download_name or Path(file_path).name)]
+            return await _guard(self.client.edit_message(
+                entity, message_id, "" if separate else parsed_text, **kwargs,
+            ), "edit_message", timeout=600)
+
+        updated = True
         try:
-            if file_path and Path(file_path).exists():
-                file_name = download_name or Path(file_path).name
-                attributes = [DocumentAttributeFilename(file_name)]
-                await _guard(self.client.edit_message(
-                    entity,
-                    message_id,
-                    parsed_text,
-                    file=file_path,
-                    attributes=attributes,
-                    formatting_entities=entities,
-                ), "edit_message", timeout=600)
-            else:
-                await _guard(self.client.edit_message(
-                    entity,
-                    message_id,
-                    parsed_text,
-                    formatting_entities=entities,
-                ), "edit_message", timeout=600)
-
-            channel_username = CONFIG.get("publish_channel", "xzcvzxa")
-
-            return {
-                "message_id": message_id,
-                "chat_id": entity.id,
-                "link": f"https://t.me/{channel_username}/{message_id}",
-                "updated": True,
-            }
+            try:
+                await edit(split)
+            except MediaCaptionTooLongError:
+                if not is_caption or split:
+                    raise
+                split = True
+                await edit(True)
         except MessageNotModifiedError:
-            channel_username = CONFIG.get("publish_channel", "xzcvzxa")
             logger.info("Message %s not modified; skipping edit", message_id)
-            return {
-                "message_id": message_id,
-                "chat_id": entity.id,
-                "link": f"https://t.me/{channel_username}/{message_id}",
-                "updated": False,
-            }
-        except Exception as e:
-            logger.error(f"Failed to update message {message_id}: {e}")
+            updated = False
+        except Exception:
+            logger.exception("Failed to update message %s", message_id)
             raise
+        if split:
+            await self._send_description(entity, text, message_id)
+            updated = True
+        channel_username = CONFIG.get("publish_channel", "xzcvzxa")
+        return {
+            "message_id": message_id,
+            "chat_id": entity.id,
+            "link": f"https://t.me/{channel_username}/{message_id}",
+            "updated": updated,
+        }
 
 
     async def update_icon_message(

@@ -97,6 +97,11 @@ class CommandStateResetMiddleware(BaseMiddleware):
         if isinstance(event, Message):
             raw = event.text or event.caption
             command = parse_command(raw)
+            joinly_input = False
+            if event.from_user and event.chat.type in {"group", "supergroup"} and _COMMAND_RE.match((raw or "").strip()):
+                from bot.routers.joinly_flow import _cancel_settings_input
+
+                joinly_input = _cancel_settings_input(event.chat.id, event.from_user.id)
             state = data.get("state")
             in_input = False
             if state is not None:
@@ -116,7 +121,7 @@ class CommandStateResetMiddleware(BaseMiddleware):
                         )
                     except Exception:
                         logger.exception("command state reset failed")
-            elif in_input and _COMMAND_RE.match((raw or "").strip()):
+            elif (in_input or joinly_input) and _COMMAND_RE.match((raw or "").strip()):
                 logger.info(
                     "event=command.ignored_in_input text=%s user_id=%s",
                     "command", event.from_user.id if event.from_user else None,

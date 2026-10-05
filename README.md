@@ -45,13 +45,16 @@ Live bot: [@exteraPluginsRobot](https://t.me/exteraPluginsRobot)
 - **Paid broadcast disable (Telegram Stars)**: user can pay to disable broadcast (for a joke, you can disable it for free).
 
 ### Joinly (group join settings)
-Managed via **`/settings`** in a group (admins only).
+Managed via **`/settings`** in a group or **Profile → Joinly** (chat admins only).
 - **Welcome message** with:
   - **MarkdownV2**
   - **Placeholders**: `{first}`, `{last}`, `{fullname}`, `{username}`, `{mention}`, `{id}`, `{chatname}`
   - **Inline buttons**: `[Text](buttonurl://https://example.com)` and `:same` to keep buttons in the same row
   - **Flags**: `{preview}`, `{nonotif}`, `{protect}`
 - **Welcome on/off toggle** (independent from kick/ban).
+- **Public or personal welcome**: the personal mode uses Telegram ephemeral messages visible only to the new member. Requires the bot to be an admin with permission to send welcome messages; delivery to offline members is not guaranteed.
+- **Personal preview** and an **exteraPlugins template** linking to the catalog, security post and publishing rules. Existing chat templates remain unchanged until selected explicitly.
+- Channel welcome messages are configured in Telegram: **channel profile → Edit → Welcome Message**.
 - **Kick on join** and **ban on join** (optional).
 - **Service message cleanup** and **join reaction**.
 

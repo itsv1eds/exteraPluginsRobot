@@ -204,6 +204,11 @@ class UserIdentityMiddleware(BaseMiddleware):
             from bot.services.chat_info import observe_user_identity
 
             user = event.from_user
+            if (isinstance(event, CallbackQuery) and event.message and event.message.chat.type == "private"
+                    and event.message.chat.id == user.id and data.get("bot")):
+                from bot.services.admin_notifications import clear_notification_failure
+
+                clear_notification_failure(data["bot"], user.id)
             if not user.is_bot and user.id in get_admins() and not (isinstance(event, Message) and event.sender_chat):
                 try:
                     observe_user_identity(user, data.get("bot"))

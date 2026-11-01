@@ -1,9 +1,9 @@
 import ast
 import json
 import os
-import shutil
 import tempfile
 import zipfile
+from copy import copy
 from pathlib import Path
 
 import yaml
@@ -83,10 +83,10 @@ def write_plugin_categories(path: str | Path, categories) -> bool:
                 return False
             temporary.write_bytes(updated)
         else:
-            from core.elyx_parser import _mapping, _path, _read, parse_elyx_file
+            from core.elyx_parser import _mapping, _path, _read, member_chunks, open_elyx_archive, parse_elyx_file
 
             metadata = parse_elyx_file(path)
-            with zipfile.ZipFile(path) as source:
+            with open_elyx_archive(path) as source:
                 target = _path(metadata.optional["metainfo"])
                 values = _mapping(source, target)
                 if values.get("__category__", values.get("category")) == keys:
@@ -110,10 +110,13 @@ def write_plugin_categories(path: str | Path, categories) -> bool:
                     destination.comment = source.comment
                     for info in source.infolist():
                         if info.filename == target:
-                            destination.writestr(info, updated)
+                            destination.writestr(copy(info), updated)
                         else:
-                            with source.open(info) as reader, destination.open(info, "w") as writer:
-                                shutil.copyfileobj(reader, writer)
+                            with destination.open(copy(info), "w") as writer:
+                                for chunk in member_chunks(source, info, info.file_size):
+                                    writer.write(chunk)
+                                    if destination.fp.tell() > plugin_file_limit(path):
+                                        raise PluginParseError("Plugin file exceeds its size limit after adding categories")
             if parse_elyx_file(temporary).categories != keys:
                 raise PluginParseError("Failed to save Elyx categories")
         if temporary.stat().st_size > plugin_file_limit(path):

@@ -37,6 +37,8 @@ from core.storage import save_config
 
 logger = logging.getLogger(__name__)
 _unreachable_until: dict[tuple[int, int], float] = {}
+_PRIVATE_UNREACHABLE_TTL = 24 * 60 * 60
+_GROUP_UNREACHABLE_TTL = 60 * 60
 
 
 def clear_notification_failure(bot, chat_id: int) -> None:
@@ -46,7 +48,7 @@ def clear_notification_failure(bot, chat_id: int) -> None:
 def _notification_unreachable(bot, chat_id: int, exc: BaseException | None = None) -> bool:
     key = (getattr(bot, "id", 0), int(chat_id))
     if exc is not None and is_unreachable_chat(exc):
-        _unreachable_until[key] = monotonic() + 300
+        _unreachable_until[key] = monotonic() + (_PRIVATE_UNREACHABLE_TTL if int(chat_id) > 0 else _GROUP_UNREACHABLE_TTL)
         if len(_unreachable_until) > 512:
             _unreachable_until.pop(next(iter(_unreachable_until)))
         return True

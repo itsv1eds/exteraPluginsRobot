@@ -361,24 +361,26 @@ def _render_update_text(data: Dict[str, Any]) -> str:
     return text + ("\n\n" + context if context else "")
 
 
+def _welcome_text(user, lang: str) -> str:
+    username = str(getattr(user, "username", None) or "").strip()
+    name = f"@{username}" if username else str(getattr(user, "full_name", None) or getattr(user, "first_name", None) or "—").strip() or "—"
+    return t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=plain_html(name))
+
+
 async def _render_home(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
     await state.clear()
     await state.update_data(lang=lang)
     await state.set_state(UserFlow.idle)
-    if cb.from_user and (cb.from_user.username or "").strip():
-        user_name = f"@{cb.from_user.username.strip()}"
-    else:
-        user_name = (cb.from_user.full_name if cb.from_user else "").strip() or (cb.from_user.first_name if cb.from_user else "").strip() or "—"
     msg = await answer(
         cb,
-        t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=user_name),
+        _welcome_text(cb.from_user, lang),
         main_menu_kb(lang),
         "welcome",
     )
     if cb.message:
-        await try_react_pray(cb.message)
+        spawn_background(try_react_pray(cb.message))
     elif msg:
-        await try_react_pray(msg)
+        spawn_background(try_react_pray(msg))
     if msg:
         await remember_menu_owner(cb, state, msg)
 
@@ -542,7 +544,7 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
             if sent:
                 await remember_menu_owner(message, state, sent)
         else:
-            sent = await answer(message, t("welcome", lang, bot=BOT_USERNAME), main_menu_kb(lang), "welcome")
+            sent = await answer(message, _welcome_text(message.from_user, lang), main_menu_kb(lang), "welcome")
             if sent:
                 await remember_menu_owner(message, state, sent)
         return True
@@ -774,18 +776,14 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                     await remember_menu_owner(message, state, sent)
                 return
 
-        if message.from_user and (message.from_user.username or "").strip():
-            user_name = f"@{message.from_user.username.strip()}"
-        else:
-            user_name = (message.from_user.full_name if message.from_user else "").strip() or (message.from_user.first_name if message.from_user else "").strip() or "—"
         sent = await answer(
             message,
-            t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=user_name),
+            _welcome_text(message.from_user, lang),
             main_menu_kb(lang),
             "welcome",
         )
         if sent:
-            await try_react_pray(sent)
+            spawn_background(try_react_pray(sent))
             await remember_menu_owner(message, state, sent)
         return
 
@@ -930,17 +928,16 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.answer(t("language_saved", lang))
             return
 
-    user_name = (cb.from_user.full_name if cb.from_user else "").strip() or (cb.from_user.first_name if cb.from_user else "").strip() or "—"
     msg = await answer(
         cb,
-        t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=user_name),
+        _welcome_text(cb.from_user, lang),
         main_menu_kb(lang),
         "welcome",
     )
     if cb.message:
-        await try_react_pray(cb.message)
+        spawn_background(try_react_pray(cb.message))
     elif msg:
-        await try_react_pray(msg)
+        spawn_background(try_react_pray(msg))
     await cb.answer(t("language_saved", lang))
 
 
@@ -1017,20 +1014,16 @@ async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -
 async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await state.set_state(UserFlow.idle)
-    if cb.from_user and (cb.from_user.username or "").strip():
-        user_name = f"@{cb.from_user.username.strip()}"
-    else:
-        user_name = (cb.from_user.full_name if cb.from_user else "").strip() or (cb.from_user.first_name if cb.from_user else "").strip() or "—"
     msg = await answer(
         cb,
-        t("welcome", lang, bot=BOT_USERNAME, bot_name=BOT_USERNAME, user_name=user_name),
+        _welcome_text(cb.from_user, lang),
         main_menu_kb(lang),
         "welcome",
     )
     if cb.message:
-        await try_react_pray(cb.message)
+        spawn_background(try_react_pray(cb.message))
     elif msg:
-        await try_react_pray(msg)
+        spawn_background(try_react_pray(msg))
     await ack(cb)
 
 
@@ -2962,7 +2955,7 @@ async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
 async def on_resubmit_request(cb: CallbackQuery, state: FSMContext) -> None:
     lang = get_lang(cb.from_user.id if cb.from_user else None)
     request_id = cb.data.split(":", 1)[1]
-    entry = get_request_by_id(request_id)
+    entry = get_request_by_callback_token(request_id)
     if (
         not entry
         or entry.get("status") != "rework"
@@ -2971,6 +2964,7 @@ async def on_resubmit_request(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(t("resubmit_expired", lang), show_alert=True)
         return
 
+    request_id = str(entry["id"])
     payload = deepcopy(entry.get("payload") or {})
     payload.update(category_fields(categories_for(payload) or categories_for(payload.get("old_plugin") or {})))
     missing = missing_draft_fields(payload)

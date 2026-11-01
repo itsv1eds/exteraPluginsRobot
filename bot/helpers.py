@@ -343,6 +343,8 @@ async def blank_and_delete(bot, chat_id: int, message_id: int, *, is_media: bool
 
                     spawn_background(retry_blank())
                     return False
+                if isinstance(exc, TelegramBadRequest) and "message to edit not found" in str(exc).lower():
+                    return True
                 if _is_not_modified_error(exc):
                     blanked = True
                     blanked_with = candidate
@@ -362,6 +364,21 @@ async def blank_and_delete(bot, chat_id: int, message_id: int, *, is_media: bool
         try:
             await bot.delete_message(int(chat_id), int(message_id))
             return True
+        except TelegramRetryAfter as exc:
+            spawn_background(_delete(max(1, float(exc.retry_after))))
+            return False
+        except TelegramBadRequest as exc:
+            error = str(exc).lower()
+            if "message to delete not found" in error:
+                return True
+            if "message can't be deleted" in error:
+                logger.info("event=blank_before_delete.not_deletable chat_id=%s message_id=%s", chat_id, message_id)
+                return False
+            logger.warning(
+                "event=blank_before_delete.delete_failed chat_id=%s message_id=%s error=%s",
+                chat_id, message_id, _short_error(exc),
+            )
+            return False
         except Exception as exc:
             logger.warning(
                 "event=blank_before_delete.delete_failed chat_id=%s message_id=%s error=%s",

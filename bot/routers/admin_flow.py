@@ -26,7 +26,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot import limits
 from bot.cache import (
@@ -121,6 +121,7 @@ from bot.services.admin_notifications import (
     NOTIFICATION_PREF_LABEL_KEYS,
     admin_notification_preferences,
     finalize_admin_notify_messages,
+    is_unreachable_chat,
     set_admin_notification_preference,
 )
 from bot.services.dialogs import register_dialog_message, has_dialog_media, send_dialog_message
@@ -155,6 +156,7 @@ from core.request_store import (
     get_request_by_id,
     get_all_requests,
     get_requests,
+    request_callback_token,
     update_request_payload,
     update_request_status,
 )
@@ -1789,40 +1791,36 @@ async def _notify_subscribers(
     entry = find_plugin_by_slug(slug) or {}
     plugin_link = (entry.get("channel_message", {}) or {}).get("link")
     changes = strip_blockquote_tags(telegram_html(changelog)) or "—"
+    localized: dict[str, tuple[list[str], InlineKeyboardMarkup]] = {}
 
     for user_id in list_subscribers(slug):
         lang = get_lang(user_id)
-        locale = _localized_block(entry, lang)
-        raw_name = plain_html(plugin.get("name") or locale.get("name") or slug)
-        link_safe = html.escape(plugin_link, quote=True) if plugin_link else ""
-        name = f'<a href="{link_safe}"><b>{raw_name}</b></a>' if plugin_link else f"<b>{raw_name}</b>"
-        version = plugin.get("version") or locale.get("version") or "—"
-        reply_markup = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text=t("btn_open", lang),
-                        callback_data=f"plugin:{encode_slug(slug)}",
-                    )
-                ]
-            ]
-        )
+        if lang not in localized:
+            locale = _localized_block(entry, lang)
+            raw_name = plain_html(plugin.get("name") or locale.get("name") or slug)
+            link_safe = html.escape(plugin_link, quote=True) if plugin_link else ""
+            name = f'<a href="{link_safe}"><b>{raw_name}</b></a>' if plugin_link else f"<b>{raw_name}</b>"
+            text = t("notify_subscription_update", lang, name=name,
+                     version=plain_html(plugin.get("version") or locale.get("version") or "—"), changelog=changes)
+            reply_markup = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=t("btn_open", lang), callback_data=f"plugin:{encode_slug(slug)}"),
+            ]])
+            localized[lang] = (split_html(text, 3500), reply_markup)
+        parts, reply_markup = localized[lang]
         try:
-            await bot.send_message(
-                user_id,
-                t(
-                    "notify_subscription_update",
-                    lang,
-                    name=name,
-                    version=version,
-                    changelog=changes,
-                ),
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                reply_markup=reply_markup,
-            )
-        except Exception:
-            continue
+            for index, part in enumerate(parts):
+                while True:
+                    try:
+                        await bot.send_message(
+                            user_id, part, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                            reply_markup=reply_markup if index + 1 == len(parts) else None,
+                        )
+                        break
+                    except TelegramRetryAfter as exc:
+                        await asyncio.sleep(max(1, float(exc.retry_after)))
+        except Exception as exc:
+            if not is_unreachable_chat(exc):
+                logger.warning("event=subscription.update_notification_failed user_id=%s slug=%s", user_id, slug, exc_info=True)
 
 
 def _ensure_admin(cb: CallbackQuery | Message) -> bool:
@@ -6753,7 +6751,6 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
         if request_type in {"new", "update"} and (
             _comment_media_of_entry(entry) or request_type == "update"
         ):
-            from bot.helpers import spawn_background
             from bot.services.example_media import EXAMPLE_MEDIA_DELAY_SECONDS, schedule_example_media
 
             update_request_payload(request_id, {
@@ -6833,7 +6830,9 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
         _release_request_lock(request_id)
 
     if completed:
-        await _finish_publish_notifications(cb.bot, entry, notify_key, _admin_actor_label(cb), removed_plugin)
+        spawn_background(_finish_publish_notifications(
+            cb.bot, deepcopy(entry), notify_key, _admin_actor_label(cb), deepcopy(removed_plugin),
+        ))
 
 
 @router.callback_query(F.data.startswith("adm:reject:"))
@@ -7523,6 +7522,60 @@ async def on_admin_rejtpl_go(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
+async def _notify_author_rework(bot, entry: dict, comment: str) -> None:
+    payload = entry.get("payload") or {}
+    user_id = payload.get("user_id")
+    if not user_id:
+        return
+    request_id = str(entry["id"])
+    author_lang = get_lang(user_id)
+    item = payload.get("plugin") or payload.get("icon") or {}
+    reason = telegram_html(reason_templates.localize_reason(strip_blockquote_tags(comment), author_lang)) or "—"
+    text = with_author_vote_summary(
+        t("notify_rework", author_lang, name=plain_html(item.get("name") or "—"), comment=reason),
+        entry, author_lang,
+    )
+    resubmit_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=t("btn_resubmit", author_lang),
+                             callback_data=f"resub:{request_callback_token(request_id)}", style="success"),
+    ]])
+
+    async def deliver(factory):
+        while True:
+            try:
+                return await factory()
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(max(1, exc.retry_after))
+
+    try:
+        parts = split_html(text, 3500)
+        for index, part in enumerate(parts):
+            await deliver(lambda: bot.send_message(
+                user_id, part, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                reply_markup=resubmit_kb if index + 1 == len(parts) else None,
+                **author_reply_kwargs(entry),
+            ))
+        file_id = str(item.get("file_id") or payload.get("moderation_file_id") or "").strip()
+        file_path = str(item.get("file_path") or "").strip()
+        if file_id or (file_path and Path(file_path).is_file()):
+            try:
+                await deliver(lambda: send_plugin_document(
+                    bot, user_id, item, file_id=file_id or None,
+                    caption=t("notify_rework_request", author_lang), parse_mode=ParseMode.HTML,
+                    reply_markup=resubmit_kb,
+                ))
+                return
+            except Exception:
+                logger.warning("event=rework.notify_author_file_failed user_id=%s request_id=%s",
+                               user_id, request_id, exc_info=True)
+        await deliver(lambda: bot.send_message(
+            user_id, t("notify_rework_request", author_lang), parse_mode=ParseMode.HTML,
+            reply_markup=resubmit_kb, disable_web_page_preview=True,
+        ))
+    except Exception:
+        logger.exception("event=rework.notify_author_failed user_id=%s request_id=%s", user_id, request_id)
+
+
 @router.callback_query(F.data.startswith("adm:rework:"))
 async def on_admin_rework(cb: CallbackQuery, state: FSMContext) -> None:
     if not _is_super_admin(cb):
@@ -7582,74 +7635,10 @@ async def on_admin_enter_rework_comment(message: Message, state: FSMContext) -> 
             request_id=str(request_id),
         )
         _schedule_decision_cleanup(message.bot, entry, "Заявка отправлена на доработку", _admin_actor_label(message))
-        payload = entry.get("payload", {})
-        user_id = payload.get("user_id")
-        if user_id:
-            author_lang = get_lang(user_id)
-            item = payload.get("plugin") or payload.get("icon") or {}
-            plugin_name = plain_html(item.get("name") or "—")
-            reason = strip_blockquote_tags(comment) or "—"
-            file_id = str(item.get("file_id") or payload.get("moderation_file_id") or "").strip()
-            resubmit_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text=t("btn_resubmit", author_lang), callback_data=f"resub:{request_id}", style="success"),
-            ]])
-            try:
-                await message.bot.send_message(
-                    user_id,
-                    t("notify_rework", author_lang, name=plugin_name, comment=reason),
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
-                    **author_reply_kwargs(entry),
-                )
-                resubmit_sent = False
-                if file_id:
-                    try:
-                        await message.bot.send_document(
-                            user_id,
-                            file_id,
-                            caption=t("notify_rework_request", author_lang),
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=resubmit_kb,
-                        )
-                        resubmit_sent = True
-                    except Exception:
-                        logger.warning(
-                            "event=rework.notify_author_file_id_failed user_id=%s request_id=%s",
-                            user_id,
-                            request_id,
-                            exc_info=True,
-                        )
-                file_path = str(item.get("file_path") or "").strip()
-                if not resubmit_sent and file_path and Path(file_path).is_file():
-                    try:
-                        await message.bot.send_document(
-                            user_id,
-                            FSInputFile(file_path),
-                            caption=t("notify_rework_request", author_lang),
-                            parse_mode=ParseMode.HTML,
-                            reply_markup=resubmit_kb,
-                        )
-                        resubmit_sent = True
-                    except Exception:
-                        logger.warning(
-                            "event=rework.notify_author_local_file_failed user_id=%s request_id=%s",
-                            user_id,
-                            request_id,
-                            exc_info=True,
-                        )
-                if not resubmit_sent:
-                    await message.bot.send_message(
-                        user_id,
-                        t("notify_rework_request", author_lang),
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=resubmit_kb,
-                        disable_web_page_preview=True,
-                    )
-            except Exception:
-                logger.exception(
-                    "event=rework.notify_author_failed user_id=%s request_id=%s",
-                    user_id, request_id,
-                )
+        from core.storage import flush_documents
+
+        await flush_documents("requests")
+        spawn_background(_notify_author_rework(message.bot, deepcopy(entry), comment))
 
     await state.clear()
     await state.set_state(AdminFlow.menu)

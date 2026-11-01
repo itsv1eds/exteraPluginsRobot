@@ -10,7 +10,7 @@ from pathlib import Path
 
 from bot.languages import SUPPORTED_LANGUAGES, normalize_language
 
-REASON_TEMPLATES_VERSION = 3
+REASON_TEMPLATES_VERSION = 4
 TEMPLATES_LIMIT = 30
 TEMPLATE_PAGE_SIZE = 6
 TEMPLATE_PAGE_BUDGET = 2600
@@ -30,7 +30,12 @@ DEFAULT_APPROVE_TEMPLATES = DEFAULTS["approve"]
 DEFAULT_REJECT_TEMPLATES = DEFAULTS["reject"]
 DEFAULT_UPDATE_APPROVE_TEMPLATES = DEFAULTS["update_approve"]
 DEFAULT_UPDATE_REJECT_TEMPLATES = DEFAULTS["update_reject"]
-ADDITIONS = {"reject": DEFAULTS["reject"][:4], "update_reject": DEFAULTS["update_reject"][:2]}
+ADDITIONS = {
+    "reject": DEFAULTS["reject"][:7],
+    "update_reject": DEFAULTS["update_reject"][:5],
+    "approve": DEFAULTS["approve"][-1:],
+    "update_approve": DEFAULTS["update_approve"][-1:],
+}
 LEGACY_REJECT_TEMPLATES = _TRANSLATIONS["ru"]["legacy_reject"]
 LEGACY_UPDATE_REJECT_TEMPLATES = _TRANSLATIONS["ru"]["legacy_update_reject"]
 LEGACY_DEFAULTS = {**DEFAULTS, "reject": LEGACY_REJECT_TEMPLATES, "update_reject": LEGACY_UPDATE_REJECT_TEMPLATES}
@@ -104,7 +109,7 @@ def upgrade_reason_templates(config: dict) -> bool:
             known = {localize_reason(str(value), "ru") for value in raw}
             additions = [value for value in ADDITIONS[kind] if value not in known]
             values = [*raw, *additions[:max(0, TEMPLATES_LIMIT - len(raw))]]
-            priority = {value: index for index, value in enumerate(ADDITIONS[kind])}
+            priority = {value: index for index, value in enumerate(ADDITIONS[kind])} if kind in {"reject", "update_reject"} else {}
             config[key] = sorted(values, key=lambda value: priority.get(localize_reason(str(value), "ru"), len(priority)))
     config["templates_archive"] = archive
     config["reason_templates_version"] = REASON_TEMPLATES_VERSION

@@ -4,6 +4,9 @@
     "Usefulness review — The plugin does not simplify user actions or provide a meaningful result. Add a useful use case and demonstrate its benefit.",
     "Usefulness review — Installation and setup are more complicated than the task itself. Simplify usage and show what work the plugin saves.",
     "Usefulness review — The examples do not demonstrate the claimed benefit. Provide a before-and-after example showing a practical result.",
+    "Rule 2.5 — The author has not understood the generated code and cannot explain or maintain it. Review the implementation, fix defects and test all advertised features. Using AI itself is allowed.",
+    "Rule 2.5 — The generated interface has not been refined: arbitrary colors, excessive decoration, inconsistent elements or unreadable text. Make the design consistent and verify usability.",
+    "Rule 2.5 — The interface has not been adapted to the client and looks out of place. Use Telegram/exteraGram components or follow the same style, with clear actions and a tidy layout.",
     "Rule 2.1 — Duplicate plugin: no clear advantage. Add new features or a measurable improvement over the existing plugin.",
     "Rule 2.1 — The client already has this feature, including announced features. Add capabilities the built-in feature lacks.",
     "Rule 2.2 — A single cosmetic edit or preset action. Turn it into a useful tool with broader capabilities.",
@@ -37,11 +40,15 @@
     "Optimized, does not overload the client",
     "Justified fork: the original is abandoned and no longer works",
     "Description and instructions are clear",
-    "No issues, ready for publication"
+    "No issues, ready for publication",
+    "Rule 2.5 — AI-assisted code and interface have been refined and tested: the author understands the implementation, features work and the design fits the client"
   ],
   "update_reject": [
     "Usefulness review — The changes provide no practical benefit over the published version. Demonstrate a useful new use case or a specific improvement.",
     "Usefulness review — The update removes useful features without an equivalent replacement. Preserve those use cases or explain the change in behavior.",
+    "Rule 2.5 — The author has not understood the generated changes and cannot explain or maintain them. Review the new code and test the update alongside existing features. Using AI itself is allowed.",
+    "Rule 2.5 — The update introduces an unrefined generated interface: arbitrary colors, excessive decoration, inconsistent elements or unreadable text. Refine the design and test the usability of the new screens.",
+    "Rule 2.5 — New screens have not been adapted to the client and look out of place. Use Telegram/exteraGram components or follow the same style, keeping actions clear and the interface consistent.",
     "Update requirements — The changelog is missing or unclear. List new features, fixes and differences from the published version.",
     "Update requirements — No new examples of the changes. Attach separate screenshots or a video of the new version demonstrating the advertised changes.",
     "Technical requirements — The update version is not higher than the published version. Increase version and submit a new file.",
@@ -75,7 +82,8 @@
     "No critical bugs or regressions found after the update",
     "Security issue or unwanted behavior fixed",
     "Clean update code, no unnecessary dependencies or hidden actions",
-    "No issues with the update, the new version is ready for publication"
+    "No issues with the update, the new version is ready for publication",
+    "Rule 2.5 — AI-assisted changes have been refined and tested: the author understands the new code, no regressions were found and the interface fits the client"
   ],
   "legacy_reject": [
     "The plugin provides no meaningful benefit over already published alternatives",

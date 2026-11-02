@@ -49,16 +49,11 @@ from bot.keyboards import (
 from bot.states import UserFlow
 from bot.texts import t
 from core.catalog import (
-    SOURCE_ALL,
-    SOURCE_OFFICIAL,
     find_icon_by_slug,
     find_plugin_by_slug,
     find_user_icons,
     find_user_plugins,
-    is_external_plugin,
-    list_plugin_sources,
     list_plugins_by_category,
-    plugin_source_type,
     search_icons,
     search_plugins,
 )
@@ -85,7 +80,6 @@ logger = logging.getLogger(__name__)
 
 BOT_USERNAME = "exteraPluginsRobot"
 GITHUB_IMG_BASE_URL = "https://github.com/itsv1eds/exteraPluginsRobot/blob/main/img"
-SOURCE_PAGE_SIZE = 8
 
 
 def _github_img_url(image_key: str) -> str:
@@ -98,80 +92,6 @@ def _plugin_category_preview_url(category_key: str, lang: str = "en") -> str:
     keys = categories_for(category_key)
     image_key = f"cat_{keys[0]}" if keys else "cat_all"
     return _github_img_url(localized_image_key(image_key, lang))
-
-
-def _plugin_source_label(entry: Dict[str, Any]) -> str:
-    source = entry.get("source") if isinstance(entry.get("source"), dict) else {}
-    if plugin_source_type(entry) == "external":
-        username = str(source.get("username") or "").strip()
-        title = str(source.get("title") or source.get("id") or username or "External").strip()
-        return f"@{username}" if username else title
-    return "@exteraPluginsSup"
-
-
-def _source_label(source: Dict[str, Any], lang: str) -> str:
-    key = str(source.get("key") or "")
-    if key == SOURCE_ALL:
-        return t("catalog_source_all", lang)
-    return str(source.get("label") or key).strip() or key
-
-
-def _source_label_for_filter(source_filter: str, lang: str) -> str:
-    source_filter = (source_filter or SOURCE_ALL).strip().lower()
-    for source in list_plugin_sources():
-        if str(source.get("key") or "").strip().lower() == source_filter:
-            return _source_label(source, lang)
-    return t("catalog_source_all", lang)
-
-
-async def _catalog_source_filter(state: FSMContext) -> str:
-    data = await state.get_data()
-    return str(data.get("catalog_source_filter") or SOURCE_ALL).strip().lower() or SOURCE_ALL
-
-
-def _catalog_title(lang: str, source_label: str) -> str:
-    return f"{t('catalog_title', lang)}\n{t('catalog_source_current', lang, source=html.escape(source_label))}"
-
-
-def _source_list_kb(sources: list[Dict[str, Any]], selected: str, page: int, total_pages: int, lang: str) -> InlineKeyboardMarkup:
-    selected = (selected or SOURCE_ALL).strip().lower()
-    page = max(0, min(page, max(total_pages, 1) - 1))
-    start = page * SOURCE_PAGE_SIZE
-    page_sources = sources[start : start + SOURCE_PAGE_SIZE]
-    rows: list[list[InlineKeyboardButton]] = []
-
-    for idx, source in enumerate(page_sources, start=start):
-        key = str(source.get("key") or SOURCE_ALL).strip().lower()
-        count = int(source.get("count") or 0)
-        label = _source_label(source, lang)
-        text = f"{label} · {t('catalog_source_count', lang, count=count)}"
-        icon = "yes" if key == selected else ("catalog" if key == SOURCE_OFFICIAL else "profile")
-        rows.append([
-            _btn(
-                text,
-                callback_data=f"catalog:source:set:{idx}",
-                icon=icon,
-                style="success" if key == selected else None,
-            )
-        ])
-
-    if total_pages > 1:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=t("btn_back", lang) if page > 0 else " ",
-                    callback_data=f"catalog:source:{page - 1}" if page > 0 else "page:noop",
-                ),
-                InlineKeyboardButton(text=f"{page + 1}/{total_pages}", callback_data="page:noop"),
-                InlineKeyboardButton(
-                    text=t("btn_forward", lang) if page < total_pages - 1 else " ",
-                    callback_data=f"catalog:source:{page + 1}" if page < total_pages - 1 else "page:noop",
-                ),
-            ]
-        )
-
-    rows.append([_btn(t("btn_back", lang), callback_data="catalog", style="danger", icon="back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 class _CaptionHTMLTruncator(HTMLParser):
@@ -336,8 +256,6 @@ def build_plugin_preview(entry: Dict[str, Any], lang: str) -> str:
 
     if author_channel:
         lines.append(f"<b>{t('catalog_field_author_channel', lang)}:</b> {html.escape(str(author_channel))}")
-    if entry.get("source"):
-        lines.append(f"<b>{t('catalog_field_source', lang)}:</b> {html.escape(_plugin_source_label(entry))}")
     if count is not None:
         lines.append(f"<b>{t('catalog_field_icons', lang)}:</b> {count}")
 
@@ -390,20 +308,16 @@ def build_inline_preview(entry: Dict[str, Any], lang: str, kind: str = "plugin")
         min_version = (entry.get("min_version") or "").strip()
         if min_version:
             lines.append(f"<b>{t('catalog_field_min_version', lang)}:</b> {html.escape(min_version)}")
-        if entry.get("source"):
-            lines.append(f"<b>{t('catalog_field_source', lang)}:</b> {html.escape(_plugin_source_label(entry))}")
     return "\n".join(lines)
 
 
 @router.callback_query(F.data == "catalog")
 async def on_catalog(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
-    source_filter = await _catalog_source_filter(state)
-    source_label = _source_label_for_filter(source_filter, lang)
     await answer(
         cb,
-        _catalog_title(lang, source_label),
-        catalog_main_kb(get_categories(), lang, source_label=source_label),
+        t("catalog_title", lang),
+        catalog_main_kb(get_categories(), lang),
         "catalog",
     )
     try:
@@ -412,57 +326,9 @@ async def on_catalog(cb: CallbackQuery, state: FSMContext) -> None:
         pass
 
 
-async def _render_catalog_sources(target: CallbackQuery | Message, state: FSMContext, page: int = 0) -> None:
-    lang = await get_language(target, state)
-    selected = await _catalog_source_filter(state)
-    sources = list_plugin_sources()
-    total_pages = max(1, math.ceil(len(sources) / SOURCE_PAGE_SIZE))
-    page = max(0, min(page, total_pages - 1))
-    selected_label = _source_label_for_filter(selected, lang)
-    text = (
-        f"{t('catalog_source_title', lang)}\n"
-        f"{t('catalog_source_current', lang, source=html.escape(selected_label))}\n\n"
-        f"{t('catalog_source_hint', lang)}"
-    )
-    await answer(target, text, _source_list_kb(sources, selected, page, total_pages, lang), "catalog")
-
-
 @router.callback_query(F.data.startswith("catalog:source:"))
-async def on_catalog_source(cb: CallbackQuery, state: FSMContext) -> None:
-    parts = cb.data.split(":")
-    lang = await get_language(cb, state)
-
-    if len(parts) >= 4 and parts[2] == "set":
-        try:
-            idx = int(parts[3])
-        except ValueError:
-            idx = 0
-        sources = list_plugin_sources()
-        if not 0 <= idx < len(sources):
-            try:
-                await cb.answer(t("not_found", lang), show_alert=True)
-            except TelegramBadRequest:
-                pass
-            return
-        key = str(sources[idx].get("key") or SOURCE_ALL).strip().lower() or SOURCE_ALL
-        await state.update_data(catalog_source_filter=key)
-        page = idx // SOURCE_PAGE_SIZE
-        try:
-            await cb.answer(_source_label(sources[idx], lang))
-        except TelegramBadRequest:
-            pass
-        await _render_catalog_sources(cb, state, page=page)
-        return
-
-    try:
-        page = int(parts[2]) if len(parts) > 2 else 0
-    except ValueError:
-        page = 0
-    await _render_catalog_sources(cb, state, page=page)
-    try:
-        await cb.answer()
-    except TelegramBadRequest:
-        pass
+async def on_removed_catalog_source(cb: CallbackQuery, state: FSMContext) -> None:
+    await on_catalog(cb, state)
 
 
 async def _show_broadcast_settings(target: CallbackQuery | Message, state: FSMContext) -> None:
@@ -599,10 +465,7 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
             await cb.answer(t("not_found", lang), show_alert=True)
             return
         cat_key = keys[0]
-    source_filter = await _catalog_source_filter(state)
-    source_label = _source_label_for_filter(source_filter, lang)
-
-    plugins = list_plugins_by_category(cat_key, source_filter=source_filter)
+    plugins = list_plugins_by_category(cat_key)
     total = len(plugins)
 
     if total == 0:
@@ -633,7 +496,6 @@ async def on_catalog_category(cb: CallbackQuery, state: FSMContext) -> None:
 
     caption = (
         f"{title_html}\n"
-        f"{t('catalog_source_current', lang, source=html.escape(source_label))}\n"
         f"{t('catalog_page', lang, current=page + 1, total=total_pages)}"
     )
     await state.update_data(catalog_back=f"cat:{cat_key}:{page}")
@@ -661,9 +523,8 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
 
     text = build_plugin_preview(plugin, lang)
     link = plugin.get("channel_message", {}).get("link")
-    external = is_external_plugin(plugin)
-    notify_all_enabled = False if external else (is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False)
-    subscribed = False if external else (is_subscribed(cb.from_user.id, slug) if cb.from_user else False)
+    notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False
+    subscribed = is_subscribed(cb.from_user.id, slug) if cb.from_user else False
     subscribe_label = t("btn_unsubscribe", lang) if subscribed else t("btn_subscribe", lang)
     data = await state.get_data()
     back = data.get("catalog_back") or "catalog"
@@ -674,7 +535,7 @@ async def on_plugin_detail(cb: CallbackQuery, state: FSMContext) -> None:
             link,
             back,
             lang,
-            subscribe_callback=(None if external or notify_all_enabled else f"sub:toggle:{encode_slug(slug)}:catalog"),
+            subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(slug)}:catalog"),
             subscribe_label=(None if notify_all_enabled else subscribe_label),
         ),
         "plugins",
@@ -791,10 +652,7 @@ async def on_toggle_subscription(cb: CallbackQuery, state: FSMContext) -> None:
 async def on_search(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await state.set_state(UserFlow.searching)
-    source_filter = await _catalog_source_filter(state)
-    source_label = _source_label_for_filter(source_filter, lang)
-    text = f"{t('search_prompt', lang)}\n{t('catalog_source_current', lang, source=html.escape(source_label))}"
-    await answer(cb, text, search_kb(lang), "catalog")
+    await answer(cb, t("search_prompt", lang), search_kb(lang), "catalog")
     try:
         await cb.answer()
     except TelegramBadRequest:
@@ -810,8 +668,7 @@ async def on_search_query(message: Message, state: FSMContext) -> None:
         await message.answer(t("need_text", lang))
         return
 
-    source_filter = await _catalog_source_filter(state)
-    results = search_plugins(query, limit=25, source_filter=source_filter)
+    results = search_plugins(query, limit=25)
     await state.set_state(UserFlow.idle)
 
     if not results:
@@ -831,7 +688,9 @@ async def on_search_query(message: Message, state: FSMContext) -> None:
 async def _render_search_results(target: Message | CallbackQuery, state: FSMContext, page: int) -> None:
     lang = await get_language(target, state)
     data = await state.get_data()
-    slugs: list[str] = data.get("last_search_results", [])
+    slugs = [slug for slug in data.get("last_search_results", [])
+             if (entry := find_plugin_by_slug(slug)) and entry.get("status") == "published"]
+    await state.update_data(last_search_results=slugs)
     if not slugs:
         await answer(target, t("search_empty", lang), search_kb(lang, True), "catalog")
         return
@@ -849,9 +708,7 @@ async def _render_search_results(target: Message | CallbackQuery, state: FSMCont
         name = (locale.get("name") if isinstance(locale, dict) else None) or slug
         items.append((name, f"plugin:{encode_slug(slug)}"))
 
-    source_filter = await _catalog_source_filter(state)
-    source_label = _source_label_for_filter(source_filter, lang)
-    text = f"{t('search_results', lang, count=total)}\n{t('catalog_source_current', lang, source=html.escape(source_label))}"
+    text = t("search_results", lang, count=total)
     await state.update_data(catalog_back=f"search:{page}")
     await answer(
         target,

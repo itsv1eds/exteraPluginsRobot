@@ -371,7 +371,6 @@ def _write_plugins_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     if not isinstance(items, list):
         items = []
 
-    conn.execute("DELETE FROM plugins_items")
     for idx, item in enumerate(items):
         slug = status = category = updated_at = published_at = None
         if isinstance(item, dict):
@@ -385,6 +384,13 @@ def _write_plugins_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
             INSERT INTO plugins_items (
                 sort_order, slug, status, category, updated_at, published_at, payload
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sort_order) DO UPDATE SET
+                slug=excluded.slug, status=excluded.status, category=excluded.category,
+                updated_at=excluded.updated_at, published_at=excluded.published_at, payload=excluded.payload
+            WHERE plugins_items.payload IS NOT excluded.payload
+                OR plugins_items.slug IS NOT excluded.slug OR plugins_items.status IS NOT excluded.status
+                OR plugins_items.category IS NOT excluded.category OR plugins_items.updated_at IS NOT excluded.updated_at
+                OR plugins_items.published_at IS NOT excluded.published_at
             """,
             (
                 idx,
@@ -397,6 +403,7 @@ def _write_plugins_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
             ),
         )
 
+    conn.execute("DELETE FROM plugins_items WHERE sort_order < 0 OR sort_order >= ?", (len(items),))
     _set_meta_json(conn, _meta_key(_DOC_PLUGINS), payload)
     _mark_initialized(conn, _DOC_PLUGINS)
 
@@ -459,7 +466,6 @@ def _write_requests_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
     if not isinstance(items, list):
         items = []
 
-    conn.execute("DELETE FROM requests_items")
     for idx, item in enumerate(items):
         request_id = status = request_type = submitted_at = updated_at = None
         payload_user_id = None
@@ -478,6 +484,14 @@ def _write_requests_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
             INSERT INTO requests_items (
                 sort_order, request_id, status, request_type, submitted_at, updated_at, payload_user_id, payload
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sort_order) DO UPDATE SET
+                request_id=excluded.request_id, status=excluded.status, request_type=excluded.request_type,
+                submitted_at=excluded.submitted_at, updated_at=excluded.updated_at,
+                payload_user_id=excluded.payload_user_id, payload=excluded.payload
+            WHERE requests_items.payload IS NOT excluded.payload OR requests_items.request_id IS NOT excluded.request_id
+                OR requests_items.status IS NOT excluded.status OR requests_items.request_type IS NOT excluded.request_type
+                OR requests_items.submitted_at IS NOT excluded.submitted_at OR requests_items.updated_at IS NOT excluded.updated_at
+                OR requests_items.payload_user_id IS NOT excluded.payload_user_id
             """,
             (
                 idx,
@@ -491,6 +505,7 @@ def _write_requests_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
             ),
         )
 
+    conn.execute("DELETE FROM requests_items WHERE sort_order < 0 OR sort_order >= ?", (len(items),))
     _set_meta_json(conn, _meta_key(_DOC_REQUESTS), payload)
     _mark_initialized(conn, _DOC_REQUESTS)
 

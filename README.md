@@ -37,7 +37,7 @@ Live bot: [@exteraPluginsRobot](https://t.me/exteraPluginsRobot)
 
 ### Admin panel
 - **All requests** grouped by status, sorted so unvoted ones come first.
-- **Catalog editing**, sources, plugin authors linking, bans and blocklist.
+- **Catalog editing**, plugin authors linking, bans and blocklist.
 - **Per-admin notification settings**, backups, health check and maintenance tools.
 
 ### Broadcast

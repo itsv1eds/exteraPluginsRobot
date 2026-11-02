@@ -1,5 +1,6 @@
 import re
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,12 +46,14 @@ async def _send_channel_post(
     post_text: str,
     file_path: Optional[str],
     download_name: Optional[str] = None,
+    *,
+    file_id: Optional[str] = None,
 ):
     has_file = bool(file_path and Path(file_path).exists())
-    if not has_file:
+    if not has_file and not file_id:
         return (await send_description(bot, channel_id, post_text or "—"))[0]
 
-    if Path(file_path).stat().st_size > limits.BOT_UPLOAD_BYTES:
+    if not file_id and Path(file_path).stat().st_size > limits.BOT_UPLOAD_BYTES:
         from userbot.client import UserbotClient
         userbot = await UserbotClient.get_instance()
         if not userbot:
@@ -58,31 +61,54 @@ async def _send_channel_post(
         message = await userbot.send_plugin_file(channel_id, post_text, file_path, download_name or Path(file_path).name)
         return SimpleNamespace(message_id=message.id)
 
-    document = FSInputFile(file_path, filename=download_name) if download_name else FSInputFile(file_path)
+    document = file_id or (FSInputFile(file_path, filename=download_name) if download_name else FSInputFile(file_path))
     overflow = visible_html_length(post_text) > limits.CAPTION
     userbot = await editing_userbot(post_text, caption=True) if overflow else None
-    try:
-        message = await bot.send_document(
-            channel_id, document, caption=None if overflow else post_text,
-            parse_mode=ParseMode.HTML,
-        )
-    except TelegramBadRequest as exc:
-        from bot.helpers import _is_too_long_error
+    started = time.perf_counter()
+    while True:
+        try:
+            message = await bot.send_document(
+                channel_id, document, caption=None if overflow else post_text,
+                parse_mode=ParseMode.HTML,
+            )
+            break
+        except TelegramBadRequest as exc:
+            from bot.helpers import _is_too_long_error
 
-        if not _is_too_long_error(exc) or overflow:
-            raise
-        overflow = True
-        userbot = await editing_userbot(post_text, caption=True)
-        message = await bot.send_document(channel_id, FSInputFile(file_path, filename=download_name) if download_name else FSInputFile(file_path))
+            if file_id and has_file and any(marker in str(exc).lower() for marker in
+                                           ("wrong file", "file_id", "file identifier", "file reference")):
+                logger.info("event=publish.cached_file_invalid chat_id=%s", channel_id)
+                return await _send_channel_post(bot, channel_id, post_text, file_path, download_name)
+            if not _is_too_long_error(exc) or overflow:
+                raise
+            overflow = True
+            userbot = await editing_userbot(post_text, caption=True)
+    logger.info("event=publish.document_ready chat_id=%s message_id=%s source=%s duration_ms=%.0f",
+                channel_id, message.message_id, "cached" if file_id else "upload", (time.perf_counter() - started) * 1000)
+    caption_started = time.perf_counter()
     if overflow and not await try_edit(userbot, channel_id, message.message_id, post_text):
         try:
             await send_description(bot, channel_id, post_text, reply_to_message_id=message.message_id)
         except BaseException:
             await blank_and_delete(bot, channel_id, message.message_id)
             raise
+    if overflow:
+        logger.info("event=publish.caption_ready chat_id=%s message_id=%s duration_ms=%.0f",
+                    channel_id, message.message_id, (time.perf_counter() - caption_started) * 1000)
     return message
 
 logger = logging.getLogger(__name__)
+
+
+def _cached_publish_file(payload: dict, download_name: str) -> str | None:
+    file_id = str(payload.get("moderation_file_id") or "").strip()
+    if not file_id:
+        return None
+    filename = payload.get("moderation_file_name")
+    forum = payload.get("moderation_forum_message")
+    if not filename and isinstance(forum, dict) and forum.get("file_id") == file_id:
+        filename = forum.get("file_name")
+    return file_id if filename == download_name else None
 
 
 def _invalidate_all_plugins() -> None:
@@ -231,7 +257,10 @@ async def publish_plugin(
     actor_id: int | None = None,
 ) -> Dict[str, Any]:
     payload = entry.get("payload", {})
+    preparation_started = time.perf_counter()
     await prepare_submission_categories(payload)
+    logger.info("event=publish.prepared request_id=%s duration_ms=%.0f", entry.get("id"),
+                (time.perf_counter() - preparation_started) * 1000)
     plugin = payload.get("plugin", {})
     submitter_id = payload.get("user_id")
     submitter_username = payload.get("username", "")
@@ -257,7 +286,9 @@ async def publish_plugin(
     if links_line:
         post_text = f"{post_text}\n\n{links_line}"
 
-    message = await _send_channel_post(bot, channel_id, post_text, file_path, download_name)
+    cached_file_id = _cached_publish_file(payload, download_name)
+    message = await _send_channel_post(bot, channel_id, post_text, file_path, download_name, file_id=cached_file_id)
+    catalog_started = time.perf_counter()
     document = getattr(message, "document", None)
     if document and getattr(document, "file_id", None):
         plugin["file_id"] = document.file_id
@@ -273,7 +304,12 @@ async def publish_plugin(
         submitter_username,
     )
 
+    logger.info("event=publish.catalog_updated request_id=%s duration_ms=%.0f", entry.get("id"),
+                (time.perf_counter() - catalog_started) * 1000)
+    persist_started = time.perf_counter()
     await flush_documents("requests", "plugins")
+    logger.info("event=publish.persisted request_id=%s duration_ms=%.0f", entry.get("id"),
+                (time.perf_counter() - persist_started) * 1000)
 
     if file_path:
         Path(file_path).unlink(missing_ok=True)

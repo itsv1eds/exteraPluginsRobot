@@ -85,8 +85,3 @@ class AdminFlow(StatesGroup):
     entering_sync_version = State()
     entering_sync_catalog = State()
     entering_erase_id = State()
-
-    entering_source_username = State()
-    entering_source_title = State()
-    entering_source_link = State()
-    attaching_source_plugin = State()

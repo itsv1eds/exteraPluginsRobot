@@ -368,18 +368,10 @@ def user_plugins_kb(plugins: List[Tuple[str, str]], lang: str) -> InlineKeyboard
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def catalog_main_kb(categories: list, lang: str, source_label: str | None = None) -> InlineKeyboardMarkup:
+def catalog_main_kb(categories: list, lang: str) -> InlineKeyboardMarkup:
     rows = []
 
     rows.append([_btn(t("btn_search", lang), callback_data="search", style="success", icon="search")])
-    if source_label:
-        rows.append([
-            _btn(
-                t("btn_catalog_source", lang, source=source_label),
-                callback_data="catalog:source:0",
-                icon="tag",
-            )
-        ])
 
     rows.append([
         _btn(t("btn_all_plugins", lang), callback_data="cat:_all:0", icon="all_plugins"),
@@ -688,38 +680,6 @@ def admin_maint_confirm_kb(action: str, lang: str = "ru") -> InlineKeyboardMarku
     ])
 
 
-def admin_sources_kb(sources: list[dict], lang: str = "ru") -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    for src in sources:
-        sid = str(src.get("id") or src.get("username") or "").strip().lstrip("@").lower()
-        if not sid:
-            continue
-        title = str(src.get("title") or src.get("username") or sid)
-        count = src.get("_count")
-        label = f"{title} · {count}" if count is not None else title
-        rows.append([_btn(label, callback_data=f"adm:source:{sid}", icon="link")])
-    rows.append([_btn(t("admin_source_add", lang), callback_data="adm:sources:add", icon="add", style="success")])
-    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def admin_source_detail_kb(source_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("admin_source_attach", lang), callback_data=f"adm:source:{source_id}:attach", icon="link")],
-        [_btn(t("admin_source_delete", lang), callback_data=f"adm:source:{source_id}:del", icon="delete", style="danger")],
-        [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
-    ])
-
-
-def admin_source_del_confirm_kb(source_id: str, lang: str = "ru") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            _btn(t("btn_confirm", lang), callback_data=f"adm:source:{source_id}:del:yes", style="danger", icon="yes"),
-            _btn(t("btn_cancel", lang), callback_data=f"adm:source:{source_id}", icon="back"),
-        ],
-    ])
-
-
 def admin_notification_settings_kb(prefs: dict[str, bool], labels: list[tuple[str, str]], lang: str = "ru") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for key, label in labels:
@@ -901,7 +861,6 @@ def admin_config_kb(lang: str = "ru", role: str | None = "super") -> InlineKeybo
                 _btn(t("admin_cfg_section_other", lang), callback_data="adm:config_section:other", icon="settings"),
             ],
             [
-                _btn(t("admin_btn_sources", lang), callback_data="adm:sources", icon="link"),
                 _btn(t("admin_btn_maintenance", lang), callback_data="adm:maint", icon="settings"),
             ],
         ])

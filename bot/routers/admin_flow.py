@@ -67,9 +67,6 @@ from bot.keyboards import (
     admin_manage_admins_kb,
     admin_maintenance_kb,
     admin_maint_confirm_kb,
-    admin_sources_kb,
-    admin_source_detail_kb,
-    admin_source_del_confirm_kb,
     admin_menu_kb,
     admin_vote_settings_kb,
     admin_vote_templates_kb,
@@ -171,7 +168,6 @@ DEFAULT_UPDATE_APPROVE_TEMPLATES = reason_templates.DEFAULT_UPDATE_APPROVE_TEMPL
 DEFAULT_UPDATE_REJECT_TEMPLATES = reason_templates.DEFAULT_UPDATE_REJECT_TEMPLATES
 
 logger = logging.getLogger(__name__)
-
 
 
 async def _open_admin_category_picker(cb: CallbackQuery, state: FSMContext, prefix: str, payload: dict) -> None:
@@ -795,8 +791,6 @@ _TRANSIENT_ADMIN_STATES = {
     "AdminFlow:confirming_broadcast", "AdminFlow:editing_quiz_text",
     "AdminFlow:editing_quiz_options", "AdminFlow:adding_quiz_question",
     "AdminFlow:uploading_request_file", "AdminFlow:entering_catalog_delete_reason",
-    "AdminFlow:entering_source_username", "AdminFlow:entering_source_title",
-    "AdminFlow:entering_source_link", "AdminFlow:attaching_source_plugin",
     "AdminFlow:entering_post", "AdminFlow:confirming_post", "AdminFlow:scheduling_post",
     "AdminFlow:scheduling_plugin", "AdminFlow:scheduled_post_edit_time",
     "AdminFlow:entering_sync_version", "AdminFlow:entering_sync_catalog", "AdminFlow:entering_erase_id",
@@ -1492,7 +1486,7 @@ async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> No
 
 _SUPER_ONLY_NAV_PREFIXES = (
     "adm:config", "adm:broadcast", "adm:stats", "adm:modstats", "adm:banned", "adm:blocklist", "adm:backup",
-    "adm:maint", "adm:sources", "adm:audit", "adm:auditlog", "adm:rejreq", "adm:quiz",
+    "adm:maint", "adm:audit", "adm:auditlog", "adm:rejreq", "adm:quiz",
     "adm:edit_plugins", "adm:link_author", "adm:icons",
 )
 
@@ -1506,6 +1500,8 @@ def _nav_token_allowed(cb: CallbackQuery, token: str) -> bool:
 
 
 async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) -> None:
+    if token.startswith(("adm:sources", "adm:source:")):
+        token = "adm:config"
     lang = _lang_for(cb)
     if not _nav_token_allowed(cb, token):
         await _render_menu(cb, state)
@@ -1581,8 +1577,6 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         parts = token.split(":")
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
         await _render_scheduled_list(cb, state, page)
-    elif token == "adm:sources":
-        await _render_sources_list(cb, state)
     elif token == "adm:backup":
         await _render_backup(cb, state)
     elif token == "adm:maint":
@@ -1617,8 +1611,6 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await on_admin_rejected_detail(cb.model_copy(update={"data": token}), state)
     elif token.startswith("adm:appd:"):
         await on_admin_rejected_appeal_detail(cb.model_copy(update={"data": token}), state)
-    elif token.startswith("adm:source:"):
-        await on_admin_source(cb.model_copy(update={"data": token}), state)
     else:
         await _render_menu(cb, state)
 
@@ -2384,150 +2376,14 @@ async def on_admin_backup_rcp_rm(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
-async def _render_sources_list(target: CallbackQuery | Message, state: FSMContext) -> None:
-    from bot.services.sources import load_custom_sources, count_source_plugins
-
-    lang = _lang_for(target)
-    await _nav_push(state, "adm:sources")
-    sources = load_custom_sources()
-    for src in sources:
-        src["_count"] = count_source_plugins(src.get("id") or src.get("username"))
-    text = _tr(target, "admin_sources_title" if sources else "admin_sources_empty")
-    await answer(target, text, admin_sources_kb(sources, lang), "admin")
-
-
-async def _render_source_detail(target: CallbackQuery | Message, sid: str) -> bool:
-    from bot.services.sources import get_custom_source, count_source_plugins
-
-    source = get_custom_source(sid)
-    if not source:
-        return False
-    text = _tr(
-        target,
-        "admin_source_detail",
-        title=plain_html(source.get("title") or sid),
-        username=plain_html(source.get("username") or sid),
-        link=plain_html(source.get("link") or "—"),
-        count=count_source_plugins(sid),
-    )
-    await answer(target, text, admin_source_detail_kb(sid, _lang_for(target)), "admin")
-    return True
-
-
-@router.callback_query(F.data == "adm:sources")
-async def on_admin_sources(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _ensure_admin_role(cb, "super"):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
+@router.callback_query(F.data.regexp(r"^adm:sources?(?::|$)"))
+async def on_removed_admin_source(cb: CallbackQuery, state: FSMContext) -> None:
+    if not _ensure_admin(cb):
+        await ack(cb, _tr(cb, "admin_denied"), show_alert=True)
         return
     await state.set_state(AdminFlow.menu)
-    await _render_sources_list(cb, state)
-    await ack(cb)
-
-
-@router.callback_query(F.data == "adm:sources:add")
-async def on_admin_sources_add(cb: CallbackQuery, state: FSMContext) -> None:
-    if not _ensure_admin_role(cb, "super"):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-    await state.set_state(AdminFlow.entering_source_username)
-    await answer(cb, _tr(cb, "admin_source_prompt_username"), admin_cancel_kb(_lang_for(cb)), "admin")
-    await ack(cb)
-
-
-@router.message(AdminFlow.entering_source_username)
-async def on_admin_source_username(message: Message, state: FSMContext) -> None:
-    if not _ensure_admin_role(message, "super"):
-        return
-    username = (message.text or "").strip().lstrip("@")
-    if not username:
-        await message.answer(_tr(message, "admin_maint_bad_format"))
-        return
-    await state.update_data(new_source_username=username)
-    await state.set_state(AdminFlow.entering_source_title)
-    await answer(message, _tr(message, "admin_source_prompt_title"), admin_cancel_kb(_lang_for(message)), "admin")
-
-
-@router.message(AdminFlow.entering_source_title)
-async def on_admin_source_title(message: Message, state: FSMContext) -> None:
-    if not _ensure_admin_role(message, "super"):
-        return
-    title = (message.text or "").strip()
-    if title == "-":
-        title = ""
-    await state.update_data(new_source_title=title)
-    await state.set_state(AdminFlow.entering_source_link)
-    await answer(message, _tr(message, "admin_source_prompt_link"), admin_cancel_kb(_lang_for(message)), "admin")
-
-
-@router.message(AdminFlow.entering_source_link)
-async def on_admin_source_link(message: Message, state: FSMContext) -> None:
-    from bot.services.sources import add_custom_source
-
-    if not _ensure_admin_role(message, "super"):
-        return
-    link = (message.text or "").strip()
-    if link == "-":
-        link = ""
-    data = await state.get_data()
-    entry = add_custom_source(data.get("new_source_username", ""), data.get("new_source_title", ""), link)
-    await state.set_state(AdminFlow.menu)
-    if entry:
-        await answer(message, _tr(message, "admin_source_added", title=plain_html(entry.get("title"))), None, "admin")
-    await _render_sources_list(message, state)
-
-
-@router.message(AdminFlow.attaching_source_plugin)
-async def on_admin_source_attach_input(message: Message, state: FSMContext) -> None:
-    from bot.services.sources import attach_plugin_to_source, get_custom_source
-
-    if not _ensure_admin_role(message, "super"):
-        return
-    data = await state.get_data()
-    sid = data.get("attach_source_id", "")
-    source = get_custom_source(sid)
-    await state.set_state(AdminFlow.menu)
-    if not source:
-        await answer(message, _tr(message, "admin_source_not_found"), None, "admin")
-        await _render_sources_list(message, state)
-        return
-    slug = attach_plugin_to_source((message.text or "").strip(), source)
-    if slug:
-        await answer(message, _tr(message, "admin_source_attached", slug=plain_html(slug)), None, "admin")
-    else:
-        await answer(message, _tr(message, "admin_source_attach_notfound"), None, "admin")
-    await _render_source_detail(message, sid)
-
-
-@router.callback_query(F.data.startswith("adm:source:"))
-async def on_admin_source(cb: CallbackQuery, state: FSMContext) -> None:
-    from bot.services.sources import get_custom_source, delete_custom_source
-
-    if not _ensure_admin_role(cb, "super"):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-    parts = cb.data.split(":")
-    sid = parts[2] if len(parts) > 2 else ""
-    op = parts[3] if len(parts) > 3 else None
-    sub = parts[4] if len(parts) > 4 else None
-
-    if op is None:
-        await _nav_push(state, cb.data)
-        if not await _render_source_detail(cb, sid):
-            await cb.answer(_tr(cb, "admin_source_not_found"), show_alert=True)
-            return
-    elif op == "attach":
-        await state.update_data(attach_source_id=sid)
-        await state.set_state(AdminFlow.attaching_source_plugin)
-        await answer(cb, _tr(cb, "admin_source_prompt_attach"), None, "admin")
-    elif op == "del" and sub == "yes":
-        delete_custom_source(sid)
-        await answer(cb, _tr(cb, "admin_source_deleted"), None, "admin")
-        await _render_sources_list(cb, state)
-    elif op == "del":
-        source = get_custom_source(sid)
-        title = plain_html(source.get("title") if source else sid)
-        await answer(cb, _tr(cb, "admin_source_del_confirm", title=title),
-                     admin_source_del_confirm_kb(sid, _lang_for(cb)), "admin")
+    await _reset_menu_navigation(state)
+    await _render_nav_token(cb, state, "adm:config")
     await ack(cb)
 
 
@@ -5287,7 +5143,7 @@ async def on_admin_search_plugins(message: Message, state: FSMContext) -> None:
         )
         return
 
-    plugins = list_published_plugins(source_filter="official")
+    plugins = list_published_plugins()
     filtered = [
         p
         for p in plugins
@@ -5581,7 +5437,7 @@ async def on_admin_plugins_list(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     page = int(cb.data.split(":")[2])
-    plugins = list_published_plugins(source_filter="official")
+    plugins = list_published_plugins()
 
     total = len(plugins)
     total_pages = math.ceil(total / PAGE_SIZE)

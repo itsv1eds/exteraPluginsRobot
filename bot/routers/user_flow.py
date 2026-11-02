@@ -70,7 +70,7 @@ from bot.services.validation import (
 )
 from bot.states import UserFlow
 from bot.texts import TEXTS, t
-from core.catalog import find_plugin_by_slug, find_plugin_by_deeplink_token, find_user_plugins, is_external_plugin
+from core.catalog import find_plugin_by_slug, find_plugin_by_deeplink_token, find_user_plugins
 from bot.routers.catalog_flow import build_plugin_preview
 from bot.routers.catalog_flow import BOT_USERNAME
 from bot.keyboards import plugin_detail_kb
@@ -759,8 +759,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                     logger.exception("event=start.record_open_failed slug=%s", plugin_slug)
                 text = build_plugin_preview(plugin, lang)
                 link = plugin.get("channel_message", {}).get("link")
-                external = is_external_plugin(plugin)
-                notify_all_enabled = False if external else is_subscribed(user_id, ALL_SUBSCRIPTION_KEY)
+                notify_all_enabled = is_subscribed(user_id, ALL_SUBSCRIPTION_KEY)
                 sent = await answer(
                     message,
                     text,
@@ -768,7 +767,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                         link,
                         back="catalog",
                         lang=lang,
-                        subscribe_callback=(None if external or notify_all_enabled else f"sub:toggle:{encode_slug(plugin_slug)}:catalog"),
+                        subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(plugin_slug)}:catalog"),
                     ),
                     "catalog",
                 )
@@ -912,8 +911,7 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
         if plugin:
             text = build_plugin_preview(plugin, lang)
             link = plugin.get("channel_message", {}).get("link")
-            external = is_external_plugin(plugin)
-            notify_all_enabled = False if external else (is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False)
+            notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False
             await answer(
                 cb,
                 text,
@@ -921,7 +919,7 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
                     link,
                     back="catalog",
                     lang=lang,
-                    subscribe_callback=(None if external or notify_all_enabled else f"sub:toggle:{encode_slug(start_payload)}:catalog"),
+                    subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(start_payload)}:catalog"),
                 ),
                 "catalog",
             )

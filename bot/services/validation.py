@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional, Tuple
 
-from core.catalog import find_plugin_by_slug, has_official_plugin_id, is_external_plugin
+from core.catalog import find_plugin_by_slug, has_official_plugin_id
 from bot.services.publish import make_slug
 from bot.services.versioning import compare_versions, meets_min_supported
 from core.categories import categories_for
@@ -71,7 +71,7 @@ def validate_new_submission(plugin: Dict[str, Any]) -> Tuple[bool, Optional[str]
     slug = make_slug(plugin_name)
     existing = find_plugin_by_slug(slug)
     
-    if existing and not is_external_plugin(existing):
+    if existing:
         return False, "plugin_already_exists"
     
     if has_official_plugin_id(plugin_id):

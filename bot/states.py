@@ -40,7 +40,6 @@ class UserFlow(StatesGroup):
 
     choosing_plugin_to_update = State()
     uploading_update_file = State()
-    uploading_pending_update_file = State()
     entering_changelog = State()
     confirming_update = State()
 
@@ -80,7 +79,6 @@ class AdminFlow(StatesGroup):
     searching_icon = State()
     linking_author_icon_user = State()
     editing_catalog_icon = State()
-    editing_catalog_icon_field = State()
 
     entering_sync_version = State()
     entering_sync_catalog = State()

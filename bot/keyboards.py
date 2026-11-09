@@ -151,20 +151,18 @@ def admin_scheduled_list_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def admin_scheduled_item_kb(request_id: str, lang: str = "ru", allow_manage: bool = True) -> InlineKeyboardMarkup:
-    rows = [
+def admin_schedule_controls(request_id: str, lang: str) -> list[list[InlineKeyboardButton]]:
+    token = request_callback_token(request_id)
+    return [
         [
-            InlineKeyboardButton(text=t("btn_change_time", lang), callback_data=f"adm:scheduled:change_time:{request_callback_token(request_id)}"),
-            InlineKeyboardButton(text=t("btn_unschedule", lang), callback_data=f"adm:scheduled:unschedule:{request_callback_token(request_id)}"),
+            _btn(t("btn_change_time", lang), callback_data=f"adm:scheduled:change_time:{token}", icon="clock"),
+            _btn(t("btn_unschedule", lang), callback_data=f"adm:scheduled:unschedule:{token}", icon="close"),
         ],
         [
-            InlineKeyboardButton(text=t("btn_move_up", lang), callback_data=f"adm:scheduled:up:{request_callback_token(request_id)}"),
-            InlineKeyboardButton(text=t("btn_move_down", lang), callback_data=f"adm:scheduled:down:{request_callback_token(request_id)}"),
+            _btn(t("btn_move_up", lang), callback_data=f"adm:scheduled:up:{token}", icon="up"),
+            _btn(t("btn_move_down", lang), callback_data=f"adm:scheduled:down:{token}", icon="down"),
         ],
-    ] if allow_manage else []
-    rows.append([_btn(t("btn_open", lang), callback_data=f"adm:review:{request_callback_token(request_id)}", icon="file")])
-    rows.append([_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")])
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    ]
 
 
 def categories_kb(categories: list, lang: str, selected=None) -> InlineKeyboardMarkup:
@@ -771,6 +769,7 @@ _AUDIT_FILTER_BUTTONS = (
     ("rework", "admin_audit_filter_rework"),
     ("scheduled", "admin_audit_filter_scheduled"),
     ("approved", "admin_audit_filter_approved"),
+    ("deleted", "admin_audit_filter_deleted"),
 )
 
 
@@ -786,7 +785,7 @@ def admin_rejected_kb(
 
     filters: List[InlineKeyboardButton] = []
     filter_icons = {"all": "file", "published": "yes", "rejected": "no", "pending": "clock",
-                    "rework": "edit", "scheduled": "calendar", "approved": "yes"}
+                    "rework": "edit", "scheduled": "calendar", "approved": "yes", "deleted": "delete"}
     for key, text_key in _AUDIT_FILTER_BUTTONS:
         label = t(text_key, lang)
         if key == status:
@@ -889,6 +888,10 @@ def admin_config_channels_kb(lang: str = "ru") -> InlineKeyboardMarkup:
         [
             _btn(t("admin_cfg_channel_default_tags", lang), callback_data="adm:config:channel.default_tags", icon="tag"),
             _btn(t("admin_cfg_channel_locale_order", lang), callback_data="adm:config:channel.locale_order", icon="library"),
+        ],
+        [
+            _btn(t("admin_cfg_archive_channel", lang), callback_data="adm:config:archive.channel_id", icon="file"),
+            _btn(t("admin_cfg_archive_technical_channel", lang), callback_data="adm:config:archive.technical_channel_id", icon="file"),
         ],
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
@@ -1091,9 +1094,10 @@ def admin_review_kb(
     allow_approve: bool = False,
 ) -> InlineKeyboardMarkup:
     vote_token = request_callback_token(request_id)
-    submit_callback = submit_callback or f"adm:prepublish:{vote_token}"
-    if request_id in submit_callback:
-        submit_callback = submit_callback.replace(request_id, vote_token)
+    if not submit_callback:
+        submit_callback = f"adm:prepublish:{vote_token}"
+    elif submit_callback.endswith(f":{request_id}"):
+        submit_callback = submit_callback.removesuffix(request_id) + vote_token
     submit_label = submit_label or t("btn_publish", lang)
     rows: list[list[InlineKeyboardButton]] = []
     if allow_publish and allow_approve:
@@ -1243,10 +1247,6 @@ def admin_reject_kb(request_id: str, lang: str = "ru", show_votes: bool = False,
         [_btn(t("btn_back", lang), callback_data="adm:cancel", style="danger", icon="back")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def _tpl_label(text: str) -> str:
-    return " ".join(str(text or "").split())
 
 
 def admin_reject_templates_kb(

@@ -43,7 +43,6 @@ router = Router(name="poster-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
 
 TZ_DISPLAY = timezone(timedelta(hours=5))
-DEFAULT_UTC_OFFSET = 5
 _MEDIA_GROUP_SETTLE_SECONDS = 0.8
 _media_group_buffers: dict[tuple[int, int, str], dict] = {}
 

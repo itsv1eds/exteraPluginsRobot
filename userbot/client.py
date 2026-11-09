@@ -393,16 +393,6 @@ class UserbotClient:
             "link": f"https://t.me/{channel_username}/{message.id}",
         }
 
-    async def send_channel_text(self, chat_ref, text: str) -> int:
-        entity = await self.client.get_entity(chat_ref)
-        parsed_text, entities = self._format_text_for_telegram(text or "")
-        message = await _guard(self.client.send_message(
-            entity,
-            parsed_text,
-            formatting_entities=entities,
-            link_preview=False,
-        ), "send_message")
-        return message.id
 
     async def edit_channel_text(self, chat_ref, message_id: int, text: str) -> bool:
         entity = await self.client.get_entity(chat_ref)
@@ -454,78 +444,7 @@ class UserbotClient:
             "scheduled_at": schedule_date.isoformat(),
         }
 
-    async def schedule_plugin(
-        self,
-        text: str,
-        schedule_date: datetime,
-        file_path: Optional[str] = None,
-        download_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        entity = await self.get_publish_entity()
-        parsed_text, entities = self._format_text_for_telegram(text)
 
-        if file_path and Path(file_path).exists():
-            message = await _guard(self.client.send_file(
-                entity,
-                file=file_path,
-                caption=parsed_text,
-                formatting_entities=entities,
-                schedule=schedule_date,
-                attributes=[DocumentAttributeFilename(download_name or Path(file_path).name)],
-                force_document=True,
-            ), "send_file", timeout=600)
-        else:
-            message = await _guard(self.client.send_message(
-                entity,
-                parsed_text,
-                formatting_entities=entities,
-                link_preview=False,
-                schedule=schedule_date,
-            ), "send_message")
-
-        channel_username = CONFIG.get("publish_channel", "xzcvzxa")
-
-        return {
-            "message_id": message.id,
-            "chat_id": entity.id,
-            "link": f"https://t.me/{channel_username}/{message.id}",
-            "scheduled_at": schedule_date.isoformat(),
-        }
-
-    async def schedule_icon(
-        self,
-        text: str,
-        schedule_date: datetime,
-        file_path: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        entity = await self.get_icons_publish_entity()
-        parsed_text, entities = self._format_text_for_telegram(text)
-
-        if file_path and Path(file_path).exists():
-            message = await _guard(self.client.send_file(
-                entity,
-                file=file_path,
-                caption=parsed_text,
-                formatting_entities=entities,
-                schedule=schedule_date,
-            ), "send_file")
-        else:
-            message = await _guard(self.client.send_message(
-                entity,
-                parsed_text,
-                formatting_entities=entities,
-                link_preview=False,
-                schedule=schedule_date,
-            ), "send_message")
-
-        channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
-
-        return {
-            "message_id": message.id,
-            "chat_id": entity.id,
-            "link": f"https://t.me/{channel_username}/{message.id}",
-            "scheduled_at": schedule_date.isoformat(),
-        }
 
     async def publish_icon(
         self,
@@ -614,56 +533,6 @@ class UserbotClient:
             "updated": updated,
         }
 
-
-    async def update_icon_message(
-        self,
-        message_id: int,
-        text: str,
-        file_path: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        entity = await self.get_icons_publish_entity()
-        parsed_text, entities = self._format_text_for_telegram(text)
-
-        try:
-            if file_path and Path(file_path).exists():
-                file_name = Path(file_path).name
-                attributes = [DocumentAttributeFilename(file_name)]
-                await _guard(self.client.edit_message(
-                    entity,
-                    message_id,
-                    parsed_text,
-                    file=file_path,
-                    attributes=attributes,
-                    formatting_entities=entities,
-                ), "edit_message")
-            else:
-                await _guard(self.client.edit_message(
-                    entity,
-                    message_id,
-                    parsed_text,
-                    formatting_entities=entities,
-                ), "edit_message")
-
-            channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
-
-            return {
-                "message_id": message_id,
-                "chat_id": entity.id,
-                "link": f"https://t.me/{channel_username}/{message_id}",
-                "updated": True,
-            }
-        except MessageNotModifiedError:
-            channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
-            logger.info("Icon message %s not modified; skipping edit", message_id)
-            return {
-                "message_id": message_id,
-                "chat_id": entity.id,
-                "link": f"https://t.me/{channel_username}/{message_id}",
-                "updated": False,
-            }
-        except Exception as e:
-            logger.error(f"Failed to update icon message {message_id}: {e}")
-            raise
 
     async def delete_message(self, message_id: int) -> None:
         entity = await self.get_publish_entity()

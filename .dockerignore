@@ -29,3 +29,10 @@ dist/
 .pytest_cache/
 config.json.example
 *.zip
+*.sqlite
+*.sqlite3-*
+*.db
+*.db-*
+*.session-*
+scripts/seed_test_catalog.py
+scripts/restore_request_history.py

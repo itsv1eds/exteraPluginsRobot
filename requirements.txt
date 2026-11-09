@@ -3,3 +3,4 @@ python-dotenv==1.2.2
 telethon==1.44.0
 packaging==26.2
 PyYAML==6.0.3
+pydantic==2.13.5

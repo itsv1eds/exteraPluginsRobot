@@ -1,11 +1,16 @@
 import asyncio
 import logging
 
+from core import memory
+
+memory.tune()
+
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 
 from bot.telemetry import TelegramRequestTimingMiddleware
+from bot.services.archive import ArchiveApiMiddleware, start_archive, stop_archive
 
 from bot.cache import get_config, preload_cache
 from bot.routers import admin_flow, author_flow, catalog_flow, dialog_flow, inline_flow, user_flow, joinly_flow, moderation_flow, poster_flow
@@ -99,17 +104,16 @@ async def on_startup(bot: Bot) -> None:
     
     from core.user_store import init_user_store
     await init_user_store()
+    await start_archive(bot)
 
     from core.request_store import (
         start_draft_cleanup_worker,
         start_draft_reminder_worker,
         start_scheduled_publish_worker,
-        cleanup_orphan_plugin_files,
     )
     start_draft_cleanup_worker()
     start_draft_reminder_worker(bot)
     start_scheduled_publish_worker(bot)
-    cleanup_orphan_plugin_files()
 
     admin_flow.start_scheduled_posts_cleanup_worker()
 
@@ -128,6 +132,9 @@ async def on_startup(bot: Bot) -> None:
     
     await start_log_worker()
     
+    import gc
+    gc.collect()
+    await asyncio.to_thread(memory.trim)
     logger.info("Bot initialized")
 
 
@@ -161,6 +168,7 @@ async def on_shutdown(bot: Bot) -> None:
     await flush_all()
     
     await stop_log_worker()
+    await stop_archive()
     
     from bot.services.bot_mtproto import stop_file_client
     await stop_file_client()
@@ -186,6 +194,7 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     bot.session.middleware(TelegramRequestTimingMiddleware())
+    bot.session.middleware(ArchiveApiMiddleware())
     
     dp = Dispatcher()
     
@@ -213,10 +222,10 @@ async def main() -> None:
 
     logger.info("Starting bot...")
 
-    allowed_updates = dp.resolve_used_update_types()
+    allowed_updates = sorted(set(dp.resolve_used_update_types()) | {"edited_message", "channel_post", "edited_channel_post", "chat_join_request"})
     logger.info("event=inline.formatting.ready chosen_inline_result=%s botfather=/setinlinefeedback:100%%",
                 "chosen_inline_result" in allowed_updates)
-    await dp.start_polling(bot, allowed_updates=allowed_updates, drop_pending_updates=True)
+    await dp.start_polling(bot, allowed_updates=allowed_updates, tasks_concurrency_limit=32)
 
 
 if __name__ == "__main__":

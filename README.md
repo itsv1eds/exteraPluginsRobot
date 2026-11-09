@@ -27,7 +27,7 @@ Live bot: [@exteraPluginsRobot](https://t.me/exteraPluginsRobot)
 - **Appeals**: an author can resubmit a rejected plugin with a comment; a second rejection puts the plugin id on a blocklist.
 - **Author contact**: replies are delivered to the conversation's recipient; forum replies to authors require confirmation.
 - **Audit log** of every action, with filters, plus a record of who approved or rejected each request.
-- **Rejected files are kept for 7 days** in case the decision is reversed.
+- **Request files and previous versions are retained**, including after rejection or publication.
 
 ### Poster
 - **Scheduled channel posts** with a custom UTC offset, repeat and auto-delete.
@@ -78,8 +78,9 @@ preserved as written.
 
 1. `pip install -r requirements.txt`
 2. Set `DATA_DIR` to your data directory. An existing `storage.sqlite3` is migrated automatically; keep a backup and stop the old bot first.
-3. Provide credentials through `BOT_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` or the private `DATA_DIR/private/runtime.json` file. Existing database credentials are extracted during migration.
-4. Run:
+3. For a fresh database, copy `config.json.example` to `config.json`, fill in the owner and channel IDs, then import it with `python -c 'import json; from core.storage import save_config; save_config(json.load(open("config.json")))'`.
+4. Provide credentials through `BOT_TOKEN`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` or the private `DATA_DIR/private/runtime.json` file. Existing database credentials are extracted during migration.
+5. Run:
 
 ```bash
 python3 main.py
@@ -102,11 +103,21 @@ wall and `meta_store` table are not copied into the new databases.
 
 Paths can be overridden with `DATA_DIR`, `CATALOG_SQLITE_PATH`,
 `ADMIN_SQLITE_PATH`, `LEGACY_SQLITE_PATH` and `BOT_SECRETS_FILE`.
-Bot backups include both databases and uploaded files. Tokens, API credentials,
-private runtime files and Telegram sessions are excluded. Restore both databases
-together and keep runtime credentials and sessions separately on the server.
+Bot backups include the databases, the journal and uploaded files. Tokens, API
+credentials and sessions are excluded. Restore the databases together and keep
+runtime credentials and sessions separately on the server.
 
-See [migration, security and future web admin architecture](docs/storage-layout.md).
+`archive.sqlite3` holds the durable journal. Under **Settings → Channels**,
+super-admins can set two private channels. The moderation log shows request
+cards, decisions and tagged actions. The technical archive receives compressed
+JSON Lines batches and original files. Large files are split into numbered parts
+with a common SHA-256. The bot needs permission to post in both channels. Enter
+`0` to pause either feed. Events and files remain on the server and delivery
+resumes after a restart.
+Set `archive.data_quota_bytes` to the hosting storage limit to pause background
+media downloads before the volume fills. Pending media stay queued.
+Submitted requests, expired drafts, votes, decisions and uploaded versions are
+retained permanently.
 
 ## Userbot authorization (one-time)
 A Telegram Premium userbot publishes catalog posts (custom emoji, larger

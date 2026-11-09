@@ -9,6 +9,11 @@ services:
     environment:
       DATA_DIR: /app/data
     network_mode: bridge
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "5"
     volumes:
       - ./data:/app/data
       - ./sessions:/app/sessions

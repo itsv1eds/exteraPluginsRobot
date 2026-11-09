@@ -39,10 +39,6 @@ class PluginData:
     app_version: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
     
-    @property
-    def settings_label(self) -> str:
-        return "Да" if self.has_settings else "Нет"
-    
     def to_dict(self) -> Dict[str, Any]:
         return {
             "id": self.id,
@@ -114,7 +110,6 @@ def build_submission_payload(
     usage_ru: str,
     usage_en: str,
     category_key: str | list[str],
-    category_label: str,
 ) -> Dict[str, Any]:
     return {
         "user_id": user_id,
@@ -140,7 +135,7 @@ async def prepare_submission_categories(payload: Dict[str, Any]) -> bool:
     path = plugin.get("file_path")
     changed = False
     if path and Path(path).is_file():
-        changed = await asyncio.to_thread(write_plugin_categories, path, keys)
+        changed = await asyncio.to_thread(write_plugin_categories, path, keys, versions_dir=Path(path).parent / "versions")
     plugin["categories"] = keys
     if changed:
         plugin["file_id"] = None
@@ -168,15 +163,14 @@ async def prepare_catalog_categories(payload: Dict[str, Any], catalog: Dict[str,
             raise PluginParseError("Original plugin file has an unsupported format or size")
         uploads = get_uploads_subdir("plugins")
         path = uploads / _unique_upload_name(plugin.get("id") or catalog.get("plugin_id") or "plugin", extension)
-        try:
-            await asyncio.wait_for(userbot.client.download_media(message, file=str(path)), timeout=600)
-            metadata = await asyncio.to_thread(parse_plugin_file, path, plugin.get("version") or None)
+        with tempfile.TemporaryDirectory(prefix="submission-", dir=uploads) as directory:
+            temporary = Path(directory) / path.name
+            await asyncio.wait_for(userbot.client.download_media(message, file=str(temporary)), timeout=600)
+            metadata = await asyncio.to_thread(parse_plugin_file, temporary, plugin.get("version") or None)
             expected = plugin.get("id") or catalog.get("plugin_id")
             if expected and metadata.id != expected:
                 raise PluginParseError("Original plugin ID does not match the catalog")
-        except BaseException:
-            path.unlink(missing_ok=True)
-            raise
+            temporary.replace(path)
         plugin.update(id=metadata.id, file_path=str(path), file_extension=extension, file_id=None,
                       format="elyx" if extension in ELYX_EXTENSIONS else "python", category_file_changed=True)
         plugin.setdefault("app_version", metadata.app_version)

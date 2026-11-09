@@ -14,6 +14,7 @@ from core.storage import flush_documents
 logger = logging.getLogger(__name__)
 SCHEDULE_TIMEZONE = timezone(timedelta(hours=5))
 APPROVABLE_STATUSES = frozenset({"pending", "error", "rework", "rejected"})
+EDITABLE_REQUEST_STATUSES = frozenset({"pending", "error", "rework", "approved", "scheduled"})
 _notifications_in_flight: set[tuple[str, str]] = set()
 
 
@@ -28,7 +29,11 @@ def is_plugin_request(entry: dict | None) -> bool:
 
 
 def can_approve_request(entry: dict | None) -> bool:
-    return is_plugin_request(entry) and entry.get("status") in APPROVABLE_STATUSES
+    return is_plugin_request(entry) and not entry.get("history_only") and entry.get("status") in APPROVABLE_STATUSES
+
+
+def can_edit_request(entry: dict | None) -> bool:
+    return is_plugin_request(entry) and not entry.get("history_only") and entry.get("status") in EDITABLE_REQUEST_STATUSES
 
 
 def approval_status_text(entry: dict, lang: str) -> str:
@@ -49,12 +54,11 @@ def approve_request(request_id: str, actor: str, actor_id: int | None) -> dict |
     entry = get_request_by_id(request_id)
     if not can_approve_request(entry):
         return None
-    update_request_payload(request_id, {
+    update_request_status(request_id, "approved", actor=actor, actor_id=actor_id, payload_fields={
         "approved_at": datetime.now(timezone.utc).isoformat(),
         "approved_by": actor, "approved_by_id": actor_id,
-        "scheduled_at": None, "moderation_pending_votes": {},
+        "scheduled_at": None, "publish_retry_at": None, "moderation_pending_votes": {},
     })
-    update_request_status(request_id, "approved", actor=actor, actor_id=actor_id)
     add_audit_event("moderation.request_approved", actor=actor, actor_id=actor_id,
                     request_id=request_id)
     return get_request_by_id(request_id)
@@ -62,7 +66,7 @@ def approve_request(request_id: str, actor: str, actor_id: int | None) -> dict |
 
 def schedule_request(request_id: str, scheduled_at: datetime, actor: str, actor_id: int | None) -> dict | None:
     entry = get_request_by_id(request_id)
-    if not is_plugin_request(entry) or entry.get("type") != "new":
+    if not can_edit_request(entry) or entry.get("type") != "new":
         return None
     if entry.get("status") not in {"pending", "error", "approved", "scheduled"}:
         return None
@@ -71,14 +75,16 @@ def schedule_request(request_id: str, scheduled_at: datetime, actor: str, actor_
     if moment <= datetime.now(timezone.utc):
         return None
     previous = payload.get("scheduled_at")
-    update_request_payload(request_id, {
-        "scheduled_at": moment.isoformat(),
+    fields = {
+        "scheduled_at": moment.isoformat(), "publish_retry_at": None,
         "approved_at": payload.get("approved_at") or datetime.now(timezone.utc).isoformat(),
         "approved_by": payload.get("approved_by") or actor,
         "approved_by_id": payload.get("approved_by_id") or actor_id,
-    })
+    }
     if entry.get("status") != "scheduled":
-        update_request_status(request_id, "scheduled", actor=actor, actor_id=actor_id)
+        update_request_status(request_id, "scheduled", actor=actor, actor_id=actor_id, payload_fields=fields)
+    else:
+        update_request_payload(request_id, fields)
     if previous != moment.isoformat():
         add_audit_event("moderation.request_scheduled", actor=actor, actor_id=actor_id,
                         request_id=request_id, details={"scheduled_at": moment.isoformat(), "previous": previous})

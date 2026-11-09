@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import json
 import os
 import tempfile
@@ -64,7 +65,7 @@ def embed_category_text(text: str, categories, *, field="__category__") -> str:
     return result
 
 
-def write_plugin_categories(path: str | Path, categories) -> bool:
+def write_plugin_categories(path: str | Path, categories, *, versions_dir: Path | None = None) -> bool:
     path = Path(path)
     keys = normalize_categories(categories, strict=True)
     if not keys:
@@ -122,6 +123,15 @@ def write_plugin_categories(path: str | Path, categories) -> bool:
         if temporary.stat().st_size > plugin_file_limit(path):
             raise PluginParseError("Plugin file exceeds its size limit after adding categories")
         os.chmod(temporary, path.stat().st_mode & 0o777)
+        if versions_dir is not None:
+            with path.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            retained = versions_dir / digest / path.name
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(path, retained)
+            except FileExistsError:
+                pass
         os.replace(temporary, path)
         return True
     finally:

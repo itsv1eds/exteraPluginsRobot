@@ -181,6 +181,8 @@ def _schedule_prompt_expiry(bot, request_id: str, user_id: int) -> None:
 async def expire_pending_vote_prompts(bot) -> int:
     expired = 0
     for entry in get_all_requests():
+        if entry.get("history_only"):
+            continue
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
         pending = payload.get("moderation_pending_votes") if isinstance(payload, dict) else None
         if not isinstance(pending, dict):

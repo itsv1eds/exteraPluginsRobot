@@ -49,10 +49,12 @@ async def send_plugin_document(bot, chat_id, plugin, *, file_id: str | None = No
     client = await get_file_client()
     entity = await _file_entity(client, bot, chat_id)
     name = fit_filename(str(plugin.get("id") or "plugin"), payload_extension(plugin))
+    caption = {"caption": kwargs["caption"], "parse_mode": kwargs.get("parse_mode")} if kwargs.get("caption") is not None else {}
     message = await asyncio.wait_for(client.send_file(
         entity, str(path), force_document=True, attributes=[DocumentAttributeFilename(name)],
         reply_to=kwargs.get("reply_to_message_id") or kwargs.get("message_thread_id"),
         silent=bool(kwargs.get("disable_notification")),
+        **caption,
     ), timeout=600)
     file_id = pack_bot_file_id(message.document)
     if not file_id:

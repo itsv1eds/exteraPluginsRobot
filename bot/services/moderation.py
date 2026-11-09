@@ -39,6 +39,7 @@ VOTABLE_REQUEST_STATUSES = frozenset({"pending", "error", "scheduled"})
 def can_accept_vote(entry: dict | None) -> bool:
     return bool(
         isinstance(entry, dict)
+        and not entry.get("history_only")
         and entry.get("type") != "delete"
         and entry.get("status") in VOTABLE_REQUEST_STATUSES
         and not (entry.get("payload") or {}).get("update_notification_pending")
@@ -187,11 +188,7 @@ def previous_rounds_text(entry: dict | None, lang: str = "ru") -> str:
     return t("vote_previous_title", lang) + "\n" + "\n\n".join(blocks)
 
 
-def archive_votes_for_rework(request_id: str, *, after_rework: bool = True) -> dict | None:
-    entry = get_request_by_id(request_id)
-    if not entry:
-        return None
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
+def reset_vote_round_fields(payload: dict, *, after_rework: bool) -> dict:
     votes = payload.get("moderation_votes")
     rounds = payload.get("previous_vote_rounds")
     rounds = list(rounds) if isinstance(rounds, list) else []
@@ -201,12 +198,12 @@ def archive_votes_for_rework(request_id: str, *, after_rework: bool = True) -> d
             "votes": votes,
             "archived_at": datetime.now(timezone.utc).isoformat(),
         })
-    return update_request_payload(request_id, {
+    return {
         "moderation_votes": {},
         "previous_vote_rounds": rounds,
         "resubmitted_after_rework": after_rework or bool(payload.get("resubmitted_after_rework")),
         "moderation_pending_votes": {},
-    })
+    }
 
 
 def forum_text_with_votes(entry: dict | None) -> str:
@@ -454,8 +451,9 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
     if not request_id:
         return
 
-    entry = update_request_payload(request_id, {"moderation_forum_text": text}) or entry
-    rendered_text = forum_text_with_votes(entry)
+    entry = get_request_by_id(request_id) or entry
+    render_payload = {**(entry.get("payload") or {}), "moderation_forum_text": text}
+    rendered_text = forum_text_with_votes({**entry, "payload": render_payload})
     yes, no, _ = vote_counts(entry)
     reply_markup = _forum_reply_markup(entry, request_id, yes, no)
     chat_id = cfg["chat_id"]
@@ -514,7 +512,9 @@ async def send_request_to_forum(bot, entry: dict, text: str, file_path: str | No
             "message_id": int(msg.message_id),
             "sent_at": datetime.now(timezone.utc).isoformat(),
         }
-        payload_update: dict[str, object] = {"moderation_forum_message": info}
+        payload_update: dict[str, object] = {"moderation_forum_message": info, "moderation_forum_text": text}
+        if render_payload.get("update_notification_pending"):
+            payload_update["update_notification_pending"] = False
         head_ids = [i for i in sent_message_ids if i != int(msg.message_id)]
         if head_ids:
             info["extra_message_ids"] = head_ids

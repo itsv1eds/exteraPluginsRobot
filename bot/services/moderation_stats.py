@@ -183,7 +183,7 @@ def sync_moderation_history() -> int:
         if isinstance(event, dict) and event.get("id")
     }
     before = len(events)
-    for entry in get_all_requests():
+    for entry in get_all_requests(include_history=True):
         payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
         rounds = payload.get("previous_vote_rounds")
         if isinstance(rounds, list):
@@ -206,6 +206,8 @@ def sync_moderation_history() -> int:
         if isinstance(history, list):
             for item in history:
                 if not isinstance(item, dict):
+                    continue
+                if item.get("source_event") == "moderation.request_withdrawn":
                     continue
                 event = _decision_event(
                     entry,
@@ -271,14 +273,3 @@ def moderation_week(value: str) -> dict[str, Any]:
     return snapshot
 
 
-def available_weeks() -> list[str]:
-    doc = load_stats()
-    keys = {week_key()}
-    for event in doc.get("moderation_activity") or []:
-        if isinstance(event, dict) and _datetime(event.get("created_at")):
-            keys.add(week_key(event["created_at"]))
-    keys.update(
-        key for key in (doc.get("moderation_weeks") or {})
-        if isinstance(key, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", key)
-    )
-    return sorted(keys, reverse=True)

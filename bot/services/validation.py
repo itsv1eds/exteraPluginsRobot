@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional, Tuple
 
 from core.catalog import find_plugin_by_slug, has_official_plugin_id
+from bot.services.approval import can_edit_request
 from bot.services.publish import make_slug
 from bot.services.versioning import compare_versions, meets_min_supported
 from core.categories import categories_for
@@ -177,7 +178,7 @@ def block_plugin(plugin_id: str) -> bool:
 
 
 def validate_request_replacement(entry: Dict[str, Any], plugin: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
-    if entry.get("status") not in {"pending", "rework"} or entry.get("type") not in {"new", "update"}:
+    if not can_edit_request(entry):
         return False, "resubmit_expired"
     payload = entry.get("payload") or {}
     expected_id = str((payload.get("plugin") or {}).get("id") or "").strip()
@@ -188,5 +189,6 @@ def validate_request_replacement(entry: Dict[str, Any], plugin: Dict[str, Any]) 
     if not meets_min_supported(plugin.get("min_version")):
         return False, "min_version_too_low"
     if entry.get("type") == "update":
-        return validate_update_submission(plugin, payload.get("old_plugin") or {})
+        old_plugin = find_plugin_by_slug(payload.get("update_slug")) if payload.get("update_slug") else None
+        return validate_update_submission(plugin, old_plugin or payload.get("old_plugin") or {})
     return True, None

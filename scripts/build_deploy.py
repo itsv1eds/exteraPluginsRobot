@@ -6,8 +6,9 @@ from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ROOT_FILES = ("main.py", "auth.py", "requirements.txt", "Dockerfile", "docker-compose.yml", "README.md")
+ROOT_FILES = ("main.py", "auth.py", "requirements.txt", "Dockerfile", "docker-compose.yml", "README.md", "config.json.example")
 SOURCE_DIRECTORIES = ("core", "bot", "userbot", "scripts")
+LOCAL_SCRIPTS = {"seed_test_catalog.py", "restore_request_history.py"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}
 
 
@@ -18,7 +19,10 @@ def deployment_files(root: Path = ROOT) -> list[Path]:
         source = root / directory
         if not source.is_dir() or source.is_symlink():
             raise ValueError(f"Missing source directory or symlink: {source}")
-        files.extend(path for path in source.rglob("*.py") if "__pycache__" not in path.parts)
+        files.extend(
+            path for path in source.rglob("*.py")
+            if "__pycache__" not in path.parts and not (directory == "scripts" and path.name in LOCAL_SCRIPTS)
+        )
     for directory in ("bot/locales", "img"):
         if not (root / directory).is_dir() or (root / directory).is_symlink():
             raise ValueError(f"Missing resource directory or symlink: {root / directory}")

@@ -12,13 +12,13 @@ from uuid import uuid4
 from bot import limits
 from bot.formatting import normalize_custom_emoji, telegram_html, visible_html_length
 from bot.helpers import BLANK_CHAR
+from bot.services.audit import add_audit_event
 from bot.services.channel_text import editing_userbot, send_description, try_edit
 
 from core.storage import load_poster, save_poster
 
 logger = logging.getLogger(__name__)
 
-POST_STATUSES = ("scheduled", "sending", "sent", "failed", "canceled")
 
 @dataclass(slots=True)
 class SentContent:
@@ -213,6 +213,17 @@ def get_post(post_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _audit_post(entry: dict, action: str) -> None:
+    try:
+        add_audit_event(
+            f"poster.{action}", actor_id=entry.get("owner_user_id"),
+            details={"post_id": entry.get("id"), "chat_id": entry.get("chat_id"), "run_at": entry.get("run_at"),
+                     "message_id": entry.get("sent_message_id"), "error": entry.get("error")},
+        )
+    except Exception:
+        logger.exception("event=poster.audit_failed post_id=%s", entry.get("id"))
+
+
 def add_post(owner_user_id: int, chat_id: int, run_at_iso: str,
              content: Dict[str, Any], kind: str = "manual") -> Dict[str, Any]:
     doc = load_poster()
@@ -233,6 +244,7 @@ def add_post(owner_user_id: int, chat_id: int, run_at_iso: str,
     posts.append(entry)
     doc["posts"] = posts
     save_poster(doc)
+    _audit_post(entry, "scheduled")
     return entry
 
 
@@ -244,6 +256,7 @@ def cancel_post(post_id: str, owner_user_id: int) -> bool:
                 and post.get("owner_user_id") == owner_user_id
                 and post.get("status") == "scheduled"):
             post["status"] = "canceled"
+            _audit_post(post, "canceled")
             changed = True
     if changed:
         save_poster(doc)
@@ -272,7 +285,11 @@ def _update_post(post_id: str, **fields: Any) -> None:
     doc = load_poster()
     for post in doc.get("posts", []):
         if isinstance(post, dict) and post.get("id") == post_id:
+            previous = post.get("status")
             post.update(fields)
+            status = post.get("status")
+            if status != previous and status in {"sent", "failed", "deleted"}:
+                _audit_post(post, status)
             break
     save_poster(doc)
 
@@ -290,6 +307,7 @@ def update_post(post_id: str, owner_user_id: int,
                 post["content"] = content
             if run_at_iso is not None:
                 post["run_at"] = run_at_iso
+            _audit_post(post, "edited")
             changed = True
             break
     if changed:

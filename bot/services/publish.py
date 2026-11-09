@@ -1,7 +1,7 @@
 import re
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from core.plugin_formats import payload_extension
@@ -250,6 +250,17 @@ def build_icon_channel_post(entry: Dict[str, Any]) -> str:
     return "\n\n".join(parts)
 
 
+def _complete_publication(entry, actor, actor_id, *, plugin=True):
+    fields = {"scheduled_at": None, "publish_retry_at": None, "last_publish_error": None, "last_publish_error_at": None}
+    if plugin and (entry.get("type") == "update" or (entry.get("payload") or {}).get("comment_media")):
+        from bot.services.example_media import EXAMPLE_MEDIA_DELAY_SECONDS
+
+        fields["example_media_not_before"] = (datetime.now(timezone.utc) + timedelta(seconds=EXAMPLE_MEDIA_DELAY_SECONDS)).isoformat()
+        if entry.get("type") == "update":
+            fields["example_changelog_pending"] = True
+    update_request_status(entry.get("id"), "published", actor=actor, actor_id=actor_id, payload_fields=fields)
+
+
 async def publish_plugin(
     entry: Dict[str, Any],
     bot: Bot,
@@ -293,7 +304,7 @@ async def publish_plugin(
     if document and getattr(document, "file_id", None):
         plugin["file_id"] = document.file_id
 
-    update_request_status(entry.get("id"), "published", actor=actor, actor_id=actor_id)
+    _complete_publication(entry, actor, actor_id)
 
     add_to_catalog(
         entry,
@@ -310,9 +321,6 @@ async def publish_plugin(
     await flush_documents("requests", "plugins")
     logger.info("event=publish.persisted request_id=%s duration_ms=%.0f", entry.get("id"),
                 (time.perf_counter() - persist_started) * 1000)
-
-    if file_path:
-        Path(file_path).unlink(missing_ok=True)
 
     link = f"https://t.me/{channel_username}/{message.message_id}" if channel_username else ""
     return {"message_id": message.message_id, "chat_id": channel_id, "link": link}
@@ -340,7 +348,7 @@ async def publish_icon(
 
     result = await userbot.publish_icon(post_text, file_path, download_name)
 
-    update_request_status(entry.get("id"), "published", actor=actor, actor_id=actor_id)
+    _complete_publication(entry, actor, actor_id, plugin=False)
 
     config = get_config()
     channel_username = (
@@ -358,9 +366,6 @@ async def publish_icon(
     )
 
     await flush_documents("requests", "icons")
-
-    if file_path:
-        Path(file_path).unlink(missing_ok=True)
 
     return result
 
@@ -430,7 +435,7 @@ async def update_plugin(
     download_name = fit_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'), payload_extension(plugin))
     result = await userbot.update_message(old_message_id, post_text, file_path, download_name)
 
-    update_request_status(entry.get("id"), "published", actor=actor, actor_id=actor_id)
+    _complete_publication(entry, actor, actor_id)
     
     update_catalog_entry(
         old_catalog_entry.get("slug"),
@@ -445,9 +450,6 @@ async def update_plugin(
         add_updated_plugin(name, link)
 
     await flush_documents("requests", "plugins", "updated")
-    
-    if file_path:
-        Path(file_path).unlink(missing_ok=True)
     
     return result
 

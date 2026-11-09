@@ -816,6 +816,13 @@ async def on_profile_request(cb: CallbackQuery, state: FSMContext) -> None:
     if not entry or not cb.from_user or (entry.get("payload") or {}).get("user_id") != cb.from_user.id:
         await cb.answer(t("not_found", lang), show_alert=True)
         return
+    from bot.services.approval import can_edit_request
+
+    if can_edit_request(entry):
+        from bot.routers.user_flow import on_open_pending_request
+
+        await on_open_pending_request(cb, state)
+        return
     pending_removal = entry.get("type") == "delete" and entry.get("status") in {"pending", "error", "rework"}
     if entry.get("status") not in {"approved", "scheduled"} and not pending_removal:
         await on_profile(cb, state)
@@ -843,7 +850,7 @@ async def on_profile(cb: CallbackQuery, state: FSMContext) -> None:
 
     pending = []
     for req in get_user_requests(user.id):
-        if req.get("status") not in {"pending", "rework", "approved", "scheduled"}:
+        if req.get("status") not in {"pending", "error", "rework", "approved", "scheduled"}:
             continue
         if req.get("type") not in {"new", "update", "delete"}:
             continue
@@ -1368,19 +1375,14 @@ async def on_my_items(cb: CallbackQuery, state: FSMContext) -> None:
                 all_items.append((name, f"icon:{encode_slug(slug)}"))
 
     if kind == "plugins" and cb.from_user:
-        reqs = get_user_requests(cb.from_user.id)
+        requests = {req["id"]: req for req in get_user_requests(cb.from_user.id)}
         for req_id in pending_ids:
-            req = next((r for r in reqs if r.get("id") == req_id), None)
-            payload = req.get("payload", {}) if isinstance(req, dict) else {}
-            plugin = payload.get("plugin", {}) if isinstance(payload, dict) else {}
-            name = str(plugin.get("name") or req_id).strip() or req_id
-            req_type = req.get("type") if isinstance(req, dict) else "new"
-            request_token = request_callback_token(req_id)
-            cb_data = f"pendupdreq:{request_token}" if req_type == "update" else f"pendreq:{request_token}"
-            if isinstance(req, dict) and (req.get("status") in {"approved", "scheduled"} or req_type == "delete"):
-                cb_data = f"usr:request:{request_callback_token(req_id)}"
-            label = _pending_label(req, lang) if isinstance(req, dict) else ""
-            all_items.append((f"{name} — {label}" if label else name, cb_data))
+            req = requests.get(req_id)
+            if not req or req.get("status") not in {"pending", "error", "rework", "approved", "scheduled"}:
+                continue
+            prefix = "usr:request" if req.get("type") == "delete" else "pendreq"
+            label = _pending_label(req, lang)
+            all_items.append((f"{_pending_name(req)} — {label}", f"{prefix}:{request_callback_token(req_id)}"))
 
     total = len(all_items)
     total_pages = math.ceil(total / PAGE_SIZE)

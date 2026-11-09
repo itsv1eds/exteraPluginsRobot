@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from time import monotonic
@@ -8,6 +9,9 @@ from uuid import uuid4
 
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramRetryAfter
+from bot.services.archive import restore_journal, suppress_journal
+from bot.services.audit import add_audit_event
+from core.archive_log import record_event
 from core.storage import flush_documents, load_broadcasts, save_broadcasts
 
 
@@ -30,6 +34,7 @@ class BroadcastRun:
 
 
 _run: BroadcastRun | None = None
+logger = logging.getLogger(__name__)
 _lock = asyncio.Lock()
 _progress_views: set[tuple[int, int]] = set()
 
@@ -57,13 +62,27 @@ def _save_run(run: BroadcastRun) -> None:
     db["runs"] = runs
     record = asdict(run)
     record.pop("started_at")
+    previous_status = None
     for index, previous in enumerate(runs):
         if previous.get("id") == run.id:
+            previous_status = previous.get("status")
             runs[index] = record
             break
     else:
         runs.append(record)
     save_broadcasts(db)
+    if previous_status != run.status:
+        _audit_run(record)
+
+
+def _audit_run(record: dict) -> None:
+    try:
+        add_audit_event(
+            f"broadcast.{record['status']}", actor_id=record.get("actor_id"), actor=record.get("actor"),
+            details={"run_id": record["id"], **{key: record.get(key) for key in ("kind", "total", "sent", "failed")}},
+        )
+    except Exception:
+        logger.exception("event=broadcast.audit_failed run_id=%s", record["id"])
 
 
 def broadcast_history() -> list[dict]:
@@ -74,6 +93,7 @@ def broadcast_history() -> list[dict]:
     for item in records:
         if item.get("status") == "running" and item.get("id") != active_id:
             item.update(status="interrupted", finished=True, finished_at=datetime.now(timezone.utc).isoformat())
+            _audit_run(item)
             changed = True
     if changed:
         db["runs"] = records
@@ -109,6 +129,7 @@ async def claim_broadcast(kind: str, total: int, *, text: str = "", actor_id: in
 async def deliver_broadcast(bot, recipients: list[int], text: str, run: BroadcastRun) -> BroadcastRun:
     run.text = text
     last_save = monotonic()
+    token = suppress_journal()
     try:
         for user_id in recipients:
             while True:
@@ -133,8 +154,15 @@ async def deliver_broadcast(bot, recipients: list[int], text: str, run: Broadcas
         run.status = "interrupted" if isinstance(exc, asyncio.CancelledError) else "failed"
         raise
     finally:
+        restore_journal(token)
         run.finished = True
         run.finished_at = datetime.now(timezone.utc).isoformat()
         _save_run(run)
         await flush_documents("broadcasts")
+        record = asdict(run)
+        record.pop("started_at", None)
+        try:
+            record_event("broadcast", record, True)
+        except Exception:
+            logger.exception("event=broadcast.journal_failed run_id=%s", run.id)
     return run

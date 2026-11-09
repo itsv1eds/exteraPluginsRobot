@@ -204,6 +204,8 @@ async def on_dialog_reply(message: Message) -> None:
                 peer_id=int(sender.id), request_id=request_id,
                 author_id=author_id, admin_id=int(peer_id),
             )
+        add_audit_event("moderation.author_reply", actor_id=sender.id, actor=sender_label,
+                        request_id=request_id, details={"user_id": peer_id, "text": body})
         await message.answer(t("dialog_delivered", lang), disable_web_page_preview=True)
         return
 
@@ -243,4 +245,6 @@ async def on_dialog_reply(message: Message) -> None:
             peer_id=sender.id, request_id=request_id,
             author_id=author_id, admin_id=sender.id,
         )
+    add_audit_event("moderation.message_author", actor_id=sender.id, actor=sender_label,
+                    request_id=request_id, details={"user_id": peer_id, "text": body})
     await message.answer(t("dialog_delivered", lang), disable_web_page_preview=True)

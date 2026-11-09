@@ -1,14 +1,15 @@
-from core.plugin_formats import plugin_extension
 import asyncio
 import hashlib
 import logging
+import os
 import re
-import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from core import request_history
+from core.archive_log import record_event
 from core.storage import load_requests, save_requests
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ _id_index: Dict[str, Dict[str, Any]] = {}
 _route_token_index: Dict[str, Dict[str, Any]] = {}
 _route_tokens_ready = False
 _route_tokens_source_id: Optional[int] = None
+_history_keys: set[str] = set()
 _cleanup_task: Optional[asyncio.Task] = None
 _reminder_task: Optional[asyncio.Task] = None
 _scheduled_task: Optional[asyncio.Task] = None
@@ -25,7 +27,7 @@ _draft_reminder_before = timedelta(minutes=10)
 _cleanup_interval_seconds = 300
 _reminder_interval_seconds = 300
 _scheduled_interval_seconds = 30
-_processing_requests: Dict[str, float] = {}
+_processing_requests: set[str] = set()
 
 _REQUEST_ROUTE_TOKEN_RE = re.compile(r"^q[0-9a-f]{20}$")
 
@@ -37,17 +39,14 @@ def _now_utc() -> datetime:
 def acquire_request_lock(request_id: str) -> bool:
     if not request_id:
         return True
-    now = time.monotonic()
-    for stale in [key for key, stamp in _processing_requests.items() if now - stamp >= 300]:
-        _processing_requests.pop(stale, None)
     if request_id in _processing_requests:
         return False
-    _processing_requests[request_id] = now
+    _processing_requests.add(request_id)
     return True
 
 
 def release_request_lock(request_id: str) -> None:
-    _processing_requests.pop(request_id, None)
+    _processing_requests.discard(request_id)
 
 
 def _parse_datetime_utc(value: Any) -> Optional[datetime]:
@@ -82,7 +81,8 @@ def _get_requests_list() -> List[Dict[str, Any]]:
     
     database = load_requests()
     _requests_cache = database.get("requests", [])
-    
+    _offload_history(_requests_cache)
+
     _id_index.clear()
     _route_token_index.clear()
     _route_tokens_ready = False
@@ -93,6 +93,48 @@ def _get_requests_list() -> List[Dict[str, Any]]:
             _id_index[req_id] = req
     
     return _requests_cache
+
+
+def _offload_history(requests: List[Dict[str, Any]]) -> None:
+    global _history_keys
+    history = [entry for entry in requests if isinstance(entry, dict) and entry.get("history_only") and entry.get("id")]
+    if history:
+        reserved = _reserved_request_values(requests)
+        for entry in history:
+            token = str(entry.get("route_token") or "").strip()
+            if not _REQUEST_ROUTE_TOKEN_RE.fullmatch(token):
+                nonce = 0
+                while (token := _route_token_candidate(str(entry["id"]), nonce)) in reserved:
+                    nonce += 1
+                entry["route_token"] = token
+                reserved.add(token)
+        request_history.store(history)
+        moved = {id(entry) for entry in history}
+        requests[:] = [entry for entry in requests if id(entry) not in moved]
+        save_requests({"requests": requests})
+        logger.info("event=requests.history_offloaded count=%s", len(history))
+    _history_keys = request_history.keys()
+
+
+def _history_entry(request_id: str = "", token: str = "") -> Optional[Dict[str, Any]]:
+    if request_id and request_id in _history_keys:
+        return request_history.get_by_id(request_id)
+    if token and token in _history_keys:
+        return request_history.get_by_token(token)
+    return None
+
+
+def _ensure_active(entry: Dict[str, Any]) -> None:
+    global _route_tokens_ready
+    request_id = str(entry.get("id") or "")
+    if not request_id or _id_index.get(request_id) is entry:
+        return
+    _get_requests_list().append(entry)
+    _id_index[request_id] = entry
+    _route_tokens_ready = False
+    request_history.remove(request_id)
+    _history_keys.discard(request_id)
+    _history_keys.discard(str(entry.get("route_token") or ""))
 
 
 def _save_requests_list() -> None:
@@ -117,7 +159,7 @@ def _reserved_request_values(requests: List[Dict[str, Any]]) -> set[str]:
             reserved.add(request_id)
         if _REQUEST_ROUTE_TOKEN_RE.fullmatch(route_token):
             reserved.add(route_token)
-    return reserved
+    return reserved | _history_keys
 
 
 def _ensure_all_request_route_tokens() -> List[Dict[str, Any]]:
@@ -140,7 +182,7 @@ def _ensure_all_request_route_tokens() -> List[Dict[str, Any]]:
         if _REQUEST_ROUTE_TOKEN_RE.fullmatch(token):
             last_valid_owner[token] = entry
 
-    reserved = set(request_ids)
+    reserved = set(request_ids) | _history_keys
     reserved.update(last_valid_owner)
     rebuilt_index: Dict[str, Dict[str, Any]] = {}
     changed = False
@@ -174,7 +216,7 @@ def _ensure_all_request_route_tokens() -> List[Dict[str, Any]]:
 
 def _find_request_by_route_token(value: str) -> Optional[Dict[str, Any]]:
     _ensure_all_request_route_tokens()
-    return _route_token_index.get(value)
+    return _route_token_index.get(value) or _history_entry(token=value)
 
 
 def _touch_request(entry: Dict[str, Any]) -> None:
@@ -214,6 +256,7 @@ def add_request(payload: Dict[str, Any], request_type: str = "new") -> Dict[str,
     _id_index[final_id] = entry
     _route_tokens_ready = False
     _ensure_all_request_route_tokens()
+    record_event("request", entry, True)
     
     return entry
 
@@ -248,20 +291,23 @@ def add_draft_request(payload: Dict[str, Any], request_type: str = "new") -> Dic
     _id_index[final_id] = entry
     _route_tokens_ready = False
     _ensure_all_request_route_tokens()
+    record_event("request", entry, True)
 
     return entry
 
 
 def get_requests(status: str = "pending", request_type: Optional[str] = None) -> List[Dict[str, Any]]:
     requests = _get_requests_list()
-    result = [req for req in requests if req.get("status") == status]
+    result = [req for req in requests if req.get("status") == status and not req.get("history_only")]
     if request_type:
         result = [req for req in result if req.get("type") == request_type]
     return result
 
 
-def get_all_requests(request_type: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_all_requests(request_type: Optional[str] = None, *, include_history: bool = False) -> List[Dict[str, Any]]:
     requests = list(_get_requests_list())
+    if include_history:
+        requests += request_history.load_all()
     if request_type:
         requests = [req for req in requests if req.get("type") == request_type]
     return requests
@@ -272,13 +318,18 @@ def get_user_requests(user_id: int) -> List[Dict[str, Any]]:
     return [
         req
         for req in requests
-        if req.get("payload", {}).get("user_id") == user_id
+        if req.get("payload", {}).get("user_id") == user_id and not req.get("history_only")
     ]
 
 
 def get_request_by_id(request_id: str) -> Optional[Dict[str, Any]]:
     _get_requests_list()
-    return _id_index.get(request_id)
+    return _id_index.get(request_id) or _history_entry(request_id=str(request_id or ""))
+
+
+def get_history_summaries() -> List[Dict[str, Any]]:
+    _get_requests_list()
+    return request_history.summaries()
 
 
 def _request_plugin_ids(entry: Dict[str, Any]) -> set[str]:
@@ -312,6 +363,8 @@ def get_request_by_plugin_id(
     if not target:
         return None
     for entry in reversed(_get_requests_list()):
+        if entry.get("history_only"):
+            continue
         if statuses is not None and entry.get("status") not in statuses:
             continue
         if target in _request_plugin_ids(entry):
@@ -370,8 +423,10 @@ def _relocate_request_files(entry: Dict[str, Any], subdir: str) -> None:
             if not src.exists():
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.unlink(missing_ok=True)
-            src.replace(dest)
+            if dest.exists() and not src.samefile(dest):
+                dest = dest_dir / f"{uuid4().hex[:8]}-{src.name}"
+            if not dest.exists():
+                os.link(src, dest)
             item["file_path"] = str(dest)
         except Exception:
             logger.exception("Failed to relocate %s to %s", src, dest)
@@ -386,12 +441,21 @@ def update_request_status(
     comment: Optional[str] = None,
     actor: Optional[str] = None,
     actor_id: Optional[int] = None,
+    *,
+    payload_fields: Dict[str, Any] | None = None,
 ) -> bool:
     entry = get_request_by_id(request_id)
     if not entry:
         return False
 
+    _ensure_active(entry)
+    if payload_fields:
+        entry.setdefault("payload", {}).update(payload_fields)
     entry["status"] = status
+    entry.pop("history_only", None)
+    if status != "deleted":
+        entry.pop("archived_at", None)
+        entry.pop("archived_status", None)
     if status in DECISION_STATUSES and (actor or actor_id):
         entry["decided_by"] = actor or ""
         entry["decided_by_id"] = int(actor_id) if actor_id else 0
@@ -413,6 +477,7 @@ def update_request_status(
     })
     
     _save_requests_list()
+    record_event("request", entry, True)
     if status in DECISION_STATUSES and (actor or actor_id):
         try:
             from bot.services.moderation_stats import record_decision
@@ -428,9 +493,11 @@ def update_request_payload(request_id: str, fields: Dict[str, Any]) -> Optional[
     if not entry:
         return None
 
+    _ensure_active(entry)
     entry.setdefault("payload", {}).update(fields)
     _touch_request(entry)
     _save_requests_list()
+    record_event("request", entry, True)
     return entry
 
 
@@ -444,19 +511,8 @@ def promote_draft_request(request_id: str, payload: Dict[str, Any]) -> Optional[
     entry["submitted_at"] = _now_utc().isoformat()
     _touch_request(entry)
     _save_requests_list()
+    record_event("request", entry, True)
     return entry
-
-
-def delete_request_and_file(request_id: str) -> bool:
-    entry = get_request_by_id(request_id)
-    if entry:
-        payload = entry.get("payload", {})
-        plugin_path = (payload.get("plugin") or {}).get("file_path")
-        icon_path = (payload.get("icon") or {}).get("file_path")
-        for path in (plugin_path, icon_path):
-            if path:
-                Path(path).unlink(missing_ok=True)
-    return delete_request(request_id)
 
 
 def collect_draft_reminders() -> List[Dict[str, Any]]:
@@ -495,10 +551,10 @@ def cleanup_expired_drafts() -> int:
         if updated_dt is None:
             continue
         if now - updated_dt > _draft_expiration:
-            delete_request_and_file(entry.get("id", ""))
+            delete_request(entry.get("id", ""))
             removed += 1
     if removed:
-        logger.info("Draft cleanup removed %s entries", removed)
+        logger.info("Archived %s expired drafts", removed)
     return removed
 
 
@@ -513,78 +569,10 @@ def discard_user_drafts(user_id: int, plugin_id: Optional[str] = None) -> int:
             continue
         if target and target not in _request_plugin_ids(entry):
             continue
-        if delete_request_and_file(entry.get("id", "")):
+        if delete_request(entry.get("id", "")):
             removed += 1
     if removed:
         logger.info("Discarded %s stale draft(s) for user %s", removed, user_id)
-    return removed
-
-
-def cleanup_orphan_plugin_files() -> int:
-    from bot.helpers import get_uploads_dir
-
-    attachments_dir = get_uploads_dir()
-    if not attachments_dir.exists():
-        return 0
-    active_paths = set()
-    for entry in _get_requests_list():
-        payload = entry.get("payload", {})
-        for key in ("plugin", "icon"):
-            item = payload.get(key)
-            if isinstance(item, dict) and item.get("file_path"):
-                active_paths.add(Path(item["file_path"]).resolve())
-    removed = 0
-    for file_path in attachments_dir.rglob("*"):
-        if not file_path.is_file() or not plugin_extension(file_path):
-            continue
-        if file_path.resolve() not in active_paths:
-            if time.time() - file_path.stat().st_mtime < _draft_expiration.total_seconds():
-                continue
-            file_path.unlink(missing_ok=True)
-            removed += 1
-    if removed:
-        logger.info("Removed %s orphan plugin files", removed)
-    return removed
-
-
-REJECTED_RETENTION_DAYS = 7
-
-
-def _rejected_at(entry: Dict[str, Any]) -> Optional[datetime]:
-    for h in reversed(entry.get("history") or []):
-        if isinstance(h, dict) and h.get("status") == "rejected" and h.get("changed_at"):
-            return _parse_datetime_utc(h["changed_at"])
-    updated = entry.get("updated_at")
-    return _parse_datetime_utc(updated)
-
-
-def cleanup_rejected_files(days: int = REJECTED_RETENTION_DAYS) -> int:
-    now = _now_utc()
-    removed = 0
-    for entry in _get_requests_list():
-        if entry.get("status") != "rejected":
-            continue
-        stamp = _rejected_at(entry)
-        if not stamp or (now - stamp) < timedelta(days=days):
-            continue
-        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
-        if not payload or payload.get("files_purged"):
-            continue
-        purged = False
-        for key in ("plugin", "icon"):
-            item = payload.get(key)
-            if not isinstance(item, dict):
-                continue
-            raw = item.get("file_path")
-            if raw and Path(raw).exists():
-                Path(raw).unlink(missing_ok=True)
-                purged = True
-        if purged:
-            payload["files_purged"] = True
-            removed += 1
-    if removed:
-        _save_requests_list()
-        logger.info("Purged files of %s rejected request(s) older than %sd", removed, days)
     return removed
 
 
@@ -592,10 +580,6 @@ async def _cleanup_loop() -> None:
     while True:
         await asyncio.sleep(_cleanup_interval_seconds)
         cleanup_expired_drafts()
-        try:
-            cleanup_rejected_files()
-        except Exception:
-            logger.exception("cleanup_rejected_files failed")
 
 
 async def _reminder_loop(bot) -> None:
@@ -672,85 +656,48 @@ async def stop_draft_reminder_worker() -> None:
     await _cancel_worker(task)
 
 
+async def _publish_due_request(bot, request_id: str, now: datetime) -> None:
+    from bot.services.request_publication import publish_request, validate_publication
+
+    if not acquire_request_lock(request_id):
+        return
+    try:
+        entry = get_request_by_id(request_id)
+        if not entry or entry.get("history_only") or entry.get("status") != "scheduled":
+            return
+        payload = entry.get("payload") or {}
+        if not _scheduled_time_is_due(payload.get("scheduled_at"), now):
+            return
+        retry_at = _parse_datetime_utc(payload.get("publish_retry_at"))
+        if retry_at and retry_at > now:
+            return
+        try:
+            errors = validate_publication(entry)
+            if errors:
+                raise ValueError("\n".join(errors))
+            await publish_request(bot, entry, "scheduler", scheduled=True)
+        except Exception as exc:
+            logger.exception("event=moderation.scheduled_publish.failed request_id=%s", request_id)
+            if entry.get("status") == "scheduled":
+                update_request_payload(request_id, {
+                    "last_publish_error": str(exc),
+                    "last_publish_error_at": _now_utc().isoformat(),
+                    "publish_retry_at": (_now_utc() + timedelta(minutes=10)).isoformat(),
+                })
+    finally:
+        release_request_lock(request_id)
+
+
 async def _scheduled_publish_loop(bot) -> None:
-    from aiogram.enums import ParseMode
-    from bot.context import get_lang
-    from bot.texts import t
     from bot.services.approval import queue_pending_approval_notifications
-    from bot.formatting import plain_html, split_html
-    from bot.services.moderation import with_author_vote_summary
 
     while True:
         await asyncio.sleep(_scheduled_interval_seconds)
         now = _now_utc()
         queue_pending_approval_notifications(bot)
         for entry in list(get_requests(status="scheduled")):
-            request_id = entry.get("id")
-            if not request_id:
-                continue
-
-            payload = entry.get("payload", {})
-            scheduled_at = payload.get("scheduled_at")
-            if not scheduled_at or not isinstance(scheduled_at, str):
-                continue
-
-            if not _scheduled_time_is_due(scheduled_at, now):
-                continue
-
-            try:
-                from bot.services.publish import publish_icon, publish_plugin
-                from bot.services.admin_notifications import finalize_admin_notify_messages
-                from bot.services.audit import add_audit_event
-                from bot.services.moderation import delete_forum_request_message
-
-                logger.info("Publishing scheduled request %s", request_id)
-
-                if payload.get("submission_type") == "icon" or payload.get("icon"):
-                    result = await publish_icon(entry, actor="scheduler")
-                    notify_key = "notify_icon_published"
-                    name = (payload.get("icon") or {}).get("name", "")
-                    version = (payload.get("icon") or {}).get("version")
-                else:
-                    result = await publish_plugin(entry, bot, actor="scheduler")
-                    notify_key = "notify_published"
-                    name = (payload.get("plugin") or {}).get("name", "")
-                    version = (payload.get("plugin") or {}).get("version")
-
-                update_request_payload(request_id, {"scheduled_at": None})
-                update_request_status(request_id, "published")
-                await finalize_admin_notify_messages(bot, entry, "Заявка была принята по расписанию", "<code>scheduler</code>")
-                await delete_forum_request_message(bot, entry)
-                add_audit_event(
-                    "moderation.scheduled_publish_success",
-                    actor="scheduler",
-                    request_id=str(request_id),
-                    details={"link": result.get("link", ""), "name": name, "version": version},
-                )
-
-                user_id = payload.get("user_id")
-                if user_id:
-                    lang = get_lang(user_id)
-                    try:
-                        text = t(notify_key, lang, name=plain_html(name or "—"), version=plain_html(version or "—"))
-                        text = with_author_vote_summary(text, entry, lang)
-                        for part in split_html(text, 3500):
-                            await bot.send_message(
-                                user_id, part, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-                            )
-                    except Exception:
-                        pass
-
-            except Exception as exc:
-                logger.exception("Scheduled publish error")
-                retry_at = datetime.now(timezone.utc) + timedelta(minutes=10)
-                update_request_payload(
-                    request_id,
-                    {
-                        "last_publish_error": str(exc),
-                        "last_publish_error_at": datetime.now(timezone.utc).isoformat(),
-                        "scheduled_at": retry_at.isoformat(),
-                    },
-                )
+            if entry.get("id"):
+                await _publish_due_request(bot, str(entry["id"]), now)
 
 
 def start_scheduled_publish_worker(bot) -> None:
@@ -772,20 +719,13 @@ async def stop_scheduled_publish_worker() -> None:
 
 
 def delete_request(request_id: str) -> bool:
-    
-    requests = _get_requests_list()
-    
-    for i, req in enumerate(requests):
-        if req.get("id") == request_id:
-            requests.pop(i)
-            _id_index.pop(request_id, None)
-            route_token = str(req.get("route_token") or "").strip()
-            if _route_token_index.get(route_token) is req:
-                _route_token_index.pop(route_token, None)
-            _save_requests_list()
-            return True
-    
-    return False
+    entry = get_request_by_id(request_id)
+    if not entry or entry.get("archived_at"):
+        return False
+    _ensure_active(entry)
+    entry["archived_at"] = _now_utc().isoformat()
+    entry["archived_status"] = entry.get("status")
+    return update_request_status(request_id, "deleted")
 
 
 def delete_requests_by_plugin_id(plugin_id: str) -> int:
@@ -797,18 +737,10 @@ def delete_requests_by_plugin_id(plugin_id: str) -> int:
     for entry in list(_get_requests_list()):
         request_id = str(entry.get("id") or "")
         if request_id == target or target in _request_plugin_ids(entry):
-            if delete_request_and_file(request_id):
+            if delete_request(request_id):
                 removed += 1
     return removed
 
 
-def cleanup_hidden_requests(visible_statuses: Optional[set[str]] = None) -> int:
-    visible = visible_statuses or {"draft", "pending", "scheduled", "approved", "error"}
-    removed = 0
-    for entry in list(_get_requests_list()):
-        if str(entry.get("status") or "") in visible:
-            continue
-        request_id = str(entry.get("id") or "")
-        if request_id and delete_request_and_file(request_id):
-            removed += 1
-    return removed
+def cleanup_hidden_requests() -> int:
+    return cleanup_expired_drafts()

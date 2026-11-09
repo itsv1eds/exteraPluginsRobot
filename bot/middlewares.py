@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
-from aiogram.types import CallbackQuery, ErrorEvent, Message
+from aiogram.types import CallbackQuery, ErrorEvent, Message, Update
 
 from bot.telemetry import CallbackTrace, callback_trace
 
@@ -229,16 +229,25 @@ class UserActionLoggingMiddleware(BaseMiddleware):
     ) -> Any:
         if not self.enabled:
             return await handler(event, data)
-        
-        log_entry = self._format_log(event, data)
+
+        event_for_log = (event.message or event.callback_query) if isinstance(event, Update) else event
+        log_entry = self._format_log(event_for_log, data)
         
         if log_entry and _log_queue:
             try:
                 _log_queue.put_nowait(log_entry)
             except asyncio.QueueFull:
                 pass
-        
-        return await handler(event, data)
+
+        from bot.services.archive import action_actor
+
+        user = getattr(event_for_log, "from_user", None)
+        actor = (user.id, f"@{user.username}" if user.username else user.full_name) if user else None
+        token = action_actor.set(actor)
+        try:
+            return await handler(event, data)
+        finally:
+            action_actor.reset(token)
     
     def _format_log(self, event: Any, data: dict[str, Any]) -> Optional[str]:
         if isinstance(event, CallbackQuery):

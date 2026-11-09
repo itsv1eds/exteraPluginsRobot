@@ -4,6 +4,10 @@
   ],
   "admins_super": [],
   "admins": [],
+  "archive": {
+    "channel_id": 0,
+    "technical_channel_id": 0
+  },
   "backup": {
     "auto_enabled": false,
     "interval_hours": 24,

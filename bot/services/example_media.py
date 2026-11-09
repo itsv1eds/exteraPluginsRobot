@@ -76,6 +76,7 @@ def eligible(entry: dict[str, Any]) -> bool:
             pass
     return bool(
         entry.get("status") == "published"
+        and not entry.get("history_only")
         and entry.get("type") in {"new", "update"}
         and (_media(entry) or has_changelog)
         and payload.get("example_media_status") not in {"published", "sending", "uncertain"}

@@ -71,7 +71,6 @@ async def cmd_clear(args: argparse.Namespace) -> None:
         flush_all,
         save_icons,
         save_plugins,
-        save_requests,
         save_users,
     )
 
@@ -84,8 +83,10 @@ async def cmd_clear(args: argparse.Namespace) -> None:
         print("Иконки очищены")
     
     if args.what in ("all", "requests"):
-        save_requests({"requests": []})
-        print("Заявки очищены")
+        from core.request_store import cleanup_hidden_requests
+
+        cleaned = cleanup_hidden_requests()
+        print(f"Черновиков перенесено в историю: {cleaned}")
     
     if args.what in ("all", "users"):
         save_users({"users": {}})

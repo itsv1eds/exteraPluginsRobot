@@ -13,7 +13,7 @@ from bot.services.plugin_files import send_plugin_document
 from core.plugin_formats import payload_extension
 from bot.services import reason_templates
 from bot.services.approval import (
-    approval_status_text, approve_request, can_approve_request,
+    approval_status_text, approve_request, can_approve_request, can_edit_request,
     notify_author_approval, schedule_request,
 )
 from bot.languages import normalize_language, localized_value
@@ -39,11 +39,11 @@ from bot.cache import (
 )
 from bot.constants import PAGE_SIZE
 from bot.context import get_lang
-from bot.callback_tokens import decode_slug, encode_slug
+from bot.callback_tokens import decode_slug
 from bot.formatting import split_html, plain_html, strip_blockquote_tags, telegram_html, user_mention
 from bot.helpers import ack, answer, spawn_background
 from bot.menu_owner import MenuOwnerMiddleware, remember_menu_owner
-from bot.services.audit import add_audit_event, audit_events_page, recent_audit_events
+from bot.services.audit import add_audit_event, audit_events_count, audit_events_page, recent_audit_events
 from bot.keyboards import (
     admin_quiz_item_kb,
     admin_quiz_list_kb,
@@ -95,9 +95,13 @@ from bot.keyboards import (
     draft_lang_kb,
     icon_draft_edit_kb,
     admin_scheduled_list_kb,
-    admin_scheduled_item_kb,
+    admin_schedule_controls,
     admin_scheduled_post_kb,
     admin_scheduled_posts_list_kb,
+)
+from bot.services.request_context import (
+    forum_request_text_and_file as _forum_request_text_and_file,
+    render_request_draft as _render_request_draft,
 )
 from bot.services.publish import (
     add_submitter_to_plugin,
@@ -106,19 +110,14 @@ from bot.services.publish import (
     add_icon_to_catalog,
     build_channel_post,
     build_icon_channel_post,
-    publish_icon,
-    publish_plugin,
-    remove_plugin_entry,
     remove_user_content,
     clear_updated_plugins,
-    update_plugin,
     update_catalog_entry,
 )
 from bot.services.admin_notifications import (
     NOTIFICATION_PREF_LABEL_KEYS,
     admin_notification_preferences,
     finalize_admin_notify_messages,
-    is_unreachable_chat,
     set_admin_notification_preference,
 )
 from bot.services.dialogs import register_dialog_message, has_dialog_media, send_dialog_message
@@ -137,6 +136,10 @@ from bot.services.moderation import (
     with_author_vote_summary,
     request_image_key,
 )
+from bot.services.request_publication import (
+    notify_plugin_authors_removed, plugin_display_name, publish_request, remove_published_plugin,
+    validate_publication as _validate_request_before_publish,
+)
 from bot.services.submission import prepare_catalog_categories, process_plugin_file
 from core.categories import CATEGORY_KEYS, MAX_CATEGORIES, categories_for, category_fields
 from bot.states import AdminFlow
@@ -147,11 +150,12 @@ from core.request_store import (
     acquire_request_lock as _acquire_request_lock,
     release_request_lock as _release_request_lock,
     cleanup_hidden_requests,
-    delete_request_and_file,
+    delete_request,
     delete_requests_by_plugin_id,
     get_request_by_callback_token,
     get_request_by_id,
     get_all_requests,
+    get_history_summaries,
     get_requests,
     request_callback_token,
     update_request_payload,
@@ -159,7 +163,6 @@ from core.request_store import (
 )
 from core.storage import ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, DATA_DIR, QUIZ_OPTIONS_PER_QUESTION, QUIZ_QUESTIONS_PER_RUN, add_quiz_question, delete_quiz_question, load_config, load_plugins, load_quiz_questions, restore_quiz_defaults, save_config, save_plugins, update_quiz_question
 from core.user_store import ban_user, get_banned_users, hidden_moderation_templates, is_broadcast_enabled, list_users, moderation_preferences, set_moderation_preference, set_moderation_template_hidden, unban_user
-from core.subscription_store import list_subscribers
 from core.catalog import invalidate_catalog_cache
 
 DEFAULT_APPROVE_TEMPLATES = reason_templates.DEFAULT_APPROVE_TEMPLATES
@@ -207,7 +210,7 @@ async def _admin_category_picker_valid(cb: CallbackQuery, state: FSMContext, pre
     if valid and prefix == "adm":
         entry = get_request_by_id(context)
         valid = bool(entry and entry.get("type") in {"new", "update"}
-                     and entry.get("status") in {"draft", "pending", "rework", "scheduled", "error"}
+                     and entry.get("status") in {"draft", "pending", "rework", "approved", "scheduled", "error"}
                      and not entry.get("payload", {}).get("icon") and _ensure_request_role(cb, entry))
     if valid and prefix == "adm_edit":
         valid = bool(data.get("edit_payload") and find_plugin_by_slug(context))
@@ -256,60 +259,6 @@ async def _choose_admin_categories(cb: CallbackQuery, state: FSMContext, prefix:
     await cb.message.edit_reply_markup(reply_markup=draft_category_kb(prefix, get_categories(), _lang_for(cb), selected))
     await ack(cb)
     return False
-
-
-def _plugin_display_name(plugin_entry: Dict[str, Any]) -> str:
-    if not isinstance(plugin_entry, dict):
-        return "—"
-    for key in ("ru", "en"):
-        block = plugin_entry.get(key)
-        if isinstance(block, dict) and block.get("name"):
-            return str(block["name"])
-    return str(plugin_entry.get("slug") or "—")
-
-
-async def notify_plugin_authors_removed(bot, plugin_entry: Dict[str, Any], reason: str = "") -> int:
-    if not isinstance(plugin_entry, dict):
-        return 0
-
-    from bot.keyboards import author_plugin_removed_kb
-
-    name = plain_html(_plugin_display_name(plugin_entry))
-    slug = str(plugin_entry.get("slug") or "").strip()
-    reason = strip_blockquote_tags(telegram_html(str(reason or ""))).strip()
-    submitters = plugin_entry.get("submitters") or []
-    seen: set[int] = set()
-    notified = 0
-    for sub in submitters:
-        if not isinstance(sub, dict):
-            continue
-        uid = sub.get("user_id")
-        try:
-            uid = int(uid)
-        except (TypeError, ValueError):
-            continue
-        if uid in seen or uid <= 0:
-            continue
-        seen.add(uid)
-        try:
-            author_lang = get_lang(uid)
-            body = t("notify_plugin_removed_author", author_lang, name=name)
-            if reason:
-                body += t("notify_plugin_removed_reason", author_lang, reason=reason)
-            await bot.send_message(
-                uid,
-                body,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-                reply_markup=author_plugin_removed_kb(slug, author_lang) if slug else None,
-            )
-            notified += 1
-        except Exception:
-            logger.exception(
-                "event=delete.notify_author_failed user_id=%s slug=%s",
-                uid, plugin_entry.get("slug"),
-            )
-    return notified
 
 
 TZ_UTC_PLUS_5 = timezone(timedelta(hours=5))
@@ -577,18 +526,7 @@ async def _render_scheduled_list(target: CallbackQuery | Message, state: FSMCont
 
 
 async def _render_scheduled_view(target: CallbackQuery | Message, state: FSMContext, request_id: str) -> None:
-    lang = _lang_for(target)
-    entry = get_request_by_id(request_id)
-    if not entry:
-        await answer(target, _tr(target, "not_found"), admin_plugins_section_kb(lang=lang, role=_admin_menu_role(target)), "admin")
-        return
-    meta = _review_meta_block(entry, lang=_lang_for(target))
-    text = _render_request_draft(entry, lang=lang)
-    if meta:
-        text = f"{text}\n\n{meta}"
-    await state.update_data(scheduled_current_request=str(request_id))
-    await state.set_state(AdminFlow.menu)
-    await answer(target, text, admin_scheduled_item_kb(str(request_id), lang=lang, allow_manage=_is_super_admin(target)), "admin")
+    await _render_review(target, state, request_id)
 
 
 def _scheduled_post_includes_updated_plugins(item: dict) -> bool:
@@ -914,7 +852,11 @@ async def _render_config(cb: CallbackQuery, state: FSMContext) -> None:
     await answer(cb, _tr(cb, "admin_settings_title"), admin_config_kb(lang=lang, role=_admin_menu_role(cb)), "settings")
 
 
+_ARCHIVE_CHANNEL_FIELDS = {"archive.channel_id", "archive.technical_channel_id"}
+
 _CONFIG_FIELD_LABEL_KEYS: dict[str, str] = {
+    "archive.channel_id": "admin_cfg_archive_channel",
+    "archive.technical_channel_id": "admin_cfg_archive_technical_channel",
     "channel.id": "admin_cfg_channel_id",
     "channel.username": "admin_cfg_channel_username",
     "channel.title": "admin_cfg_channel_title",
@@ -941,6 +883,7 @@ _CONFIG_VERSION_FIELDS = {
 }
 
 _CONFIG_INT_FIELDS = {
+    *_ARCHIVE_CHANNEL_FIELDS,
     "channel.id",
     "icons_channel.id",
     "moderation.forum_chat_id",
@@ -1038,6 +981,8 @@ def _parse_config_value(path: str, raw: str) -> Any:
         return items
     if path in _CONFIG_INT_FIELDS:
         value = int(text)
+        if path in _ARCHIVE_CHANNEL_FIELDS and value != 0 and value >= -1000000000000:
+            raise ValueError(text)
         if path == "moderation.vote_threshold":
             value = max(1, value)
         if path == "moderation.forum_chat_id" and value > 0:
@@ -1065,6 +1010,8 @@ def _config_section_text(section: str, lang: str) -> str:
             "publish_channel",
             "channel.default_tags",
             "channel.locale_order",
+            "archive.channel_id",
+            "archive.technical_channel_id",
             "icons_channel.id",
             "icons_channel.username",
             "icons_channel.title",
@@ -1426,68 +1373,59 @@ async def _render_queue(cb: CallbackQuery, state: FSMContext, token: str) -> Non
         title = _tr(cb, "admin_queue_title_all")
     caption = f"<b>{title}</b>\n{_tr(cb, 'admin_page', current=page + 1, total=total_pages)}"
     await state.set_state(AdminFlow.menu)
-    msg = await answer(cb, caption, admin_queue_kb(items, page, total_pages, queue_type, lang=lang), "moderation")
-    if msg:
-        pass
+    await answer(cb, caption, admin_queue_kb(items, page, total_pages, queue_type, lang=lang), "moderation")
 
 
-async def _render_review(cb: CallbackQuery, state: FSMContext, token: str) -> None:
-    lang = _lang_for(cb)
-    request_id = token.split(":")[2] if ":" in token else token
+async def _render_review(
+    target: CallbackQuery | Message, state: FSMContext, token: str, *, send_document: bool = False,
+) -> None:
+    lang = _lang_for(target)
+    request_id = token.split(":", 2)[-1] if token.startswith("adm:review:") else token
     entry = get_request_by_id(request_id)
-    if not entry:
-        await _render_menu(cb, state)
+    if not entry or not _ensure_request_role(target, entry):
+        await answer(target, _tr(target, "not_found"), admin_cancel_kb(lang), "admin")
         return
+
+    payload = entry.get("payload") or {}
+    is_super = _is_super_admin(target)
+    request_id = str(entry["id"])
+    previous_message = target if isinstance(target, Message) else target.message
     await state.set_state(AdminFlow.reviewing)
-    await state.update_data(current_request=request_id, category_selection=None, **category_fields(entry.get("payload", {})), draft_message_id=cb.message.message_id if cb.message else None)
-
-    payload = entry.get("payload", {})
+    await state.update_data(
+        current_request=request_id, category_selection=None, **category_fields(payload),
+        draft_message_id=previous_message.message_id if previous_message else None,
+    )
+    body, _ = _forum_request_text_and_file(entry, lang=lang)
+    text = f"{body}\n\n{_review_meta_block(entry, lang=lang)}"
+    actionable = not entry.get("history_only") and entry.get("status") not in {"published", "deleted"}
     if _is_appeal(entry):
-        draft_text = f"{_render_request_draft(entry, lang=_lang_for(cb))}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
-        kb = admin_appeal_decision_kb(request_id, lang=lang) if _is_super_admin(cb) else None
-        msg = await answer(cb, draft_text, kb, "appeal")
-        if msg:
-            await state.update_data(draft_message_id=msg.message_id)
-        return
-    if payload.get("submission_type") == "icon" or payload.get("icon"):
-        draft_text = f"{_render_request_draft(entry, lang=_lang_for(cb))}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
-        if _is_super_admin(cb):
-            kb = icon_draft_edit_kb(lang=lang)
-        else:
-            kb = admin_review_kb(request_id, payload.get("user_id", 0), lang=lang, allow_publish=False,
-                                    media_count=len(_comment_media_of_entry(entry)))
-        msg = await answer(cb, draft_text, kb, "iconpacks")
-        if msg:
-            await state.update_data(draft_message_id=msg.message_id)
-        return
-
-    draft_text = _render_request_draft(entry, lang=_lang_for(cb))
-    full_text = f"{draft_text}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
-    is_delete = entry.get("type") == "delete"
-    msg = await answer(
-        cb,
-        full_text,
-        admin_review_kb(
-            request_id,
-            payload.get("user_id", 0),
-            submit_label=_tr(cb, "admin_submit_delete") if is_delete else None,
+        kb = admin_appeal_decision_kb(request_id, lang=lang) if is_super and actionable else admin_cancel_kb(lang)
+    elif is_super and actionable and (payload.get("submission_type") == "icon" or payload.get("icon")):
+        kb = icon_draft_edit_kb(lang=lang)
+    else:
+        is_delete = entry.get("type") == "delete"
+        kb = admin_review_kb(
+            request_id, payload.get("user_id", 0), lang=lang,
+            submit_label=_tr(target, "admin_submit_delete") if is_delete else None,
             submit_callback=f"adm:delete:{request_id}" if is_delete else None,
-            lang=lang,
-            allow_publish=_is_super_admin(cb),
-            allow_vote=not is_delete and can_accept_vote(entry),
+            allow_publish=is_super and actionable,
+            allow_vote=can_accept_vote(entry),
             allow_approve=can_approve_request(entry),
             media_count=len(_comment_media_of_entry(entry)),
-        ),
-        request_image_key(entry),
-    )
-    if msg:
-        await state.update_data(draft_message_id=msg.message_id)
+        )
+        if is_super and entry.get("status") == "scheduled":
+            kb.inline_keyboard[-1:-1] = admin_schedule_controls(request_id, lang)
+    sent = await answer(target, text, kb, request_image_key(entry))
+    if sent:
+        await state.update_data(draft_message_id=sent.message_id)
+    if send_document and isinstance(target, CallbackQuery):
+        spawn_background(_send_review_document(target, entry, sent))
 
 
 _SUPER_ONLY_NAV_PREFIXES = (
     "adm:config", "adm:broadcast", "adm:stats", "adm:modstats", "adm:banned", "adm:blocklist", "adm:backup",
     "adm:maint", "adm:audit", "adm:auditlog", "adm:rejreq", "adm:quiz",
-    "adm:edit_plugins", "adm:link_author", "adm:icons",
+    "adm:edit_plugins", "adm:link_author", "adm:icons", "adm:prepublish:",
 )
 
 
@@ -1563,6 +1501,12 @@ async def _render_nav_token(cb: CallbackQuery, state: FSMContext, token: str) ->
         await _render_queue(cb, state, token)
     elif token.startswith("adm:review:"):
         await _render_review(cb, state, token)
+    elif token.startswith("adm:prepublish:"):
+        entry = get_request_by_id(token.split(":", 2)[2])
+        if entry and not entry.get("history_only") and entry.get("status") not in {"published", "deleted"}:
+            await _render_publish_editor(cb, state, entry)
+        else:
+            await _render_menu(cb, state)
     elif token.startswith("adm:updates:"):
         parts = token.split(":")
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
@@ -1623,196 +1567,6 @@ def _can_schedule_request(entry: dict | None) -> bool:
     if payload.get("submission_type") == "icon" or payload.get("icon"):
         return False
     return req_type == "new"
-
-
-def _validate_request_before_publish(entry: dict | None) -> list[str]:
-    if not isinstance(entry, dict):
-        return ["Заявка не найдена"]
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
-    request_type = str(entry.get("type") or "new")
-    submission_type = payload.get("submission_type") or ("icon" if payload.get("icon") else "plugin")
-    errors: list[str] = []
-
-    if request_type == "delete":
-        delete_slug = str(payload.get("delete_slug") or payload.get("plugin", {}).get("id") or "").strip()
-        if not delete_slug:
-            errors.append("Не указан slug для удаления")
-        elif not find_plugin_by_slug(delete_slug):
-            errors.append(f"Плагин для удаления не найден: {delete_slug}")
-        return errors
-
-    item = payload.get("icon") if submission_type == "icon" else payload.get("plugin")
-    if not isinstance(item, dict):
-        errors.append("Нет данных файла в payload")
-        return errors
-
-    item_id = str(item.get("id") or "").strip()
-    name = str(item.get("name") or "").strip()
-    version = str(item.get("version") or "").strip()
-    file_path = str(item.get("file_path") or "").strip()
-    if not item_id:
-        errors.append("Не указан ID/slug")
-    if not name:
-        errors.append("Не указано название")
-    if not version:
-        errors.append("Не указана версия")
-    if not file_path:
-        errors.append("Не указан путь к файлу")
-    elif not Path(file_path).exists():
-        errors.append(f"Файл не найден: {file_path}")
-    if submission_type != "icon":
-        if not (categories_for(payload) or categories_for(payload.get("old_plugin") or {})):
-            errors.append("Не указана категория")
-    try:
-        draft = _render_request_draft(entry)
-        if len(draft) > 3900:
-            errors.append("Текст публикации слишком длинный для безопасной отправки")
-    except Exception as exc:
-        errors.append(f"Не удалось собрать текст публикации: {exc}")
-    return errors
-
-
-def _render_request_draft(entry: dict, *, include_context: bool = True, lang: str = "ru") -> str:
-    payload = entry.get("payload", {})
-    if _is_appeal(entry):
-        username = str(payload.get("username") or "").strip()
-        who = f"@{username}" if username else str(payload.get("user_id") or "—")
-        return t(
-            "appeal_request_draft", lang,
-            user=who,
-            uid=payload.get("user_id") or "—",
-            text=strip_blockquote_tags(telegram_html(str(payload.get("appeal_text") or "—"))),
-        )
-    if payload.get("submission_type") == "icon" or payload.get("icon"):
-        return build_icon_channel_post(entry)
-
-    plugin = payload.get("plugin", {})
-    fallback_desc = plugin.get("description", "")
-    patched_payload = {
-        **payload,
-        **category_fields(payload),
-        "description_ru": payload.get("description_ru") or fallback_desc,
-        "description_en": payload.get("description_en") or fallback_desc,
-    }
-    text = build_channel_post({"payload": patched_payload})
-    context = _author_comment_block(entry, lang=lang) if include_context else ""
-    return text + ("\n\n" + context.strip() if context.strip() else "")
-
-
-def _forum_request_text_and_file(entry: dict) -> tuple[str, str | None]:
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
-    plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
-    icon = payload.get("icon", {}) if isinstance(payload.get("icon"), dict) else {}
-    user_id = payload.get("user_id", 0)
-    username = str(payload.get("username") or "").strip()
-    request_type = entry.get("type", "new")
-    submission_type = payload.get("submission_type") or ("icon" if icon else "plugin")
-    request_id = entry.get("id", "?")
-    user_link = user_mention(user_id, username)
-    file_path = plugin.get("file_path") or icon.get("file_path")
-
-    if request_type == "unban_appeal":
-        return t(
-            "appeal_forum_text",
-            "ru",
-            user=user_link,
-            text=strip_blockquote_tags(telegram_html(str(payload.get("appeal_text") or "—"))),
-        ), None
-
-    if request_type == "update":
-        changelog = payload.get("changelog", "—")
-        old_plugin = payload.get("old_plugin", {}) if isinstance(payload.get("old_plugin"), dict) else {}
-        old_locale = old_plugin.get("ru") or old_plugin.get("en") or {}
-        old_version = old_locale.get("version") or "?"
-        text = t(
-            "admin_request_update",
-            "ru",
-            id=request_id,
-            name=plain_html(plugin.get("name") or "—"),
-            old_version=plain_html(old_version),
-            version=plain_html(plugin.get("version") or "—"),
-            min_version=plain_html(plugin.get("min_version") or "—"),
-            changelog=strip_blockquote_tags(telegram_html(changelog)) or "—",
-            user=user_link,
-        )
-    elif request_type == "delete":
-        delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
-        text = t(
-            "admin_request_delete",
-            "ru",
-            id=request_id,
-            name=plain_html(plugin.get("name") or "—"),
-            slug=plain_html(delete_slug),
-            user=user_link,
-        )
-    elif submission_type == "icon":
-        text = t(
-            "admin_request_icon",
-            "ru",
-            id=request_id,
-            name=plain_html(icon.get("name") or "—"),
-            author=plain_html(icon.get("author") or "—"),
-            version=plain_html(icon.get("version") or "—"),
-            count=plain_html(icon.get("count") or 0),
-            user=user_link,
-        )
-    else:
-        text = t(
-            "admin_request_plugin",
-            "ru",
-            id=request_id,
-            draft=_render_request_draft(entry, include_context=False),
-            user=user_link,
-        )
-
-    admin_comment = payload.get("admin_comment")
-    if admin_comment:
-        text += "\n\n" + t("admin_request_comment", "ru", comment=strip_blockquote_tags(telegram_html(admin_comment)))
-    return text, str(file_path) if file_path else None
-
-
-async def _notify_subscribers(
-    bot,
-    slug: str | None,
-    plugin: dict,
-    changelog: str | None = None,
-) -> None:
-    if not slug:
-        return
-
-    entry = find_plugin_by_slug(slug) or {}
-    plugin_link = (entry.get("channel_message", {}) or {}).get("link")
-    changes = strip_blockquote_tags(telegram_html(changelog)) or "—"
-    localized: dict[str, tuple[list[str], InlineKeyboardMarkup]] = {}
-
-    for user_id in list_subscribers(slug):
-        lang = get_lang(user_id)
-        if lang not in localized:
-            locale = _localized_block(entry, lang)
-            raw_name = plain_html(plugin.get("name") or locale.get("name") or slug)
-            link_safe = html.escape(plugin_link, quote=True) if plugin_link else ""
-            name = f'<a href="{link_safe}"><b>{raw_name}</b></a>' if plugin_link else f"<b>{raw_name}</b>"
-            text = t("notify_subscription_update", lang, name=name,
-                     version=plain_html(plugin.get("version") or locale.get("version") or "—"), changelog=changes)
-            reply_markup = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text=t("btn_open", lang), callback_data=f"plugin:{encode_slug(slug)}"),
-            ]])
-            localized[lang] = (split_html(text, 3500), reply_markup)
-        parts, reply_markup = localized[lang]
-        try:
-            for index, part in enumerate(parts):
-                while True:
-                    try:
-                        await bot.send_message(
-                            user_id, part, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-                            reply_markup=reply_markup if index + 1 == len(parts) else None,
-                        )
-                        break
-                    except TelegramRetryAfter as exc:
-                        await asyncio.sleep(max(1, float(exc.retry_after)))
-        except Exception as exc:
-            if not is_unreachable_chat(exc):
-                logger.warning("event=subscription.update_notification_failed user_id=%s slug=%s", user_id, slug, exc_info=True)
 
 
 def _ensure_admin(cb: CallbackQuery | Message) -> bool:
@@ -2079,7 +1833,7 @@ def _build_health_text() -> str:
         "rejected": len(get_requests(status="rejected")),
     }
     plugins_count = len(load_plugins().get("plugins", []) or [])
-    audit_count = len(recent_audit_events(1000))
+    audit_count = audit_events_count()
     latest_audit = recent_audit_events(1)
     latest_audit_line = "—"
     if latest_audit:
@@ -2215,7 +1969,7 @@ async def on_admin_maint_erase_id_input(message: Message, state: FSMContext) -> 
         return
     removed = delete_requests_by_plugin_id(target_id)
     await state.set_state(AdminFlow.menu)
-    await answer(message, _tr(message, "admin_maint_done", result=f"удалено заявок: {removed}"),
+    await answer(message, _tr(message, "admin_maint_done", result=_tr(message, "admin_maint_archived_count", count=removed)),
                  admin_maintenance_kb(_lang_for(message)), "admin")
 
 
@@ -2234,7 +1988,7 @@ async def on_admin_maint_erase_apply(cb: CallbackQuery, state: FSMContext) -> No
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     removed = cleanup_hidden_requests()
-    await answer(cb, _tr(cb, "admin_maint_done", result=f"очищено скрытых заявок: {removed}"),
+    await answer(cb, _tr(cb, "admin_maint_done", result=_tr(cb, "admin_maint_cleaned_count", count=removed)),
                  admin_maintenance_kb(_lang_for(cb)), "admin")
     await ack(cb)
 
@@ -2487,7 +2241,7 @@ async def on_admin_scheduled_view(cb: CallbackQuery, state: FSMContext) -> None:
         return
     request_id = cb.data.split(":")[3]
     await _nav_push(state, f"adm:scheduled:view:{request_id}")
-    await _render_scheduled_view(cb, state, request_id)
+    await _render_review(cb, state, request_id, send_document=True)
     await ack(cb)
 
 
@@ -2596,13 +2350,12 @@ async def on_admin_scheduled_unschedule(cb: CallbackQuery, state: FSMContext) ->
         return
     try:
         payload = entry.get("payload") or {}
-        update_request_payload(request_id, {
-            "scheduled_at": None, "moderation_pending_votes": {},
+        update_request_status(request_id, "approved", actor=_admin_actor_label(cb), actor_id=_actor_id(cb), payload_fields={
+            "scheduled_at": None, "publish_retry_at": None, "moderation_pending_votes": {},
             "approved_at": payload.get("approved_at") or datetime.now(timezone.utc).isoformat(),
             "approved_by": payload.get("approved_by") or _admin_actor_label(cb),
             "approved_by_id": payload.get("approved_by_id") or _actor_id(cb),
         })
-        update_request_status(request_id, "approved", actor=_admin_actor_label(cb), actor_id=_actor_id(cb))
         add_audit_event("moderation.request_unscheduled", actor=_admin_actor_label(cb), actor_id=_actor_id(cb), request_id=request_id)
     finally:
         _release_request_lock(request_id)
@@ -2822,6 +2575,7 @@ async def on_admin_icon_edit_select(cb: CallbackQuery, state: FSMContext) -> Non
     await ack(cb)
 
 
+@router.callback_query(F.data.startswith("adm:select_plugin:"))
 @router.callback_query(F.data.startswith("adm:link_select:"))
 async def on_admin_link_select_plugin(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang_for(cb)
@@ -3048,7 +2802,7 @@ async def on_admin_section_plugins(cb: CallbackQuery, state: FSMContext) -> None
 
 _REJECTED_PER_PAGE = 8
 
-_AUDIT_FILTERS = ("all", "published", "rejected", "pending", "rework", "scheduled", "approved")
+_AUDIT_FILTERS = ("all", "published", "rejected", "pending", "rework", "scheduled", "approved", "deleted")
 
 _STATUS_ICONS = {
     "approved": "yes",
@@ -3064,7 +2818,7 @@ _STATUS_ICONS = {
 
 
 def _audit_requests(status: str = "all") -> list[dict]:
-    reqs = [r for r in get_all_requests() if r.get("type") != "unban_appeal"]
+    reqs = [r for r in get_all_requests() + get_history_summaries() if r.get("type") != "unban_appeal"]
     if status != "all":
         reqs = [r for r in reqs if r.get("status") == status]
     reqs.sort(key=lambda r: str(r.get("updated_at") or r.get("submitted_at") or ""), reverse=True)
@@ -3146,6 +2900,8 @@ async def on_admin_rejected_detail(cb: CallbackQuery, state: FSMContext) -> None
     status = str(entry.get("status") or "—")
     status_label = f"{_STATUS_ICONS.get(status, '•')} {_tr(cb, f'admin_audit_filter_{status}') if status in _AUDIT_FILTERS else status}"
     text = _tr(cb, "admin_audit_status", status=status_label) + "\n\n" + _render_request_draft(entry, lang=_lang_for(cb))
+    if entry.get("history_only"):
+        text += "\n\n" + _tr(cb, "admin_request_history_only")
     decision = _decision_line(cb, entry)
     if decision:
         text += "\n\n" + decision
@@ -3167,7 +2923,7 @@ async def on_admin_rejected_delete(cb: CallbackQuery, state: FSMContext) -> None
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     request_id = cb.data.split(":")[2]
-    delete_request_and_file(request_id)
+    delete_request(request_id)
     add_audit_event("moderation.request_deleted", actor_id=cb.from_user.id if cb.from_user else None,
                     actor=_admin_actor_label(cb), request_id=str(request_id))
     await _render_rejected(cb, state, 0)
@@ -3275,7 +3031,7 @@ async def on_admin_rejected_appeal_delete(cb: CallbackQuery, state: FSMContext) 
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     request_id = cb.data.split(":")[2]
-    delete_request_and_file(request_id)
+    delete_request(request_id)
     add_audit_event("moderation.request_deleted", actor_id=cb.from_user.id if cb.from_user else None,
                     actor=_admin_actor_label(cb), request_id=str(request_id))
     await _render_rejected_appeals(cb, state, 0)
@@ -4428,6 +4184,8 @@ async def on_admin_config_edit(cb: CallbackQuery, state: FSMContext) -> None:
         await state.update_data(config_field=field, config_message_id=cb.message.message_id if cb.message else None)
         await state.set_state(AdminFlow.editing_config)
         prompt_key = "admin_prompt_config_list" if field in _CONFIG_LIST_FIELDS else "admin_prompt_config_value"
+        if field in _ARCHIVE_CHANNEL_FIELDS:
+            prompt_key = "admin_prompt_archive_channel"
         await answer(
             cb,
             _tr(cb, prompt_key, name=label, current=html.escape(current)),
@@ -4523,9 +4281,32 @@ async def on_admin_config_value(message: Message, state: FSMContext) -> None:
             )
             return
 
+        if field in _ARCHIVE_CHANNEL_FIELDS and value:
+            from bot.services.archive import validate_archive_channel
+
+            try:
+                valid = await validate_archive_channel(message.bot, value)
+            except Exception:
+                valid = False
+            if not valid:
+                await message.answer(_tr(message, "admin_archive_channel_invalid"))
+                return
+            config = get_config()
+            other_field = next(iter(_ARCHIVE_CHANNEL_FIELDS - {field}))
+            if str(_config_get_path(config, other_field)) == str(value):
+                await message.answer(_tr(message, "admin_archive_channels_must_differ"))
+                return
+
         _config_set_path(config, field, value)
         save_config(config)
         invalidate("config")
+        if field in _ARCHIVE_CHANNEL_FIELDS:
+            from core.storage import flush_all
+
+            add_audit_event("admin.archive_channel_changed", actor_id=_actor_id(message), actor=_admin_actor_label(message), details={"field": field, "channel_id": value})
+            await flush_all()
+        else:
+            add_audit_event("admin.config_changed", actor_id=_actor_id(message), actor=_admin_actor_label(message), details={"field": field, "value": value})
 
         if field.startswith("moderation."):
             section = "moderation"
@@ -5052,6 +4833,7 @@ async def on_admin_unban(cb: CallbackQuery, state: FSMContext) -> None:
 
     user_id = int(cb.data.split(":")[2])
     unban_user(user_id)
+    add_audit_event("moderation.unban", actor_id=_actor_id(cb), actor=_admin_actor_label(cb), details={"user_id": user_id})
     await cb.answer(_tr(cb, "admin_user_unbanned"), show_alert=True)
 
     banned = get_banned_users()
@@ -5329,7 +5111,7 @@ async def on_admin_catalog_delete(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(delete_slug=slug, delete_reason="")
     await answer(
         cb,
-        _tr(cb, "admin_delete_ask_reason", name=plain_html(_plugin_display_name(plugin_entry))),
+        _tr(cb, "admin_delete_ask_reason", name=plain_html(plugin_display_name(plugin_entry))),
         admin_cancel_kb(lang),
         None,
     )
@@ -5363,7 +5145,7 @@ async def on_admin_catalog_delete_reason(message: Message, state: FSMContext) ->
         _tr(
             message,
             "admin_delete_confirm_with_reason",
-            name=plain_html(_plugin_display_name(plugin_entry)),
+            name=plain_html(plugin_display_name(plugin_entry)),
             reason=reason,
         ),
         admin_confirm_delete_plugin_kb(slug, lang=lang),
@@ -5400,29 +5182,16 @@ async def on_admin_catalog_delete_confirm(cb: CallbackQuery, state: FSMContext) 
     except Exception:
         pass
 
-    from userbot.client import get_userbot
-
-    userbot = await get_userbot()
-    if not userbot:
-        await cb.answer(_tr(cb, "admin_userbot_unavailable"), show_alert=True)
-        return
-
     try:
-        await userbot.delete_message(message_id)
+        removed = await remove_published_plugin(slug)
     except Exception:
-        pass
-
-    removed = remove_plugin_entry(slug)
-    invalidate("plugins")
-    if not removed:
+        logger.exception("event=delete.plugin_failed slug=%s", slug)
         await cb.answer(_tr(cb, "admin_delete_failed"), show_alert=True)
         return
 
-    try:
-        await notify_plugin_authors_removed(cb.bot, plugin_entry, delete_reason)
-    except Exception:
-        logger.exception("event=delete.notify_authors_failed slug=%s", slug)
-
+    add_audit_event("moderation.plugin_deleted", actor_id=_actor_id(cb), actor=_admin_actor_label(cb),
+                    details={"item": slug, "reason": delete_reason})
+    spawn_background(notify_plugin_authors_removed(cb.bot, removed, delete_reason))
     await state.set_state(AdminFlow.menu)
     await _reset_menu_navigation(state)
     await answer(cb, _tr(cb, "admin_title"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
@@ -5446,20 +5215,6 @@ async def on_admin_plugins_list(cb: CallbackQuery, state: FSMContext) -> None:
 
     items = [(_localized_name(plugin, lang), plugin.get("slug")) for plugin in page_items]
     await answer(cb, _tr(cb, "admin_select_plugin"), admin_plugins_list_kb(items, page, total_pages, lang=lang), "admin")
-    await ack(cb)
-
-
-@router.callback_query(F.data.startswith("adm:select_plugin:"))
-async def on_admin_select_plugin(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
-    if not _ensure_admin_role(cb, "plugins"):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-
-    slug = decode_slug(cb.data.split(":")[2])
-    await state.update_data(link_plugin_slug=slug)
-    await state.set_state(AdminFlow.linking_author_user)
-    await answer(cb, _tr(cb, "admin_enter_user_id"), admin_cancel_kb(lang), "admin")
     await ack(cb)
 
 
@@ -5513,132 +5268,16 @@ async def on_admin_link_author_user(message: Message, state: FSMContext) -> None
 
 @router.callback_query(F.data.startswith("adm:review:"))
 async def on_admin_review(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
-    request_id = cb.data.split(":")[2]
+    request_id = cb.data.split(":", 2)[2]
     entry = get_request_by_id(request_id)
-
     if not entry:
         await cb.answer(_tr(cb, "not_found"), show_alert=True)
         return
-
     if not _ensure_request_role(cb, entry):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-
     await _nav_push(state, f"adm:review:{request_id}")
-
-    payload = entry.get("payload", {})
-    allow_publish = _is_super_admin(cb)
-    if payload.get("submission_type") == "icon" or payload.get("icon"):
-        await state.set_state(AdminFlow.reviewing)
-        await state.update_data(
-            current_request=request_id,
-            draft_message_id=cb.message.message_id if cb.message else None,
-        )
-        draft_text = f"{_render_request_draft(entry, lang=_lang_for(cb))}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
-        if allow_publish:
-            kb = icon_draft_edit_kb(lang=lang)
-        else:
-            kb = admin_review_kb(request_id, payload.get("user_id", 0), lang=lang, allow_publish=False,
-                                    media_count=len(_comment_media_of_entry(entry)))
-        await answer(cb, draft_text, kb, "iconpacks")
-        try:
-            await cb.answer()
-        except Exception:
-            pass
-        return
-
-    await state.set_state(AdminFlow.reviewing)
-    await state.update_data(
-        current_request=request_id,
-        **category_fields(payload),
-        category_selection=None,
-        draft_message_id=cb.message.message_id if cb.message else None,
-    )
-
-    payload = entry.get("payload", {})
-    plugin = payload.get("plugin", {})
-    user_id = payload.get("user_id", 0)
-    username = payload.get("username", "")
-    request_type = entry.get("type", "new")
-    submission_type = payload.get("submission_type") or ("icon" if payload.get("icon") else "plugin")
-
-    user_link = user_mention(user_id, username)
-
-    if request_type == "update":
-        changelog = strip_blockquote_tags(telegram_html(payload.get("changelog"))) or "—"
-        old_plugin = payload.get("old_plugin", {})
-        old_version = _localized_block(old_plugin, lang).get("version") or "?"
-        text = (
-            f"<b>Обновление</b>\n\n"
-            f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n"
-            f"<b>Плагин:</b> {plain_html(plugin.get('name', '—'))}\n"
-            f"<b>Версия:</b> {plain_html(old_version)} → {plain_html(plugin.get('version', '—'))}\n"
-            f"<b>Мин. версия:</b> {plain_html(plugin.get('min_version', '—'))}\n\n"
-            f"<b>Изменения:</b>\n<blockquote expandable>{changelog}</blockquote>\n\n"
-            f"<b>От:</b> {user_link}"
-        )
-    elif request_type == "delete":
-        delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
-        text = (
-            f"{emoji_html('delete', '🗑')} <b>Удаление <code>{plain_html(delete_slug)}</code></b>\n\n"
-            f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n"
-            f"<b>Плагин:</b> {plain_html(plugin.get('name', '—'))}\n"
-            f"<b>Slug:</b> <code>{plain_html(delete_slug)}</code>\n\n"
-            f"<b>От:</b> {user_link}"
-        )
-    elif submission_type == "icon":
-        icon = payload.get("icon", {})
-        text = (
-            f"<b>Новый пак иконок</b>\n\n"
-            f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n"
-            f"<b>Название:</b> {plain_html(icon.get('name', '—'))}\n"
-            f"<b>Автор:</b> {plain_html(icon.get('author', '—'))}\n"
-            f"<b>Версия:</b> {plain_html(icon.get('version', '—'))}\n"
-            f"<b>Иконок:</b> {plain_html(icon.get('count', 0))}\n\n"
-            f"<b>От:</b> {user_link}"
-        )
-    else:
-        draft_text = _render_request_draft(entry, lang=_lang_for(cb))
-        header = {
-            "update": "Обновление",
-            "delete": "Удаление плагина",
-        }.get(str(entry.get("type")), "Новый плагин")
-        text = (
-            f"<b>{header}</b>\n\n"
-            f"<b>ID:</b> <code>{plain_html(request_id)}</code>\n\n"
-            f"{draft_text}\n\n"
-            f"<b>От:</b> {user_link}"
-        )
-
-    if request_type == "delete":
-        kb = admin_review_kb(
-            request_id,
-            user_id,
-            submit_label=_tr(cb, "admin_submit_delete"),
-            submit_callback=f"adm:delete:{request_id}",
-            lang=lang,
-            allow_publish=allow_publish,
-            allow_vote=False,
-            media_count=len(_comment_media_of_entry(entry)),
-        )
-    else:
-        kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=allow_publish,
-                             allow_approve=can_approve_request(entry), allow_vote=can_accept_vote(entry),
-                             media_count=len(_comment_media_of_entry(entry)))
-
-    if request_type in {"update", "delete"} or submission_type == "icon":
-        context = _author_comment_block(entry, lang=lang)
-        if context:
-            text += "\n\n" + context
-    text = f"{text}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
-    review_img = request_image_key(entry)
-    review_msg = await answer(cb, text, kb, review_img)
-    if review_msg:
-        await state.update_data(draft_message_id=review_msg.message_id)
-
-    await _send_review_document(cb, entry, review_msg)
-
+    await _render_review(cb, state, request_id, send_document=True)
     await ack(cb)
 
 
@@ -5700,68 +5339,59 @@ async def on_admin_delete(cb: CallbackQuery, state: FSMContext) -> None:
         return
     request_id = cb.data.split(":")[2]
     entry = get_request_by_id(request_id)
-    if entry and not _ensure_request_role(cb, entry):
+    if not entry or entry.get("type") != "delete" or not _ensure_request_role(cb, entry):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
 
-    request_id = cb.data.split(":")[2]
     await state.update_data(current_request=request_id)
     await on_admin_publish(cb, state)
 
 
+async def _render_publish_editor(
+    target: CallbackQuery | Message, state: FSMContext, entry: dict, *, edit_message_id: int | None = None,
+) -> None:
+    lang = _lang_for(target)
+    payload = entry.get("payload") or {}
+    await state.set_state(AdminFlow.reviewing)
+    await state.update_data(current_request=entry["id"])
+    text = f"{_render_request_draft(entry, lang=lang)}\n\n{_review_meta_block(entry, lang=lang)}"
+    if payload.get("submission_type") == "icon" or payload.get("icon"):
+        kb = icon_draft_edit_kb(lang=lang)
+    else:
+        not_before = _publish_not_before_dt_utc(entry)
+        kb = draft_edit_kb(
+            "adm", t("admin_submit_publish", lang), include_back=True,
+            include_file=can_edit_request(entry), include_schedule=_can_schedule_request(entry),
+            include_force_publish=bool(not_before and not_before > datetime.now(timezone.utc)),
+            checked_on_set=bool(str(payload.get("checked_on") or "").strip()), lang=lang,
+        )
+    if edit_message_id and isinstance(target, Message):
+        try:
+            await target.bot.edit_message_text(
+                text, chat_id=target.chat.id, message_id=edit_message_id, parse_mode=ParseMode.HTML,
+                reply_markup=kb, disable_web_page_preview=True,
+            )
+            return
+        except TelegramBadRequest:
+            pass
+    sent = await answer(target, text, kb, request_image_key(entry))
+    if sent:
+        await state.update_data(draft_message_id=sent.message_id)
+
+
 @router.callback_query(F.data.startswith("adm:prepublish:"))
 async def on_admin_prepublish(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = _lang_for(cb)
     if not _is_super_admin(cb):
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
-    request_id = cb.data.split(":")[2]
+    request_id = cb.data.split(":", 2)[2]
     entry = get_request_by_id(request_id)
-
-    if not entry:
+    if not entry or entry.get("history_only") or entry.get("status") in {"published", "deleted"}:
         await cb.answer(_tr(cb, "not_found"), show_alert=True)
         return
-
-    if not _ensure_request_role(cb, entry):
-        await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
-        return
-
-    await state.set_state(AdminFlow.reviewing)
-    await state.update_data(current_request=request_id)
-
-    draft_text = f"{_render_request_draft(entry, lang=_lang_for(cb))}\n\n{_review_meta_block(entry, lang=_lang_for(cb))}"
-    payload = entry.get("payload", {})
-    include_schedule = _can_schedule_request(entry)
-    not_before = _publish_not_before_dt_utc(entry)
-    include_force_publish = bool(
-        cb.from_user
-        and cb.from_user.id in get_admins_super()
-        and not_before
-        and not_before > datetime.now(timezone.utc)
-    )
-    if payload.get("submission_type") == "icon" or payload.get("icon"):
-        await answer(cb, draft_text, icon_draft_edit_kb(include_schedule=False, lang=lang), "iconpacks")
-    else:
-        checked_on_set = bool(str(payload.get("checked_on") or "").strip())
-        await answer(
-            cb,
-            draft_text,
-            draft_edit_kb(
-                "adm",
-                _tr(cb, "admin_submit_publish"),
-                include_back=True,
-                include_file=True,
-                include_schedule=include_schedule,
-                include_force_publish=include_force_publish,
-                checked_on_set=checked_on_set,
-                lang=lang,
-            ),
-            request_image_key(entry),
-        )
-    try:
-        await cb.answer()
-    except Exception:
-        pass
+    await _nav_push(state, f"adm:prepublish:{entry['id']}")
+    await _render_publish_editor(cb, state, entry)
+    await ack(cb)
 
 
 @router.callback_query(F.data.startswith("adm_icon:edit:"))
@@ -6224,9 +5854,6 @@ async def on_admin_catalog_submit(cb: CallbackQuery, state: FSMContext) -> None:
     update_catalog_entry(slug, entry, message_id)
     from core.storage import flush_documents
     await flush_documents("plugins")
-    if file_path:
-        Path(file_path).unlink(missing_ok=True)
-
     await state.set_state(AdminFlow.menu)
     await _reset_menu_navigation(state)
     await answer(cb, _tr(cb, "admin_title"), admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
@@ -6308,7 +5935,6 @@ async def on_admin_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(AdminFlow.editing_draft_field)
 async def on_admin_draft_field_value(message: Message, state: FSMContext) -> None:
-    lang = _lang_for(message)
     if not _is_super_admin(message):
         await state.clear()
         await state.set_state(AdminFlow.menu)
@@ -6329,133 +5955,43 @@ async def on_admin_draft_field_value(message: Message, state: FSMContext) -> Non
         return
 
     entry = get_request_by_id(request_id)
-    if not entry:
+    if not entry or entry.get("history_only") or entry.get("status") in {"published", "deleted"}:
         await state.set_state(AdminFlow.menu)
+        await message.answer(_tr(message, "admin_request_already_handled"))
         return
+    if not _acquire_request_lock(request_id):
+        await message.answer(_tr(message, "admin_request_processing"))
+        return
+    try:
+        payload = entry.get("payload", {})
+        plugin = dict(payload.get("plugin") or {})
 
-    payload = entry.get("payload", {})
-    plugin = payload.get("plugin", {})
+        updates = {}
+        if field in {"description", "usage"}:
+            updates[f"{field}_{edit_lang}"] = text_html
+        elif field == "name":
+            plugin["name"] = text_plain
+            updates["plugin"] = plugin
+        elif field == "author":
+            plugin["author"] = text_plain
+            updates["plugin"] = plugin
+        elif field == "min_version":
+            plugin["min_version"] = text_plain
+            updates["plugin"] = plugin
+        elif field == "checked_on":
+            updates["checked_on"] = text_plain
+        elif field == "settings":
+            has_settings = text_plain.lower() in {"да", "yes", "1", "true"}
+            plugin["has_ui_settings"] = has_settings
+            updates["plugin"] = plugin
 
-    updates = {}
-    if field in {"description", "usage"}:
-        updates[f"{field}_{edit_lang}"] = text_html
-    elif field == "name":
-        plugin["name"] = text_plain
-        updates["plugin"] = plugin
-    elif field == "author":
-        plugin["author"] = text_plain
-        updates["plugin"] = plugin
-    elif field == "min_version":
-        plugin["min_version"] = text_plain
-        updates["plugin"] = plugin
-    elif field == "checked_on":
-        updates["checked_on"] = text_plain
-    elif field == "settings":
-        has_settings = text_plain.lower() in {"да", "yes", "1", "true"}
-        plugin["has_ui_settings"] = has_settings
-        updates["plugin"] = plugin
-
-    if updates:
-        update_request_payload(request_id, updates)
+        if updates:
+            update_request_payload(request_id, updates)
+    finally:
+        _release_request_lock(request_id)
 
     await state.update_data(edit_field=None, edit_lang=None)
-    await state.set_state(AdminFlow.reviewing)
-    entry = get_request_by_id(request_id)
-    if entry:
-        data = await state.get_data()
-        draft_message_id = data.get("draft_message_id")
-        draft_text = _render_request_draft(entry, lang=_lang_for(message))
-        include_schedule = _can_schedule_request(entry)
-        if draft_message_id:
-            try:
-                await message.bot.edit_message_text(
-                    draft_text,
-                    chat_id=message.chat.id,
-                    message_id=draft_message_id,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=draft_edit_kb(
-                        "adm",
-                        _tr(message, "admin_submit_publish"),
-                        include_back=True,
-                        include_schedule=include_schedule,
-                        lang=lang,
-                    ),
-                    disable_web_page_preview=True,
-                )
-            except Exception:
-                sent = await answer(
-                    message,
-                    draft_text,
-                    draft_edit_kb(
-                        "adm",
-                        _tr(message, "admin_submit_publish"),
-                        include_back=True,
-                        include_schedule=include_schedule,
-                        lang=lang,
-                    ),
-                    request_image_key(entry),
-                )
-                if sent:
-                    await state.update_data(draft_message_id=sent.message_id)
-        else:
-            sent = await answer(
-                message,
-                draft_text,
-                draft_edit_kb(
-                    "adm",
-                    _tr(message, "admin_submit_publish"),
-                    include_back=True,
-                    include_schedule=include_schedule,
-                    lang=lang,
-                ),
-                request_image_key(entry),
-            )
-            if sent:
-                await state.update_data(draft_message_id=sent.message_id)
-
-
-async def _finish_publish_notifications(bot, entry: dict, notify_key: str, actor: str,
-                                        removed_plugin: dict | None = None) -> None:
-    payload = entry.get("payload", {})
-    request_id = str(entry.get("id") or "")
-
-    async def notify_author():
-        user_id = payload.get("user_id")
-        if not user_id:
-            return
-        plugin = payload.get("plugin") or payload.get("icon") or {}
-        lang = get_lang(user_id)
-        text = t(notify_key, lang, name=plain_html(plugin.get("name") or "—"),
-                 version=plain_html(plugin.get("version") or "—"))
-        if notify_key in {"notify_published", "notify_update_published", "notify_icon_published"}:
-            text = with_author_vote_summary(text, entry, lang)
-        for part in split_html(text, 3500):
-            await bot.send_message(
-                user_id, part, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
-            )
-
-    calls = [
-        ("admin_notifications", finalize_admin_notify_messages(bot, entry, "Заявка была принята", actor)),
-        ("forum", delete_forum_request_message(bot, entry)),
-        ("author", notify_author()),
-    ]
-    if entry.get("type") == "update":
-        calls.append(("subscribers", _notify_subscribers(
-            bot, payload.get("update_slug") or payload.get("plugin", {}).get("id"),
-            payload.get("plugin", {}), payload.get("changelog"),
-        )))
-    if removed_plugin:
-        calls.append(("removed_authors", notify_plugin_authors_removed(
-            bot, removed_plugin, str(payload.get("admin_comment") or ""),
-        )))
-    started = time.perf_counter()
-    results = await asyncio.gather(*(call for _, call in calls), return_exceptions=True)
-    for (name, _), result in zip(calls, results):
-        if isinstance(result, BaseException):
-            logger.error("event=moderation.publish.followup_failed request_id=%s surface=%s", request_id, name,
-                         exc_info=(type(result), result, result.__traceback__))
-    logger.info("event=moderation.publish.followups_done request_id=%s duration_ms=%.0f", request_id,
-                (time.perf_counter() - started) * 1000)
+    await _render_publish_editor(message, state, entry, edit_message_id=data.get("draft_message_id"))
 
 
 @router.callback_query(F.data.regexp(r"^adm:submit(_force)?$"))
@@ -6476,7 +6012,7 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
     if _is_appeal(entry):
         await cb.answer(_tr(cb, "appeal_not_a_plugin"), show_alert=True)
         return
-    if entry.get("status") in {"published", "deleted"}:
+    if entry.get("history_only") or entry.get("status") in {"published", "deleted"}:
         await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
         return
 
@@ -6484,211 +6020,62 @@ async def on_admin_publish(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_request_processing"), show_alert=True)
         return
 
-    payload = entry.get("payload", {})
-    request_type = entry.get("type", "new")
-    submission_type = payload.get("submission_type") or ("icon" if payload.get("icon") else "plugin")
-    item_name = payload.get("plugin", {}).get("name") or payload.get("icon", {}).get("name") or payload.get("delete_slug") or "unknown"
-    admin_id = cb.from_user.id if cb.from_user else None
-    force_publish = cb.data == "adm:submit_force"
-
-    not_before = _publish_not_before_dt_utc(entry)
-    if (
-        not force_publish
-        and request_type not in {"update", "delete"}
-        and submission_type != "icon"
-        and not_before
-        and not_before > datetime.now(timezone.utc)
-    ):
-        if not schedule_request(request_id, not_before, _admin_actor_label(cb), _actor_id(cb)):
-            _release_request_lock(request_id)
-            await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
-            return
-        spawn_background(_approval_followups(cb.bot, request_id))
-        dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
-        await _reset_menu_navigation(state)
-        await answer(
-            cb,
-            _tr(cb, "admin_request_scheduled_by_limit", datetime=dt_str),
-            admin_menu_kb(_admin_menu_role(cb), lang=lang),
-            "admin",
-        )
-        await ack(cb)
-        _release_request_lock(request_id)
-        return
-
-    validation_errors = _validate_request_before_publish(entry)
-    if validation_errors:
-        error_text = "\n".join(f"• {plain_html(error)}" for error in validation_errors)
-        update_request_payload(
-            request_id,
-            {
-                "last_publish_error": "\n".join(validation_errors),
-                "last_publish_error_at": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-        add_audit_event(
-            "moderation.publish_validation_failed",
-            actor_id=admin_id,
-            actor=_admin_actor_label(cb),
-            request_id=str(request_id),
-            details={"errors": validation_errors},
-        )
-        await _reset_menu_navigation(state)
-        await answer(
-            cb,
-            _tr(cb, "admin_publish_stopped", errors=error_text),
-            admin_menu_kb(_admin_menu_role(cb), lang=lang),
-            "admin",
-        )
-        await ack(cb, _tr(cb, "admin_has_errors"), show_alert=True)
-        _release_request_lock(request_id)
-        return
-
-    logger.info(
-        "event=moderation.publish.start request_id=%s request_type=%s submission_type=%s item=%s admin_id=%s",
-        request_id,
-        request_type,
-        submission_type,
-        item_name,
-        admin_id,
-    )
-
-    await ack(cb, _tr(cb, "admin_publishing"))
-
-    operation_started = time.perf_counter()
-    completed = False
-    removed_plugin = None
     try:
-        if request_type == "update":
-            old_plugin = payload.get("old_plugin", {})
-            result = await update_plugin(
-                entry,
-                old_plugin,
-                cb.bot,
-                actor=_admin_actor_label(cb),
-                actor_id=_actor_id(cb),
-            )
-            notify_key = "notify_update_published"
-        elif submission_type == "icon":
-            result = await publish_icon(entry, actor=_admin_actor_label(cb), actor_id=_actor_id(cb))
-            notify_key = "notify_icon_published"
-        elif request_type == "delete":
-            delete_slug = payload.get("delete_slug") or payload.get("plugin", {}).get("id")
-            plugin_entry = find_plugin_by_slug(delete_slug)
-            if not plugin_entry:
-                raise ValueError("Plugin not found")
-            message_id = plugin_entry.get("channel_message", {}).get("message_id")
-            from userbot.client import get_userbot
-            userbot = await get_userbot()
-            if userbot and message_id:
-                await userbot.delete_message(message_id)
-            removed = remove_plugin_entry(delete_slug)
-            if not removed:
-                raise ValueError("Failed to remove plugin")
-            update_request_status(request_id, "deleted", actor=_admin_actor_label(cb), actor_id=_actor_id(cb))
-            removed_plugin = plugin_entry
-            from core.storage import flush_documents
-
-            await flush_documents("requests", "plugins")
-            result = {"link": plugin_entry.get("channel_message", {}).get("link", "")}
-            notify_key = "notify_deleted"
-        else:
-            result = await publish_plugin(
-                entry,
-                cb.bot,
-                actor=_admin_actor_label(cb),
-                actor_id=_actor_id(cb),
-            )
-            notify_key = "notify_published"
-
-        if request_type == "update":
-            update_request_payload(request_id, {"example_changelog_pending": True})
-
-        if request_type in {"new", "update"} and (
-            _comment_media_of_entry(entry) or request_type == "update"
-        ):
-            from bot.services.example_media import EXAMPLE_MEDIA_DELAY_SECONDS, schedule_example_media
-
+        errors = _validate_request_before_publish(entry)
+        if errors:
             update_request_payload(request_id, {
-                "example_media_not_before": (
-                    datetime.now(timezone.utc) + timedelta(seconds=EXAMPLE_MEDIA_DELAY_SECONDS)
-                ).isoformat(),
+                "last_publish_error": "\n".join(errors),
+                "last_publish_error_at": datetime.now(timezone.utc).isoformat(),
             })
-            spawn_background(schedule_example_media(cb.bot, request_id))
-
-        user_id = entry.get("payload", {}).get("user_id")
-        channel_duration = time.perf_counter() - operation_started
-        logger.info("event=moderation.publish.channel_done request_id=%s duration_ms=%.0f", request_id, channel_duration * 1000)
-        await state.set_state(AdminFlow.menu)
-        await state.update_data(**{_NAV_STACK_KEY: ["adm:menu"]})
-        await _reset_menu_navigation(state)
-        await answer(
-            cb,
-            _tr(cb, "admin_publish_done", link=result.get("link", "")),
-            admin_menu_kb(_admin_menu_role(cb), lang=lang),
-            "admin",
-        )
-        completed = True
-        logger.info("event=moderation.publish.ui_ready request_id=%s duration_ms=%.0f", request_id,
-                    (time.perf_counter() - operation_started) * 1000)
-
-        logger.info(
-            "event=moderation.publish.success request_id=%s request_type=%s submission_type=%s item=%s admin_id=%s user_id=%s link=%s",
-            request_id,
-            request_type,
-            submission_type,
-            item_name,
-            admin_id,
-            user_id or "-",
-            result.get("link", ""),
-        )
-        try:
             add_audit_event(
-                "moderation.publish_success",
-                actor_id=admin_id,
-                actor=_admin_actor_label(cb),
-                request_id=str(request_id),
-                details={
-                    "request_type": request_type,
-                    "submission_type": submission_type,
-                    "item": item_name,
-                    "link": result.get("link", ""),
-                },
+                "moderation.publish_validation_failed", actor_id=_actor_id(cb), actor=_admin_actor_label(cb),
+                request_id=str(request_id), details={"errors": errors},
             )
-        except Exception:
-            logger.exception("event=moderation.publish.audit_failed request_id=%s", request_id)
+            await _reset_menu_navigation(state)
+            await answer(
+                cb, _tr(cb, "admin_publish_stopped", errors="\n".join(f"• {plain_html(error)}" for error in errors)),
+                admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin",
+            )
+            await ack(cb, _tr(cb, "admin_has_errors"), show_alert=True)
+            return
 
-    except Exception as exc:
-        logger.exception(
-            "event=moderation.publish.failed request_id=%s request_type=%s submission_type=%s item=%s admin_id=%s",
-            request_id,
-            request_type,
-            submission_type,
-            item_name,
-            admin_id,
-        )
-        update_request_payload(
-            request_id,
-            {
+        actor, actor_id = _admin_actor_label(cb), _actor_id(cb)
+        not_before = _publish_not_before_dt_utc(entry)
+        if (cb.data != "adm:submit_force" and _can_schedule_request(entry)
+                and not_before and not_before > datetime.now(timezone.utc)):
+            if not schedule_request(request_id, not_before, actor, actor_id):
+                await cb.answer(_tr(cb, "admin_request_already_handled"), show_alert=True)
+                return
+            spawn_background(_approval_followups(cb.bot, request_id))
+            dt_str = not_before.astimezone(TZ_UTC_PLUS_5).strftime("%d.%m.%Y %H:%M")
+            await _reset_menu_navigation(state)
+            await answer(cb, _tr(cb, "admin_request_scheduled_by_limit", datetime=dt_str),
+                         admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
+            await ack(cb)
+            return
+
+        await ack(cb, _tr(cb, "admin_publishing"))
+        started = time.perf_counter()
+        try:
+            result = await publish_request(cb.bot, entry, actor, actor_id)
+        except Exception as exc:
+            logger.exception("event=moderation.publish.failed request_id=%s admin_id=%s", request_id, actor_id)
+            update_request_payload(request_id, {
                 "last_publish_error": str(exc),
                 "last_publish_error_at": datetime.now(timezone.utc).isoformat(),
-            },
-        )
-        await _reset_menu_navigation(state)
-        await answer(
-            cb,
-            _tr(cb, "admin_generic_error", error=plain_html(exc)),
-            admin_menu_kb(_admin_menu_role(cb), lang=lang),
-            "profile",
-        )
+            })
+            await _reset_menu_navigation(state)
+            await answer(cb, _tr(cb, "admin_generic_error", error=plain_html(exc)),
+                         admin_menu_kb(_admin_menu_role(cb), lang=lang), "profile")
+            return
 
+        await _reset_menu_navigation(state)
+        await answer(cb, _tr(cb, "admin_publish_done", link=result.get("link", "")),
+                     admin_menu_kb(_admin_menu_role(cb), lang=lang), "admin")
+        logger.info("event=moderation.publish.ui_ready request_id=%s duration_ms=%.0f", request_id,
+                    (time.perf_counter() - started) * 1000)
     finally:
         _release_request_lock(request_id)
-
-    if completed:
-        spawn_background(_finish_publish_notifications(
-            cb.bot, deepcopy(entry), notify_key, _admin_actor_label(cb), deepcopy(removed_plugin),
-        ))
 
 
 @router.callback_query(F.data.startswith("adm:reject:"))
@@ -6820,7 +6207,7 @@ async def _finalize_rejection(
         actor_id=actor_user.id if actor_user else None,
         actor=_admin_actor_label(actor_target),
         request_id=str(request_id),
-        details={"silent": False},
+        details={"silent": False, "reason": comment},
     )
     _schedule_decision_cleanup(bot, entry, "Заявка была отклонена", _admin_actor_label(actor_target))
     payload = entry.get("payload", {})
@@ -7133,13 +6520,6 @@ def _save_templates(templates: list[str], kind: str = "reject") -> None:
     cfg[_TEMPLATE_CONFIG_KEYS[kind]] = list(templates)
     save_config(cfg)
     invalidate("config")
-
-
-def _rejtpl_list_text(templates: list[str]) -> str:
-    return "\n".join(
-        f"{idx + 1}. {strip_blockquote_tags(telegram_html(tpl))}"
-        for idx, tpl in enumerate(templates)
-    )
 
 
 async def _render_rejtpl_cfg(target, state: FSMContext, kind: str = "reject", page: int = 0) -> None:
@@ -7489,6 +6869,7 @@ async def on_admin_enter_rework_comment(message: Message, state: FSMContext) -> 
             actor_id=message.from_user.id if message.from_user else None,
             actor=_admin_actor_label(message),
             request_id=str(request_id),
+            details={"reason": comment},
         )
         _schedule_decision_cleanup(message.bot, entry, "Заявка отправлена на доработку", _admin_actor_label(message))
         from core.storage import flush_documents
@@ -8061,79 +7442,58 @@ async def on_admin_show_media(cb: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(AdminFlow.uploading_request_file, F.document)
 async def on_admin_request_file_upload(message: Message, state: FSMContext) -> None:
-    if not _ensure_admin_role(message, "plugins"):
+    if not _is_super_admin(message):
         return
-    data = await state.get_data()
-    request_id = str(data.get("current_request") or "")
-    entry = get_request_by_id(request_id) if request_id else None
-    if not entry:
-        await state.set_state(AdminFlow.menu)
-        await _reset_menu_navigation(state)
-        await answer(message, _tr(message, "not_found"), admin_menu_kb(_admin_menu_role(message), lang=_lang_for(message)), "admin")
-        return
-
-    from bot.services.submission import process_plugin_file
-    from bot.services.validation import validate_request_replacement
-    from bot.services.versioning import get_min_supported_version
-
-    if entry.get("status") not in {"pending", "rework"} or entry.get("type") not in {"new", "update"}:
+    request_id = (await state.get_data()).get("current_request")
+    entry = get_request_by_id(request_id)
+    if not can_edit_request(entry):
         await state.set_state(AdminFlow.menu)
         await message.answer(_tr(message, "resubmit_expired"))
         return
+    original_path = (entry["payload"].get("plugin") or {}).get("file_path")
+
+    from bot.services.validation import validate_request_replacement
+    from bot.services.versioning import get_min_supported_version
 
     try:
         parsed = await process_plugin_file(message.bot, message.document)
     except ValueError as exc:
         await message.answer(_tr(message, "admin_generic_error", error=plain_html(exc)), parse_mode=ParseMode.HTML)
         return
-
-    current = get_request_by_id(request_id)
-    valid, error = validate_request_replacement(current or {}, parsed.to_dict())
-    if not valid:
-        Path(parsed.file_path).unlink(missing_ok=True)
-        await message.answer(_tr(
-            message, error, current=plain_html(parsed.min_version),
-            min=get_min_supported_version(),
-        ), parse_mode=ParseMode.HTML)
+    if not _acquire_request_lock(request_id):
+        await message.answer(_tr(message, "admin_request_processing"))
         return
-    entry = current
+    try:
+        current = get_request_by_id(request_id)
+        replacement = parsed.to_dict()
+        valid, error = validate_request_replacement(current or {}, replacement)
+        if not valid:
+            await message.answer(_tr(message, error, current=plain_html(parsed.min_version),
+                                      min=get_min_supported_version()), parse_mode=ParseMode.HTML)
+            return
+        payload = current["payload"]
+        if (payload.get("plugin") or {}).get("file_path") != original_path:
+            await message.answer(_tr(message, "pending_request_changed"))
+            return
+        fields = category_fields(categories_for(payload) or categories_for(replacement))
+        replacement["categories"] = fields["category_keys"]
+        actor = _admin_actor_label(message)
+        updated = update_request_payload(request_id, {
+            **fields, "plugin": replacement, "moderation_file_id": None, "moderation_file_name": None,
+            "last_publish_error": None, "last_publish_error_at": None, "publish_retry_at": None, "file_replaced_by": actor,
+        })
+        add_audit_event("moderation.file_replaced", actor_id=_actor_id(message), actor=actor, request_id=request_id,
+                        details={"file": replacement.get("file_path") or ""})
+        from core.storage import flush_documents
 
-    payload = entry.get("payload", {}) if isinstance(entry.get("payload"), dict) else {}
-    plugin = dict(payload.get("plugin") or {})
-    plugin.update(parsed.to_dict())
-    fields = category_fields(categories_for(payload) or categories_for(plugin))
-    plugin["categories"] = fields["category_keys"]
-    update_request_payload(request_id, {
-        **fields, "plugin": plugin, "moderation_file_id": None,
-        "moderation_file_name": None, "file_replaced_by": _admin_actor_label(message),
-    })
+        await flush_documents("requests")
+    finally:
+        _release_request_lock(request_id)
     await state.update_data(**fields, category_selection=None)
-    add_audit_event(
-        "moderation.file_replaced",
-        actor_id=_actor_id(message),
-        actor=_admin_actor_label(message),
-        request_id=request_id,
-        details={"file": plugin.get("file_path") or ""},
-    )
-    await state.set_state(AdminFlow.reviewing)
-    await answer(
-        message,
-        f"{_render_request_draft(get_request_by_id(request_id) or entry, lang=_lang_for(message))}\n\n"
-        f"{_review_meta_block(get_request_by_id(request_id) or entry, lang=_lang_for(message))}",
-        admin_review_kb(
-            request_id,
-            payload.get("user_id", 0),
-            lang=_lang_for(message),
-            allow_publish=_is_super_admin(message),
-            allow_approve=can_approve_request(entry),
-            allow_vote=can_accept_vote(entry),
-            media_count=len(_comment_media_of_entry(entry)),
-        ),
-        request_image_key(entry),
-    )
+    await _render_publish_editor(message, state, updated)
 
 
 @router.message(AdminFlow.uploading_request_file)
 async def on_admin_request_file_invalid(message: Message, state: FSMContext) -> None:
-    if _ensure_admin_role(message, "plugins"):
+    if _is_super_admin(message):
         await message.answer(_tr(message, "admin_send_plugin_file"), parse_mode=ParseMode.HTML)

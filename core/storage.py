@@ -46,13 +46,15 @@ _DOC_BROADCASTS = "broadcasts"
 _cache: Dict[str, Dict[str, Any]] = {}
 _cache_time: Dict[str, float] = {}
 _dirty: Dict[str, bool] = {}
+_generation: Dict[str, int] = {}
 _save_locks: Dict[str, asyncio.Lock] = {}
 _last_save: Dict[str, float] = {}
 
-_TTL = 30.0
+_TTL = 600.0
 _SAVE_INTERVAL = 3.0
 _CONFIG_TTL = 300.0
 _CONFIG_DEFAULTS: Dict[str, Any] = {
+    "archive": {"channel_id": 0, "technical_channel_id": 0},
     "moderation": {
         "forum_chat_id": -1003859317683,
         "forum_topic_id": 97,
@@ -460,13 +462,15 @@ def _read_requests_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
     return meta
 
 
-def _write_requests_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+def _dumps_row(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False).encode()
+
+
+def _snapshot_requests_doc(data: Dict[str, Any], stamp: bool = False) -> Dict[str, Any]:
     payload = dict(data) if isinstance(data, dict) else {}
     items = payload.pop("requests", [])
-    if not isinstance(items, list):
-        items = []
-
-    for idx, item in enumerate(items):
+    rows = []
+    for item in items if isinstance(items, list) else []:
         request_id = status = request_type = submitted_at = updated_at = None
         payload_user_id = None
         if isinstance(item, dict):
@@ -478,7 +482,39 @@ def _write_requests_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
             user_id = (item.get("payload") or {}).get("user_id")
             if isinstance(user_id, int):
                 payload_user_id = user_id
+        rows.append((request_id, status, request_type, submitted_at, updated_at, payload_user_id, _dumps_row(item)))
+    if stamp:
+        payload.setdefault("updated_at", _now_iso())
+    return _Snapshot(meta=_dumps_row(payload), rows=rows)
 
+
+def _snapshot_users_doc(data: Dict[str, Any], stamp: bool = False) -> Dict[str, Any]:
+    payload = dict(data) if isinstance(data, dict) else {}
+    users = payload.pop("users", {})
+    rows = []
+    for user_id, user_data in (users if isinstance(users, dict) else {}).items():
+        user_payload = user_data if isinstance(user_data, dict) else {}
+        language = user_payload.get("language")
+        ban_reason = user_payload.get("ban_reason")
+        rows.append((
+            str(user_id),
+            language if isinstance(language, str) else None,
+            1 if user_payload.get("banned") else 0,
+            ban_reason if isinstance(ban_reason, str) else None,
+            _dumps_row(user_payload),
+        ))
+    if stamp:
+        payload.setdefault("updated_at", _now_iso())
+    return _Snapshot(meta=_dumps_row(payload), rows=rows)
+
+
+def _write_requests_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
+    _write_requests_snapshot(conn, _snapshot_requests_doc(data))
+
+
+def _write_requests_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> None:
+    rows = snapshot["rows"]
+    for idx, (request_id, status, request_type, submitted_at, updated_at, payload_user_id, raw) in enumerate(rows):
         conn.execute(
             """
             INSERT INTO requests_items (
@@ -501,12 +537,12 @@ def _write_requests_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
                 submitted_at,
                 updated_at,
                 payload_user_id,
-                json.dumps(item, ensure_ascii=False),
+                raw.decode(),
             ),
         )
 
-    conn.execute("DELETE FROM requests_items WHERE sort_order < 0 OR sort_order >= ?", (len(items),))
-    _set_meta_json(conn, _meta_key(_DOC_REQUESTS), payload)
+    conn.execute("DELETE FROM requests_items WHERE sort_order < 0 OR sort_order >= ?", (len(rows),))
+    _set_meta_json(conn, _meta_key(_DOC_REQUESTS), json.loads(snapshot["meta"]))
     _mark_initialized(conn, _DOC_REQUESTS)
 
 
@@ -524,32 +560,29 @@ def _read_users_doc(conn: sqlite3.Connection) -> Dict[str, Any]:
 
 
 def _write_users_doc(conn: sqlite3.Connection, data: Dict[str, Any]) -> None:
-    payload = dict(data) if isinstance(data, dict) else {}
-    users = payload.pop("users", {})
-    if not isinstance(users, dict):
-        users = {}
+    _write_users_snapshot(conn, _snapshot_users_doc(data))
 
-    conn.execute("DELETE FROM users_items")
-    for user_id, user_data in users.items():
-        user_payload = user_data if isinstance(user_data, dict) else {}
-        language = user_payload.get("language")
-        banned = 1 if user_payload.get("banned") else 0
-        ban_reason = user_payload.get("ban_reason")
+
+def _write_users_snapshot(conn: sqlite3.Connection, snapshot: Dict[str, Any]) -> None:
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS kept_users (user_id TEXT PRIMARY KEY)")
+    conn.execute("DELETE FROM kept_users")
+    for user_id, language, banned, ban_reason, raw in snapshot["rows"]:
         conn.execute(
             """
             INSERT INTO users_items (user_id, language, banned, ban_reason, payload)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                language=excluded.language, banned=excluded.banned,
+                ban_reason=excluded.ban_reason, payload=excluded.payload
+            WHERE users_items.payload IS NOT excluded.payload OR users_items.language IS NOT excluded.language
+                OR users_items.banned IS NOT excluded.banned OR users_items.ban_reason IS NOT excluded.ban_reason
             """,
-            (
-                str(user_id),
-                language if isinstance(language, str) else None,
-                banned,
-                ban_reason if isinstance(ban_reason, str) else None,
-                json.dumps(user_payload, ensure_ascii=False),
-            ),
+            (user_id, language, banned, ban_reason, raw.decode()),
         )
-
-    _set_meta_json(conn, _meta_key(_DOC_USERS), payload)
+        conn.execute("INSERT OR IGNORE INTO kept_users (user_id) VALUES (?)", (user_id,))
+    conn.execute("DELETE FROM users_items WHERE user_id NOT IN (SELECT user_id FROM kept_users)")
+    conn.execute("DELETE FROM kept_users")
+    _set_meta_json(conn, _meta_key(_DOC_USERS), json.loads(snapshot["meta"]))
     _mark_initialized(conn, _DOC_USERS)
 
 
@@ -779,6 +812,10 @@ _READERS = {
     _DOC_BROADCASTS: _read_broadcasts_doc,
 }
 
+_SNAPSHOTS = {
+    _DOC_USERS: (_snapshot_users_doc, _write_users_snapshot),
+}
+
 _WRITERS = {
     _DOC_PLUGINS: _write_plugins_doc,
     _DOC_ICONS: _write_icons_doc,
@@ -810,13 +847,26 @@ def _read_sqlite_doc_sync(doc_key: str) -> Dict[str, Any]:
     return data
 
 
+class _Snapshot(dict):
+    pass
+
+
 def _write_sqlite_doc_sync(doc_key: str, data: Dict[str, Any]) -> None:
     _ensure_db()
+    if isinstance(data, _Snapshot):
+        with _data_snapshot_lock, closing(_connect()) as conn, conn:
+            _SNAPSHOTS[doc_key][1](conn, data)
+            conn.commit()
+        return
     payload = dict(data) if isinstance(data, dict) else {}
     payload.setdefault("updated_at", _now_iso())
     with _data_snapshot_lock, closing(_connect()) as conn, conn:
         _WRITERS[doc_key](conn, payload)
         conn.commit()
+    if doc_key in {_DOC_POSTER, _DOC_DIALOGS}:
+        from core.archive_log import record_event
+
+        record_event(doc_key, payload, True)
 
 
 def _get_cached(doc_key: str, ttl: float = _TTL) -> Dict[str, Any]:
@@ -834,6 +884,7 @@ def _set_cached(doc_key: str, data: Dict[str, Any]) -> None:
     _cache[doc_key] = data
     _cache_time[doc_key] = time.time()
     _dirty[doc_key] = True
+    _generation[doc_key] = _generation.get(doc_key, 0) + 1
 
 
 async def _schedule_save(doc_key: str) -> None:
@@ -866,6 +917,14 @@ async def _flush_document(doc_key: str) -> None:
 
     async with _save_locks[doc_key]:
         if doc_key in _cache and _dirty.get(doc_key):
+            generation = _generation.get(doc_key, 0)
+            if doc_key in _SNAPSHOTS:
+                snapshot = _SNAPSHOTS[doc_key][0](_cache[doc_key], stamp=True)
+                await asyncio.to_thread(_write_sqlite_doc_sync, doc_key, snapshot)
+                del snapshot
+                if _generation.get(doc_key, 0) == generation:
+                    _dirty[doc_key] = False
+                return
             data = deepcopy(_cache[doc_key])
             await asyncio.to_thread(_write_sqlite_doc_sync, doc_key, data)
             if _cache.get(doc_key) == data:
@@ -909,6 +968,12 @@ def _normalize_config_defaults(data: Dict[str, Any]) -> tuple[Dict[str, Any], bo
                     changed = True
         elif key not in result:
             result[key] = deepcopy(default_value)
+            changed = True
+
+    previous_archive = data.get("archive")
+    if isinstance(previous_archive, dict) and str(previous_archive.get("channel_id")) == "-1004391235632":
+        if "technical_channel_id" not in previous_archive or str(previous_archive["technical_channel_id"]) == "-1003961098135":
+            result["archive"].update(channel_id=-1003961098135, technical_channel_id=-1004391235632)
             changed = True
 
     return result, changed

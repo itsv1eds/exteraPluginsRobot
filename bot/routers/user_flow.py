@@ -1,7 +1,7 @@
 import asyncio
 import html
 import logging
-import shutil
+import os
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,7 +49,8 @@ from bot.keyboards import (
 )
 from core.storage import QUIZ_QUESTIONS_PER_RUN, build_quiz
 from bot.cache import get_admins, get_admins_plugins, get_categories
-from bot.services.request_context import author_context
+from bot.services.approval import approval_status_text, can_edit_request
+from bot.services.request_context import author_context, forum_request_text_and_file
 from bot.services.submission import (
     PluginData,
     build_submission_payload,
@@ -84,7 +85,7 @@ from core.request_store import (
     request_callback_token,
     add_draft_request,
     add_request,
-    delete_request_and_file,
+    delete_request,
     discard_user_drafts,
     get_user_requests,
     get_request_by_deeplink_token,
@@ -105,7 +106,7 @@ _START_COOLDOWN_SECONDS = 3.0
 _recent_starts: dict[int, float] = {}
 _COMMENT_MEDIA_GROUP_SETTLE_SECONDS = 0.8
 _comment_media_group_buffers: dict[tuple[int, int, str], dict[str, Any]] = {}
-_EDITABLE_REQUEST_STATUSES = {"pending", "rework"}
+_WITHDRAWABLE_REQUEST_STATUSES = {"pending", "rework"}
 
 
 @router.pre_checkout_query()
@@ -246,7 +247,7 @@ async def _category_picker_valid(cb: CallbackQuery, state: FSMContext, prefix: s
         entry = get_request_by_id(data.get("pending_request_id"))
         valid = bool(
             entry
-            and entry.get("status") in _EDITABLE_REQUEST_STATUSES
+            and can_edit_request(entry)
             and entry.get("type") == ("update" if prefix == "pendupd" else "new")
             and entry.get("payload", {}).get("user_id") == cb.from_user.id
         )
@@ -286,18 +287,6 @@ async def _choose_categories(cb: CallbackQuery, state: FSMContext, prefix: str, 
     await cb.message.edit_reply_markup(reply_markup=keyboard)
     await ack(cb)
     return False
-
-
-async def _prepare_request_categories(entry: Dict[str, Any]) -> None:
-    payload = entry.get("payload") or {}
-    if entry.get("type") not in {"new", "update"} or not payload.get("plugin"):
-        return
-    changed = await prepare_submission_categories(payload)
-    updates = {**category_fields(payload), "plugin": payload["plugin"]}
-    if changed:
-        payload["moderation_file_id"] = None
-        updates["moderation_file_id"] = None
-    update_request_payload(entry["id"], updates)
 
 
 def _build_draft_entry(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -619,85 +608,49 @@ async def _sync_submission_draft(
         await state.update_data(draft_request_id=entry.get("id"))
 
 
-async def _stage_pending_plugin_changes(state: FSMContext, request_id: str) -> None:
+async def _stage_pending_changes(state: FSMContext) -> None:
     data = await state.get_data()
-    plugin = data.get("plugin", {})
-    if not plugin:
+    if not data.get("plugin"):
         return
-    payload = {
-        "plugin": plugin,
-        "description_ru": data.get("description_ru"),
-        "description_en": data.get("description_en"),
-        "usage_ru": data.get("usage_ru"),
-        "usage_en": data.get("usage_en"),
+    fields = ["plugin", "description_ru", "description_en", "usage_ru", "usage_en"]
+    is_update = data.get("draft_prefix") == "pendupd"
+    fields += ["changelog", "update_slug", "old_plugin"] if is_update else ["publish_not_before"]
+    changes = {
+        **{field: data.get(field) for field in fields},
         **category_fields(data),
-        "publish_not_before": data.get("publish_not_before"),
-        "submission_type": "plugin",
+        "submission_type": "update" if is_update else "plugin",
     }
-    await state.update_data(pending_request_changes=deepcopy(payload))
-
-
-async def _stage_pending_update_changes(state: FSMContext, request_id: str) -> None:
-    data = await state.get_data()
-    plugin = data.get("plugin", {})
-    if not plugin:
-        return
-    payload = {
-        "plugin": plugin,
-        "changelog": data.get("changelog"),
-        "update_slug": data.get("update_slug"),
-        "old_plugin": data.get("old_plugin"),
-        "description_ru": data.get("description_ru"),
-        "description_en": data.get("description_en"),
-        "usage_ru": data.get("usage_ru"),
-        "usage_en": data.get("usage_en"),
-        **category_fields(data),
-        "submission_type": "update",
-    }
-    await state.update_data(pending_request_changes=deepcopy(payload))
+    await state.update_data(pending_request_changes=deepcopy(changes))
 
 
 def _editable_own_request(request_id: str, user_id: int | None) -> dict | None:
-    if not user_id:
-        return None
-    entry = get_request_by_id(request_id)
-    if (not entry or entry.get("status") not in _EDITABLE_REQUEST_STATUSES
-            or entry.get("type") not in {"new", "update"}
-            or (entry.get("payload") or {}).get("user_id") != user_id):
-        return None
-    return entry
+    entry = get_request_by_id(request_id) if user_id else None
+    if can_edit_request(entry) and entry["payload"].get("user_id") == user_id:
+        return entry
+    return None
 
 
 def _request_edit_fingerprint(payload: dict) -> str:
     normalized = {**payload, **category_fields(payload)}
-    return submission_fingerprint(normalized) + ":" + str((payload.get("plugin") or {}).get("file_path") or "")
+    return ":".join((
+        submission_fingerprint(normalized), str((payload.get("plugin") or {}).get("file_path") or ""),
+        str(payload.get("publish_not_before") or ""),
+    ))
 
 
-async def _notify_admins_request_updated(bot, entry: Dict[str, Any], note: str = "") -> bool:
+async def _notify_admins_request_updated(bot, entry: Dict[str, Any]) -> bool:
     previous = deepcopy(entry)
-    payload = entry.get("payload", {})
-    plugin = payload.get("plugin", {})
-    user_id = payload.get("user_id", 0)
-    username = payload.get("username", "")
-    request_id = entry.get("id", "?")
-    user_link = user_mention(user_id, username)
-    name = plugin.get("name") or plugin.get("id") or "—"
-    text = t("admin_request_updated", "ru", id=plain_html(request_id), name=plain_html(name), user=user_link)
-    if note:
-        text += t("admin_request_update_note", "ru", note=strip_blockquote_tags(telegram_html(note)))
+    request_id = str(entry["id"])
     try:
-        await send_request_to_forum(bot, entry, text, plugin.get("file_path"))
+        text, file_path = forum_request_text_and_file(entry)
+        await send_request_to_forum(bot, entry, text, file_path)
     except Exception:
         logger.warning("event=submission.notify_forum_update.failed request_id=%s", request_id, exc_info=True)
         return False
-    update_request_payload(request_id, {"update_notification_pending": False})
     from core.storage import flush_documents
 
     await flush_documents("requests")
-    try:
-        await delete_forum_request_message(bot, previous)
-    except Exception:
-        logger.warning("event=submission.update_old_forum_delete_failed request_id=%s", request_id, exc_info=True)
+    spawn_background(delete_forum_request_message(bot, previous))
     return True
 
 
@@ -939,75 +892,6 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer(t("language_saved", lang))
 
 
-@router.callback_query(F.data.regexp(r"^pendupdreq:[^:]+$"))
-@router.callback_query(F.data.regexp(r"^pendupd:(?!(?:delete|delete_confirm|back|submit)$)[^:]+$"))
-async def on_open_pending_update_request(cb: CallbackQuery, state: FSMContext) -> None:
-    if not cb.from_user:
-        await cb.answer()
-        return
-    lang = await get_language(cb, state)
-    request_id = cb.data.split(":", 1)[1]
-    req = get_request_by_callback_token(request_id)
-    if not isinstance(req, dict):
-        await cb.answer(t("not_found", lang), show_alert=True)
-        return
-    request_id = str(req["id"])
-    if req.get("status") not in _EDITABLE_REQUEST_STATUSES or req.get("type") != "update":
-        await cb.answer(t("not_found", lang), show_alert=True)
-        return
-    payload = req.get("payload", {})
-    if not isinstance(payload, dict) or payload.get("user_id") != cb.from_user.id:
-        await cb.answer(t("admin_denied", lang), show_alert=True)
-        return
-    if (payload.get("submission_type") or payload.get("type")) != "update":
-        await cb.answer(t("not_found", lang), show_alert=True)
-        return
-
-    plugin = deepcopy(payload.get("plugin", {})) if isinstance(payload.get("plugin"), dict) else {}
-    await state.clear()
-    await state.update_data(
-        lang=lang,
-        plugin=plugin,
-        pending_request_fingerprint=_request_edit_fingerprint(payload),
-        pending_request_changes=None,
-        changelog=payload.get("changelog", ""),
-        update_slug=payload.get("update_slug", ""),
-        old_plugin=deepcopy(payload.get("old_plugin", {})),
-        description_ru=payload.get("description_ru", ""),
-        description_en=payload.get("description_en", ""),
-        usage_ru=payload.get("usage_ru", ""),
-        usage_en=payload.get("usage_en", ""),
-        **category_fields(categories_for(payload) or categories_for(payload.get("old_plugin") or {})),
-        admin_comment=payload.get("admin_comment", ""),
-        comment_media=payload.get("comment_media", []),
-        is_appeal=payload.get("is_appeal", False),
-        appeal_comment=payload.get("appeal_comment", ""),
-        draft_prefix="pendupd",
-        pending_request_id=request_id,
-        edit_field=None,
-        edit_lang=None,
-        draft_message_id=cb.message.message_id if cb.message else None,
-    )
-    await state.set_state(UserFlow.confirming_update)
-    draft_text = _render_update_text(await state.get_data())
-    await answer(
-        cb,
-        draft_text,
-        draft_edit_kb(
-            "pendupd",
-            t("btn_save_changes", lang),
-            include_cancel=True,
-            include_checked_on=False,
-            include_delete=True,
-            include_file=True,
-            include_back=True,
-            lang=lang,
-        ),
-        "update",
-    )
-    await ack(cb)
-
-
 @router.callback_query(F.data == "home")
 async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
@@ -1035,7 +919,7 @@ async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(category_selection=None, edit_field=None)
     draft_id = data.get("draft_request_id")
     if draft_id:
-        delete_request_and_file(draft_id)
+        delete_request(draft_id)
 
     current_state = await state.get_state() or ""
     state_name = current_state.split(":")[-1]
@@ -1180,69 +1064,126 @@ async def on_choose_plugin_update(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
-@router.callback_query(F.data.startswith("pendreq:"))
+async def _read_plugin_document(message: Message, lang: str):
+    document = message.document
+    if document and document.file_size and document.file_size > plugin_file_limit(document.file_name or ""):
+        await message.answer(t("file_too_large", lang))
+        return None
+    try:
+        return await process_plugin_file(message.bot, document)
+    except ValueError as e:
+        key, _, details = str(e).partition(":")
+        if key == "parse_error" and details:
+            await message.answer(t("parse_error", lang, error=details))
+        else:
+            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
+        return None
+
+
+async def _ask_request_comment(cb: CallbackQuery, state: FSMContext, payload: dict, request_type: str, reply_key: str,
+                               prompt_key: str, scene: str, *, comment_required: bool, media_required: bool) -> None:
+    lang = await get_language(cb, state)
+    await state.update_data(pending_payload=payload, pending_request_type=request_type, pending_reply_key=reply_key)
+    await _discard_pending_comment_media_groups(cb)
+    await state.set_state(UserFlow.entering_admin_comment)
+    await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=comment_required, media_required=media_required)
+    await answer(cb, t(prompt_key, lang, max=COMMENT_MEDIA_LIMIT), comment_skip_kb(lang, required=True), scene)
+
+
+_PENDING_PREFIXES = {"pend", "pendupd"}
+_UPDATE_PREFIXES = {"upd", "pendupd"}
+
+
+async def _save_editor_change(state: FSMContext, user, prefix: str) -> None:
+    if prefix == "draft":
+        await _sync_submission_draft(state, user.id, user.username or "", "plugin")
+    elif prefix in _PENDING_PREFIXES and (await state.get_data()).get("pending_request_id"):
+        await _stage_pending_changes(state)
+
+
+async def _show_editor(target: CallbackQuery | Message, state: FSMContext, prefix: str, lang: str, *, edit_message_id: int | None = None) -> None:
+    is_update = prefix in _UPDATE_PREFIXES
+    await state.set_state(UserFlow.confirming_update if is_update else UserFlow.confirming_submission)
+    data = await state.get_data()
+    text = _render_update_text(data) if is_update else _render_draft_text(data)
+    if prefix in _PENDING_PREFIXES:
+        entry = get_request_by_id(str(data.get("pending_request_id") or "")) or {}
+        status = approval_status_text(entry, lang) if entry else ""
+        if status:
+            text = f"{status}\n\n{text}"
+        kb = draft_edit_kb(
+            prefix, t("btn_save_changes", lang),
+            include_cancel=True, include_checked_on=False,
+            include_delete=entry.get("status") in _WITHDRAWABLE_REQUEST_STATUSES,
+            include_file=True, include_back=True, lang=lang,
+        )
+        scene = "update" if is_update else "profile"
+    else:
+        kb = draft_edit_kb(prefix, t("btn_send_to_admin", lang), include_cancel=True, include_checked_on=False, lang=lang)
+        scene = "update" if is_update else "new"
+    if edit_message_id and isinstance(target, Message):
+        try:
+            await target.bot.edit_message_text(
+                text, chat_id=target.chat.id, message_id=edit_message_id,
+                parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True,
+            )
+            return
+        except Exception as exc:
+            if "message is not modified" in str(exc).lower():
+                return
+    sent = await answer(target, text, kb, scene)
+    if message_id := getattr(sent, "message_id", None):
+        await state.update_data(draft_message_id=message_id)
+
+
+async def _ask_request_update_note(cb: CallbackQuery, state: FSMContext, request_id: str, lang: str) -> None:
+    entry = _editable_own_request(request_id, cb.from_user.id if cb.from_user else None)
+    if not entry:
+        await cb.answer(t("resubmit_expired", lang), show_alert=True)
+        return
+    await _stage_pending_changes(state)
+    await state.update_data(update_note_request_id=request_id)
+    await state.set_state(UserFlow.entering_update_note)
+    text = t("ask_update_note", lang)
+    if entry["status"] in {"approved", "scheduled"}:
+        text += "\n\n" + t("update_note_returns_to_review", lang)
+    await answer(cb, text, cancel_kb(lang), "update" if entry["type"] == "update" else "new")
+    await ack(cb)
+
+
+@router.callback_query(F.data.regexp(r"^(?:pendreq|pendupdreq):[^:]+$"))
+@router.callback_query(F.data.regexp(r"^pendupd:(?!(?:delete|delete_confirm|back|submit)$)[^:]+$"))
 async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
-    if not cb.from_user:
-        await cb.answer()
+    if not await _ensure_not_banned(cb, state):
         return
     lang = await get_language(cb, state)
-    request_id = cb.data.split(":", 1)[1]
-    req = get_request_by_callback_token(request_id)
-    if not isinstance(req, dict):
+    entry = get_request_by_callback_token(cb.data.rsplit(":", 1)[-1])
+    if not can_edit_request(entry):
         await cb.answer(t("not_found", lang), show_alert=True)
         return
-    request_id = str(req["id"])
-    if req.get("status") not in _EDITABLE_REQUEST_STATUSES or req.get("type") != "new":
-        await cb.answer(t("not_found", lang), show_alert=True)
-        return
-    payload = req.get("payload", {})
-    if not isinstance(payload, dict) or payload.get("user_id") != cb.from_user.id:
+    payload = entry["payload"]
+    if not cb.from_user or payload.get("user_id") != cb.from_user.id:
         await cb.answer(t("admin_denied", lang), show_alert=True)
         return
-    if (payload.get("submission_type") or payload.get("type")) != "plugin":
-        await cb.answer(t("not_found", lang), show_alert=True)
-        return
 
-    plugin = deepcopy(payload.get("plugin", {})) if isinstance(payload.get("plugin"), dict) else {}
+    is_update = entry.get("type") == "update"
+    fields = ("plugin", "description_ru", "description_en", "usage_ru", "usage_en",
+              "admin_comment", "comment_media", "is_appeal", "appeal_comment",
+              "changelog", "update_slug", "old_plugin", "publish_not_before")
+    old_plugin = payload.get("old_plugin") or {}
+    old_locale = old_plugin.get("ru") or old_plugin.get("en") or {}
     await state.clear()
     await state.update_data(
+        {field: deepcopy(payload[field]) for field in fields if field in payload},
         lang=lang,
-        plugin=plugin,
+        **category_fields(categories_for(payload) or categories_for(old_plugin)),
         pending_request_fingerprint=_request_edit_fingerprint(payload),
-        pending_request_changes=None,
-        description_ru=payload.get("description_ru", ""),
-        description_en=payload.get("description_en", ""),
-        usage_ru=payload.get("usage_ru", ""),
-        usage_en=payload.get("usage_en", ""),
-        **category_fields(payload),
-        publish_not_before=payload.get("publish_not_before"),
-        admin_comment=payload.get("admin_comment", ""),
-        comment_media=payload.get("comment_media", []),
-        is_appeal=payload.get("is_appeal", False),
-        appeal_comment=payload.get("appeal_comment", ""),
-        draft_prefix="pend",
-        pending_request_id=request_id,
-        edit_field=None,
-        edit_lang=None,
+        pending_request_id=str(entry["id"]),
+        draft_prefix="pendupd" if is_update else "pend",
+        old_version=old_locale.get("version") or "",
         draft_message_id=cb.message.message_id if cb.message else None,
     )
-    await state.set_state(UserFlow.confirming_submission)
-    draft_text = _render_draft_text(await state.get_data())
-    await answer(
-        cb,
-        draft_text,
-        draft_edit_kb(
-            "pend",
-            t("btn_save_changes", lang),
-            include_cancel=True,
-            include_checked_on=False,
-            include_delete=True,
-            include_file=True,
-            include_back=True,
-            lang=lang,
-        ),
-        "profile",
-    )
+    await _show_editor(cb, state, "pendupd" if is_update else "pend", lang)
     await ack(cb)
 
 
@@ -1273,21 +1214,8 @@ async def on_profile_delete(cb: CallbackQuery, state: FSMContext) -> None:
         "submission_type": "delete",
     }
 
-    await state.update_data(
-        pending_payload=payload,
-        pending_request_type="delete",
-        pending_reply_key="delete_sent",
-    )
-    await _discard_pending_comment_media_groups(cb)
-    await state.set_state(UserFlow.entering_admin_comment)
-    await state.update_data(
-        pending_comment=None,
-        pending_comment_media=[],
-        comment_required=True,
-        media_required=False,
-    )
-    await answer(cb, t("ask_delete_reason", lang, max=COMMENT_MEDIA_LIMIT),
-                 comment_skip_kb(lang, required=True), "delete")
+    await _ask_request_comment(cb, state, payload, "delete", "delete_sent", "ask_delete_reason", "delete",
+                               comment_required=True, media_required=False)
     await ack(cb)
 
 
@@ -1322,19 +1250,8 @@ async def on_update_file(message: Message, state: FSMContext) -> None:
     old_version = data.get("old_version", "")
     is_admin = message.from_user.id in get_admins_plugins() if message.from_user else False
 
-    if message.document and message.document.file_size:
-        if message.document.file_size > plugin_file_limit(message.document.file_name or ""):
-            await message.answer(t("file_too_large", lang))
-            return
-
-    try:
-        plugin = await process_plugin_file(message.bot, message.document)
-    except ValueError as e:
-        key, _, details = str(e).partition(":")
-        if key == "parse_error" and details:
-            await message.answer(t("parse_error", lang, error=details))
-        else:
-            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
+    plugin = await _read_plugin_document(message, lang)
+    if plugin is None:
         return
 
     new_dict = plugin.to_dict()
@@ -1411,23 +1328,7 @@ async def on_changelog(message: Message, state: FSMContext) -> None:
         edit_field=None,
         edit_lang=None,
     )
-
-    await state.set_state(UserFlow.confirming_update)
-    draft_text = _render_update_text(await state.get_data())
-    sent = await answer(
-        message,
-        draft_text,
-        draft_edit_kb(
-            "upd",
-            t("btn_send_to_admin", lang),
-            include_cancel=True,
-            include_checked_on=False,
-            lang=lang,
-        ),
-        "update",
-    )
-    if sent:
-        await state.update_data(draft_message_id=sent.message_id)
+    await _show_editor(message, state, "upd", lang)
 
 
 @router.callback_query(UserFlow.confirming_update, F.data.regexp(r"^(upd|pendupd):(?:edit:[^:]+|lang:[^:]+:[^:]+|cat:[^:]+|back|submit)$"))
@@ -1449,7 +1350,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         await state.update_data(category_selection=None)
         field = parts[2]
         if field == "file" and prefix == "pendupd":
-            await state.set_state(UserFlow.uploading_pending_update_file)
+            await state.set_state(UserFlow.uploading_pending_file)
             await answer(cb, t("pending_upload_update_plugin", lang), cancel_kb(lang), None)
             await cb.answer()
             return
@@ -1491,28 +1392,8 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
     if action == "cat":
         if not await _choose_categories(cb, state, prefix, lang):
             return
-        if prefix == "pendupd":
-            data = await state.get_data()
-            req_id = str(data.get("pending_request_id") or "")
-            if req_id:
-                await _stage_pending_update_changes(state, req_id)
-
-        await state.set_state(UserFlow.confirming_update)
-        draft_text = _render_update_text(await state.get_data())
-        await answer(
-            cb,
-            draft_text,
-            draft_edit_kb(
-                prefix,
-                (t("btn_send_to_admin", lang) if prefix == "upd" else t("btn_save_changes", lang)),
-                include_cancel=True,
-                include_checked_on=False,
-                include_delete=(prefix == "pendupd"),
-                include_file=(prefix == "pendupd"),
-                lang=lang,
-            ),
-            "update",
-        )
+        await _save_editor_change(state, cb.from_user, prefix)
+        await _show_editor(cb, state, prefix, lang)
         await cb.answer()
         return
 
@@ -1521,22 +1402,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         if data.get("category_selection") and not await _category_picker_valid(cb, state, prefix, lang):
             return
         await state.update_data(category_selection=None, edit_field=None)
-        await state.set_state(UserFlow.confirming_update)
-        draft_text = _render_update_text(await state.get_data())
-        await answer(
-            cb,
-            draft_text,
-            draft_edit_kb(
-                prefix,
-                (t("btn_send_to_admin", lang) if prefix == "upd" else t("btn_save_changes", lang)),
-                include_cancel=True,
-                include_checked_on=False,
-                include_delete=(prefix == "pendupd"),
-                include_file=(prefix == "pendupd"),
-                lang=lang,
-            ),
-            "update",
-        )
+        await _show_editor(cb, state, prefix, lang)
         await cb.answer()
         return
 
@@ -1551,11 +1417,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             if not req_id:
                 await cb.answer(t("not_found", lang), show_alert=True)
                 return
-            await _stage_pending_update_changes(state, req_id)
-            await state.update_data(update_note_request_id=req_id)
-            await state.set_state(UserFlow.entering_update_note)
-            await answer(cb, t("ask_update_note", lang), cancel_kb(lang), "update")
-            await ack(cb)
+            await _ask_request_update_note(cb, state, req_id, lang)
             return
 
         data = await state.get_data()
@@ -1575,36 +1437,21 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             "submission_type": "update",
         }
 
-        await state.update_data(
-            pending_payload=payload,
-            pending_request_type="update",
-            pending_reply_key="update_sent",
-        )
-        await _discard_pending_comment_media_groups(cb)
-        await state.set_state(UserFlow.entering_admin_comment)
-        await state.update_data(
-            pending_comment=None,
-            pending_comment_media=[],
-            comment_required=False,
-            media_required=True,
-        )
-        await answer(
-            cb,
-            t("ask_update_example", lang, max=COMMENT_MEDIA_LIMIT),
-            comment_skip_kb(lang, required=True),
-            "update",
-        )
+        await _ask_request_comment(cb, state, payload, "update", "update_sent", "ask_update_example", "update",
+                                   comment_required=False, media_required=True)
         await cb.answer()
         return
 
     await ack(cb)
 
 
+@router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete")
 @router.callback_query(UserFlow.confirming_submission, F.data == "pend:delete")
 async def on_pending_delete(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     request_id = str((await state.get_data()).get("pending_request_id") or "")
-    if not _editable_own_request(request_id, cb.from_user.id if cb.from_user else None):
+    entry = _editable_own_request(request_id, cb.from_user.id if cb.from_user else None)
+    if not entry or entry.get("status") not in _WITHDRAWABLE_REQUEST_STATUSES:
         await cb.answer(t("resubmit_expired", lang), show_alert=True)
         return
     await state.update_data(withdraw_confirmation_request_id=request_id)
@@ -1612,7 +1459,7 @@ async def on_pending_delete(cb: CallbackQuery, state: FSMContext) -> None:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=t("btn_confirm", lang), callback_data=f"usr:withdraw_confirm:{request_callback_token(request_id)}"),
-                InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="pend:back"),
+                InlineKeyboardButton(text=t("btn_cancel", lang), callback_data=cb.data.replace(":delete", ":back")),
             ]
         ]
     )
@@ -1620,6 +1467,7 @@ async def on_pending_delete(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
+@router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete_confirm")
 @router.callback_query(UserFlow.confirming_submission, F.data == "pend:delete_confirm")
 async def on_pending_delete_confirm(cb: CallbackQuery, state: FSMContext) -> None:
     await _withdraw_own_request(cb, state)
@@ -1630,7 +1478,7 @@ async def _withdraw_own_request(cb: CallbackQuery, state: FSMContext, request_id
     data = await state.get_data()
     req_id = str(request_id or data.get("withdraw_confirmation_request_id") or "").strip()
     entry = _editable_own_request(req_id, cb.from_user.id if cb.from_user else None)
-    if not entry:
+    if not entry or entry.get("status") not in _WITHDRAWABLE_REQUEST_STATUSES:
         await cb.answer(t("resubmit_expired", lang), show_alert=True)
         return
     if not acquire_request_lock(req_id):
@@ -1638,7 +1486,7 @@ async def _withdraw_own_request(cb: CallbackQuery, state: FSMContext, request_id
         return
     previous = deepcopy(entry)
     try:
-        if not delete_request_and_file(req_id):
+        if not delete_request(req_id):
             await cb.answer(t("not_found", lang), show_alert=True)
             return
         from core.storage import flush_documents
@@ -1670,31 +1518,6 @@ async def _cleanup_withdrawn_request(bot, entry: dict, actor: str) -> None:
                          exc_info=(type(result), result, result.__traceback__))
 
 
-@router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete")
-async def on_pending_update_delete(cb: CallbackQuery, state: FSMContext) -> None:
-    lang = await get_language(cb, state)
-    request_id = str((await state.get_data()).get("pending_request_id") or "")
-    if not _editable_own_request(request_id, cb.from_user.id if cb.from_user else None):
-        await cb.answer(t("resubmit_expired", lang), show_alert=True)
-        return
-    await state.update_data(withdraw_confirmation_request_id=request_id)
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=t("btn_confirm", lang), callback_data=f"usr:withdraw_confirm:{request_callback_token(request_id)}"),
-                InlineKeyboardButton(text=t("btn_cancel", lang), callback_data="pendupd:back"),
-            ]
-        ]
-    )
-    await answer(cb, t("pending_delete_confirm", lang), kb, None)
-    await ack(cb)
-
-
-@router.callback_query(UserFlow.confirming_update, F.data == "pendupd:delete_confirm")
-async def on_pending_update_delete_confirm(cb: CallbackQuery, state: FSMContext) -> None:
-    await _withdraw_own_request(cb, state)
-
-
 @router.callback_query(F.data.startswith("usr:withdraw_confirm:"))
 async def on_scoped_request_withdraw(cb: CallbackQuery, state: FSMContext) -> None:
     entry = get_request_by_callback_token(cb.data.split(":")[2])
@@ -1702,94 +1525,6 @@ async def on_scoped_request_withdraw(cb: CallbackQuery, state: FSMContext) -> No
         await cb.answer(t("resubmit_expired", await get_language(cb, state)), show_alert=True)
         return
     await _withdraw_own_request(cb, state, str(entry["id"]))
-
-
-@router.message(UserFlow.uploading_pending_update_file, F.document)
-async def on_pending_update_file(message: Message, state: FSMContext) -> None:
-    if not await _ensure_not_banned(message, state):
-        return
-    lang = await get_language(message, state)
-    data = await state.get_data()
-    req_id = str(data.get("pending_request_id") or "").strip()
-    if not req_id:
-        await state.set_state(UserFlow.idle)
-        await message.answer(t("not_found", lang))
-        return
-
-    entry = _editable_own_request(req_id, message.from_user.id if message.from_user else None)
-    if not entry:
-        await message.answer(t("resubmit_expired", lang))
-        return
-    existing = data.get("plugin", {})
-    expected_id = (existing.get("id") or "").strip()
-    old_plugin = data.get("old_plugin", {})
-    old_version = data.get("old_version", "")
-
-    if message.document and message.document.file_size:
-        if message.document.file_size > plugin_file_limit(message.document.file_name or ""):
-            await message.answer(t("file_too_large", lang))
-            return
-
-    try:
-        plugin = await process_plugin_file(message.bot, message.document)
-    except ValueError as e:
-        key, _, details = str(e).partition(":")
-        if key == "parse_error" and details:
-            await message.answer(t("parse_error", lang, error=details))
-        else:
-            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
-        return
-
-    new_plugin = plugin.to_dict()
-    if expected_id and (new_plugin.get("id") or "").strip() != expected_id:
-        await message.answer(t("pending_file_id_mismatch", lang))
-        return
-
-    is_valid, error = validate_update_submission(new_plugin, old_plugin)
-    if not is_valid:
-        await message.answer(_submission_error_text(
-            error, lang, old_version=old_version or "", plugin_min=new_plugin.get("min_version") or "",
-        ))
-        return
-
-    merged = {
-        **new_plugin,
-        "id": expected_id or new_plugin.get("id"),
-        "name": new_plugin.get("name") or existing.get("name"),
-        "author": new_plugin.get("author") or existing.get("author"),
-        "description": new_plugin.get("description") or existing.get("description"),
-        "min_version": new_plugin.get("min_version") or existing.get("min_version"),
-        "has_ui_settings": new_plugin.get("has_ui_settings", existing.get("has_ui_settings")),
-    }
-
-    fields = category_fields(categories_for(data) or categories_for(new_plugin))
-    merged["categories"] = fields["category_keys"]
-    await state.update_data(plugin=merged, **fields)
-    await _stage_pending_update_changes(state, req_id)
-
-    await state.set_state(UserFlow.confirming_update)
-    draft_text = _render_update_text(await state.get_data())
-    await answer(
-        message,
-        draft_text,
-        draft_edit_kb(
-            "pendupd",
-            t("btn_save_changes", lang),
-            include_cancel=True,
-            include_checked_on=False,
-            include_delete=True,
-            include_file=True,
-            include_back=True,
-            lang=lang,
-        ),
-        "update",
-    )
-
-
-@router.message(UserFlow.uploading_pending_update_file)
-async def on_pending_update_file_invalid(message: Message, state: FSMContext) -> None:
-    lang = await get_language(message, state)
-    await message.answer(t("invalid_file", lang))
 
 
 @router.message(UserFlow.uploading_file, F.document)
@@ -1801,19 +1536,8 @@ async def on_file(message: Message, state: FSMContext) -> None:
     spawn_background(try_react_pray(message))
     await state.update_data(author_message_id=message.message_id)
 
-    if message.document and message.document.file_size:
-        if message.document.file_size > plugin_file_limit(message.document.file_name or ""):
-            await message.answer(t("file_too_large", lang))
-            return
-
-    try:
-        plugin = await process_plugin_file(message.bot, message.document)
-    except ValueError as e:
-        key, _, details = str(e).partition(":")
-        if key == "parse_error" and details:
-            await message.answer(t("parse_error", lang, error=details))
-        else:
-            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
+    plugin = await _read_plugin_document(message, lang)
+    if plugin is None:
         return
 
     new_dict = plugin.to_dict()
@@ -1997,23 +1721,8 @@ async def on_category_select(cb: CallbackQuery, state: FSMContext) -> None:
         return
     if not await _choose_categories(cb, state, "submit", lang):
         return
-    await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
-    await state.set_state(UserFlow.confirming_submission)
-
-    draft_text = _render_draft_text(await state.get_data())
-    await state.update_data(draft_message_id=cb.message.message_id if cb.message else None)
-    await answer(
-        cb,
-        draft_text,
-        draft_edit_kb(
-            "draft",
-            t("btn_send_to_admin", lang),
-            include_cancel=True,
-            include_checked_on=False,
-            lang=lang,
-        ),
-        "new",
-    )
+    await _save_editor_change(state, cb.from_user, "draft")
+    await _show_editor(cb, state, "draft", lang)
     await ack(cb)
 
 
@@ -2086,31 +1795,9 @@ async def on_draft_not_before_value(message: Message, state: FSMContext) -> None
         return
 
     await state.update_data(publish_not_before=local_dt.astimezone(timezone.utc).isoformat())
-    data = await state.get_data()
-    prefix = str(data.get("draft_prefix") or "draft")
-    if prefix == "pend":
-        req_id = str(data.get("pending_request_id") or "")
-        if req_id:
-            await _stage_pending_plugin_changes(state, req_id)
-    else:
-        await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
-
-    await state.set_state(UserFlow.confirming_submission)
-    draft_text = _render_draft_text(await state.get_data())
-    await answer(
-        message,
-        draft_text,
-        draft_edit_kb(
-            prefix,
-            (t("btn_send_to_admin", lang) if prefix != "pend" else t("btn_save_changes", lang)),
-            include_cancel=True,
-            include_checked_on=False,
-            include_delete=(prefix == "pend"),
-            include_file=(prefix == "pend"),
-            lang=lang,
-        ),
-        "new",
-    )
+    prefix = "pend" if (await state.get_data()).get("draft_prefix") == "pend" else "draft"
+    await _save_editor_change(state, message.from_user, prefix)
+    await _show_editor(message, state, prefix, lang)
     await message.answer(t("publish_not_before_saved", lang), parse_mode=ParseMode.HTML)
 
 
@@ -2135,31 +1822,8 @@ async def on_draft_category(cb: CallbackQuery, state: FSMContext) -> None:
     prefix = cb.data.split(":", 2)[0]
     if not await _choose_categories(cb, state, prefix, lang):
         return
-    if prefix == "draft":
-        await _sync_submission_draft(state, cb.from_user.id, cb.from_user.username or "", "plugin")
-    else:
-        data = await state.get_data()
-        req_id = str(data.get("pending_request_id") or "")
-        if req_id:
-            await _stage_pending_plugin_changes(state, req_id)
-
-    await state.set_state(UserFlow.confirming_submission)
-    draft_text = _render_draft_text(await state.get_data())
-    await state.update_data(draft_message_id=cb.message.message_id if cb.message else None)
-    await answer(
-        cb,
-        draft_text,
-        draft_edit_kb(
-            prefix,
-            (t("btn_send_to_admin", lang) if prefix == "draft" else t("btn_save_changes", lang)),
-            include_cancel=True,
-            include_checked_on=False,
-            include_delete=(prefix == "pend"),
-            include_file=(prefix == "pend"),
-            lang=lang,
-        ),
-        "new",
-    )
+    await _save_editor_change(state, cb.from_user, prefix)
+    await _show_editor(cb, state, prefix, lang)
     await ack(cb)
 
 
@@ -2171,22 +1835,7 @@ async def on_draft_back(cb: CallbackQuery, state: FSMContext) -> None:
     if data.get("category_selection") and not await _category_picker_valid(cb, state, prefix, lang):
         return
     await state.update_data(category_selection=None, edit_field=None)
-    await state.set_state(UserFlow.confirming_submission)
-    draft_text = _render_draft_text(await state.get_data())
-    await answer(
-        cb,
-        draft_text,
-        draft_edit_kb(
-            prefix,
-            (t("btn_send_to_admin", lang) if prefix == "draft" else t("btn_save_changes", lang)),
-            include_cancel=True,
-            include_checked_on=False,
-            include_delete=(prefix == "pend"),
-            include_file=(prefix == "pend"),
-            lang=lang,
-        ),
-        "new",
-    )
+    await _show_editor(cb, state, prefix, lang)
     await ack(cb)
 
 
@@ -2231,71 +1880,8 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
         await state.update_data(plugin=plugin)
 
     await state.update_data(edit_field=None, edit_lang=None)
-    if prefix == "draft":
-        await _sync_submission_draft(state, message.from_user.id, message.from_user.username or "", "plugin")
-        await state.set_state(UserFlow.confirming_submission)
-        draft_text = _render_draft_text(await state.get_data())
-    elif prefix == "pend":
-        data = await state.get_data()
-        req_id = str(data.get("pending_request_id") or "")
-        if req_id:
-            await _stage_pending_plugin_changes(state, req_id)
-        await state.set_state(UserFlow.confirming_submission)
-        draft_text = _render_draft_text(await state.get_data())
-    else:
-        await state.set_state(UserFlow.confirming_update)
-        draft_text = _render_update_text(await state.get_data())
-
-    data = await state.get_data()
-    draft_message_id = data.get("draft_message_id")
-    if draft_message_id:
-        try:
-            await message.bot.edit_message_text(
-                draft_text,
-                chat_id=message.chat.id,
-                message_id=draft_message_id,
-                parse_mode=ParseMode.HTML,
-                reply_markup=draft_edit_kb(
-                    prefix,
-                    (t("btn_send_to_admin", lang) if prefix != "pend" else t("btn_save_changes", lang)),
-                    include_cancel=True,
-                    include_checked_on=False,
-                    include_delete=(prefix in {"pend", "pendupd"}),
-                    include_file=(prefix in {"pend", "pendupd"}),
-                    lang=lang,
-                ),
-                disable_web_page_preview=True,
-            )
-        except Exception:
-            await answer(
-                message,
-                draft_text,
-                draft_edit_kb(
-                    prefix,
-                    (t("btn_send_to_admin", lang) if prefix != "pend" else t("btn_save_changes", lang)),
-                    include_cancel=True,
-                    include_checked_on=False,
-                    include_delete=(prefix in {"pend", "pendupd"}),
-                    include_file=(prefix in {"pend", "pendupd"}),
-                    lang=lang,
-                ),
-                "new",
-            )
-    else:
-        await answer(
-            message,
-            draft_text,
-            draft_edit_kb(
-                prefix,
-                (t("btn_send_to_admin", lang) if prefix != "pend" else t("btn_save_changes", lang)),
-                include_cancel=True,
-                include_checked_on=False,
-                include_delete=(prefix in {"pend", "pendupd"}),
-                include_file=(prefix in {"pend", "pendupd"}),
-                lang=lang,
-            ),
-            "new",
-        )
+    await _save_editor_change(state, message.from_user, prefix)
+    await _show_editor(message, state, prefix, lang, edit_message_id=(await state.get_data()).get("draft_message_id"))
 
 
 @router.message(UserFlow.uploading_pending_file, F.document)
@@ -2317,29 +1903,16 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
     existing = data.get("plugin", {})
     expected_id = (existing.get("id") or "").strip()
 
-    if message.document and message.document.file_size:
-        if message.document.file_size > plugin_file_limit(message.document.file_name or ""):
-            await message.answer(t("file_too_large", lang))
-            return
-
-    try:
-        plugin = await process_plugin_file(message.bot, message.document)
-    except ValueError as e:
-        key, _, details = str(e).partition(":")
-        if key == "parse_error" and details:
-            await message.answer(t("parse_error", lang, error=details))
-        else:
-            await message.answer(t(key, lang) if key in TEXTS else t("parse_error", lang, error=str(e)))
+    plugin = await _read_plugin_document(message, lang)
+    if plugin is None:
         return
 
     new_plugin = plugin.to_dict()
-    if expected_id and (new_plugin.get("id") or "").strip() != expected_id:
-        await message.answer(t("pending_file_id_mismatch", lang))
-        return
-
     valid, error = validate_request_replacement(entry, new_plugin)
     if not valid:
-        await message.answer(_submission_error_text(error, lang, plugin_min=new_plugin.get("min_version") or ""))
+        await message.answer(_submission_error_text(
+            error, lang, old_version=data.get("old_version") or "", plugin_min=new_plugin.get("min_version") or "",
+        ))
         return
 
     merged = {
@@ -2355,25 +1928,9 @@ async def on_pending_file(message: Message, state: FSMContext) -> None:
     fields = category_fields(categories_for(data) or categories_for(new_plugin))
     merged["categories"] = fields["category_keys"]
     await state.update_data(plugin=merged, **fields)
-    await _stage_pending_plugin_changes(state, req_id)
+    await _stage_pending_changes(state)
 
-    await state.set_state(UserFlow.confirming_submission)
-    draft_text = _render_draft_text(await state.get_data())
-    await answer(
-        message,
-        draft_text,
-        draft_edit_kb(
-            "pend",
-            t("btn_save_changes", lang),
-            include_cancel=True,
-            include_checked_on=False,
-            include_delete=True,
-            include_file=True,
-            include_back=True,
-            lang=lang,
-        ),
-        "profile",
-    )
+    await _show_editor(message, state, "pendupd" if entry.get("type") == "update" else "pend", lang)
 
 
 @router.message(UserFlow.uploading_pending_file)
@@ -2399,11 +1956,7 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         if not req_id:
             await cb.answer(t("not_found", lang), show_alert=True)
             return
-        await _stage_pending_plugin_changes(state, req_id)
-        await state.update_data(update_note_request_id=req_id)
-        await state.set_state(UserFlow.entering_update_note)
-        await answer(cb, t("ask_update_note", lang), cancel_kb(lang), "new")
-        await ack(cb)
+        await _ask_request_update_note(cb, state, req_id, lang)
         return
 
     data = await state.get_data()
@@ -2447,31 +2000,13 @@ async def on_draft_submit(cb: CallbackQuery, state: FSMContext) -> None:
         data.get("usage_ru", ""),
         data.get("usage_en", ""),
         data.get("category_keys") or categories_for(data),
-        category_fields(data)["category_label"],
     )
     payload.update(category_fields(data))
     if data.get("publish_not_before"):
         payload["publish_not_before"] = data.get("publish_not_before")
 
-    await state.update_data(
-        pending_payload=payload,
-        pending_request_type="new",
-        pending_reply_key="submission_sent",
-    )
-    await _discard_pending_comment_media_groups(cb)
-    await state.set_state(UserFlow.entering_admin_comment)
-    await state.update_data(
-        pending_comment=None,
-        pending_comment_media=[],
-        comment_required=False,
-        media_required=True,
-    )
-    await answer(
-        cb,
-        t("ask_submission_example", lang, max=COMMENT_MEDIA_LIMIT),
-        comment_skip_kb(lang, required=True),
-        "new",
-    )
+    await _ask_request_comment(cb, state, payload, "new", "submission_sent", "ask_submission_example", "new",
+                               comment_required=False, media_required=True)
     await ack(cb)
 
 
@@ -2782,9 +2317,6 @@ async def _finalize_submission(
                 old_plugin = keep_payload.get("plugin", {}) if isinstance(keep_payload.get("plugin"), dict) else {}
                 new_plugin = payload.get("plugin", {}) if isinstance(payload.get("plugin"), dict) else {}
 
-                old_path = str(old_plugin.get("file_path") or "").strip()
-                new_path = str(new_plugin.get("file_path") or "").strip()
-
                 merged_plugin = {**old_plugin, **new_plugin}
                 merged_payload = {
                     **keep_payload,
@@ -2801,16 +2333,10 @@ async def _finalize_submission(
                 if keep_id:
                     update_request_payload(str(keep_id), merged_payload)
 
-                    if new_path and old_path and old_path != new_path:
-                        try:
-                            Path(old_path).unlink(missing_ok=True)
-                        except Exception:
-                            pass
-
                     for extra in existing_updates[1:]:
                         extra_id = str(extra.get("id") or "").strip()
                         if extra_id:
-                            delete_request_and_file(extra_id)
+                            delete_request(extra_id)
 
                     entry = get_request_by_id(str(keep_id)) or keep
                     spawn_background(notify_admins_request(target.bot, entry))
@@ -2853,77 +2379,13 @@ async def _finalize_submission(
 
 async def notify_admins_request(bot, entry: Dict[str, Any]) -> None:
     payload = entry.get("payload", {})
-    plugin = payload.get("plugin", {})
-    icon = payload.get("icon", {})
-    user_id = payload.get("user_id", 0)
-    username = payload.get("username", "")
-    is_auto_update = bool(payload.get("is_auto_update")) or (str(username).strip() == "auto_updates" and str(user_id) == "0")
-    request_type = entry.get("type", "new")
-    admin_comment = payload.get("admin_comment")
     submission_type = _submission_type(payload)
     request_id = entry.get("id", "?")
-
-    user_link = user_mention(user_id, username)
-    file_path = plugin.get("file_path") or icon.get("file_path")
+    text, file_path = forum_request_text_and_file(entry)
     logger.info(
         "event=submission.notify_forum.start request_id=%s request_type=%s submission_type=%s item=%s",
-        request_id,
-        request_type,
-        submission_type,
-        _submission_name(payload, submission_type),
+        request_id, entry.get("type", "new"), submission_type, _submission_name(payload, submission_type),
     )
-
-    if request_type == "update":
-        changelog = strip_blockquote_tags(telegram_html(payload.get("changelog"))) or "—"
-        old_plugin = payload.get("old_plugin", {})
-        old_locale = old_plugin.get("ru") or old_plugin.get("en") or {}
-        old_version = old_locale.get("version") or "?"
-        text = t(
-            "admin_request_update",
-            "ru",
-            id=entry["id"],
-            name=plain_html(plugin.get("name", "—")),
-            old_version=plain_html(old_version),
-            version=plain_html(plugin.get("version", "—")),
-            min_version=plain_html(plugin.get("min_version", "—")),
-            changelog=changelog,
-            user=user_link,
-        )
-        if is_auto_update:
-            text = text.rsplit("\n\n<b>От:</b>", 1)[0]
-    elif request_type == "delete":
-        delete_slug = payload.get("delete_slug") or plugin.get("id") or "—"
-        text = t(
-            "admin_request_delete",
-            "ru",
-            id=entry["id"],
-            name=plain_html(plugin.get("name", "—")),
-            slug=plain_html(delete_slug),
-            user=user_link,
-        )
-    elif submission_type == "icon":
-        text = t(
-            "admin_request_icon",
-            "ru",
-            id=entry["id"],
-            name=plain_html(icon.get("name", "—")),
-            author=plain_html(icon.get("author", "—")),
-            version=plain_html(icon.get("version", "—")),
-            count=plain_html(icon.get("count", 0)),
-            user=user_link,
-        )
-    else:
-        draft_text = build_channel_post(entry)
-        text = t(
-            "admin_request_plugin",
-            "ru",
-            id=entry["id"],
-            draft=draft_text,
-            user=user_link,
-        )
-
-    if admin_comment:
-        text += "\n\n" + t("admin_request_comment", "ru", comment=strip_blockquote_tags(telegram_html(admin_comment)))
 
     try:
         await send_request_to_forum(bot, entry, text, file_path)
@@ -2998,14 +2460,8 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
 
     data = await state.get_data()
     req_id = str(data.get("update_note_request_id") or "")
-    entry = get_request_by_id(req_id) if req_id else None
-    if (
-        not entry
-        or not message.from_user
-        or entry.get("status") not in _EDITABLE_REQUEST_STATUSES
-        or entry.get("type") not in {"new", "update"}
-        or entry.get("payload", {}).get("user_id") != (message.from_user.id if message.from_user else None)
-    ):
+    entry = _editable_own_request(req_id, message.from_user.id if message.from_user else None)
+    if not entry:
         await state.set_state(UserFlow.idle)
         await message.answer(t("resubmit_expired", lang))
         return
@@ -3042,7 +2498,7 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
             return
         if changed and str(path) == str((payload.get("plugin") or {}).get("file_path") or ""):
             replacement = path.with_name(f"edit-{uuid4().hex}.{plugin_extension(path)}")
-            await asyncio.to_thread(shutil.copyfile, path, replacement)
+            await asyncio.to_thread(os.link, path, replacement)
             plugin["file_path"] = str(replacement)
             plugin["file_id"] = None
         await prepare_submission_categories(candidate)
@@ -3050,10 +2506,10 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
         if not current or (baseline and baseline != _request_edit_fingerprint(current.get("payload") or {})):
             await message.answer(t("pending_request_changed", lang))
             return
-        from bot.services.moderation import archive_votes_for_rework
+        from bot.services.moderation import reset_vote_round_fields
 
-        if changed or entry.get("status") == "rework":
-            archive_votes_for_rework(req_id, after_rework=entry.get("status") == "rework")
+        previous_status = current["status"]
+        actor = "@" + message.from_user.username if message.from_user.username else str(message.from_user.id)
         updates = deepcopy(data.get("pending_request_changes") or {})
         updates.update({
             "plugin": candidate["plugin"], **category_fields(candidate),
@@ -3061,24 +2517,28 @@ async def on_update_note(message: Message, state: FSMContext) -> None:
             "moderation_file_id": None, "moderation_file_name": None,
             "moderation_pending_votes": {},
         })
-        update_request_payload(req_id, updates)
-        if entry.get("status") == "rework":
-            update_request_status(req_id, "pending", comment=note,
-                                  actor="@" + message.from_user.username if message.from_user.username else str(message.from_user.id),
-                                  actor_id=message.from_user.id)
+        if changed or previous_status == "rework":
+            updates.update(reset_vote_round_fields(current["payload"], after_rework=previous_status == "rework"))
+        if previous_status != "pending":
+            updates.update(dict.fromkeys((
+                "scheduled_at", "publish_retry_at", "approved_at", "approved_by", "approved_by_id", "approval_notified_for",
+                "approval_notification_progress", "approval_notification_retry_at", "last_publish_error", "last_publish_error_at",
+            )))
+            update_request_status(req_id, "pending", comment=note, actor=actor,
+                                  actor_id=message.from_user.id, payload_fields=updates)
+        else:
+            update_request_payload(req_id, updates)
         from core.storage import flush_documents
         from bot.services.audit import add_audit_event
 
-        add_audit_event("moderation.request_updated", actor_id=message.from_user.id,
-                        actor="@" + message.from_user.username if message.from_user.username else str(message.from_user.id),
-                        request_id=req_id, details={"note": note})
+        add_audit_event("moderation.request_updated", actor_id=message.from_user.id, actor=actor,
+                        request_id=req_id, details={"comment": note, "previous_status": previous_status})
         await flush_documents("requests")
+        delivered = await _notify_admins_request_updated(message.bot, current)
     finally:
         release_request_lock(req_id)
-    entry = get_request_by_id(req_id) or entry
     await state.update_data(update_note_request_id=None, pending_request_changes=None, pending_request_fingerprint=None)
     await state.set_state(UserFlow.idle)
-    delivered = await _notify_admins_request_updated(message.bot, entry, note)
     await message.answer(t("update_note_saved" if delivered else "update_note_delivery_failed", lang), parse_mode=ParseMode.HTML)
 
 

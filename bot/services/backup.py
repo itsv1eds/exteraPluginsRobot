@@ -77,39 +77,70 @@ def _include_upload(path: Path, relative: Path) -> bool:
     return path.resolve() not in excluded
 
 
-def create_backup_zip() -> Path:
+def create_backup_zip(include_uploads: bool = False) -> Path:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     tmp_dir = Path(tempfile.mkdtemp(prefix="dbbackup_"))
     try:
-        return _build_backup_zip(tmp_dir, ts)
+        return _build_backup_zip(tmp_dir, ts, include_uploads)
     except Exception:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         raise
 
 
-def _build_backup_zip(tmp_dir: Path, ts: str) -> Path:
+def _build_backup_zip(tmp_dir: Path, ts: str, include_uploads: bool) -> Path:
     snapshots = snapshot_databases(tmp_dir)
+    from core.archive_log import snapshot_archive
+
+    journal = snapshot_archive(tmp_dir / "archive.sqlite3")
+    if journal is not None:
+        snapshots[journal.name] = journal
+    from core.request_history import snapshot as snapshot_history
+
+    history = snapshot_history(tmp_dir / "history.sqlite3")
+    if history is not None:
+        snapshots[history.name] = history
+    from core.audit_store import snapshot as snapshot_audit
+
+    audit_copy = snapshot_audit(tmp_dir / "audit.sqlite3")
+    if audit_copy is not None:
+        snapshots[audit_copy.name] = audit_copy
 
     zip_path = tmp_dir / f"storage_backup_{ts}.zip"
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for name, snapshot in snapshots.items():
             zf.write(snapshot, arcname=name)
-        try:
-            from bot.helpers import get_uploads_dir
-            uploads_dir = get_uploads_dir()
-            if uploads_dir.exists():
-                for f in sorted(uploads_dir.rglob("*")):
-                    if f.is_file() and not f.is_symlink():
-                        relative = f.relative_to(uploads_dir)
-                        if _include_upload(f, relative):
-                            zf.write(f, arcname=str(Path("uploads") / relative))
-        except Exception as exc:
-            raise RuntimeError("Unable to include uploads in backup") from exc
+        if include_uploads:
+            try:
+                from bot.helpers import get_uploads_dir
+                uploads_dir = get_uploads_dir()
+                if uploads_dir.exists():
+                    for f in sorted(uploads_dir.rglob("*")):
+                        if f.is_file() and not f.is_symlink():
+                            relative = f.relative_to(uploads_dir)
+                            if _include_upload(f, relative):
+                                zf.write(f, arcname=str(Path("uploads") / relative))
+            except Exception as exc:
+                raise RuntimeError("Unable to include uploads in backup") from exc
 
     os.chmod(zip_path, 0o600)
     for snapshot in snapshots.values():
         snapshot.unlink(missing_ok=True)
     return zip_path
+
+
+async def _send_backup_file(bot, chat_id: int, zip_path: Path, caption: str) -> None:
+    from aiogram.types import FSInputFile
+    from bot import limits
+
+    if zip_path.stat().st_size <= limits.BOT_UPLOAD_BYTES:
+        await bot.send_document(chat_id, FSInputFile(zip_path), caption=caption)
+        return
+    from bot.services.bot_mtproto import get_file_client
+    from bot.services.plugin_files import _file_entity
+
+    client = await get_file_client()
+    entity = await _file_entity(client, bot, chat_id)
+    await asyncio.wait_for(client.send_file(entity, str(zip_path), caption=caption, force_document=True), timeout=1800)
 
 
 def _cleanup(zip_path: Path) -> None:
@@ -118,8 +149,6 @@ def _cleanup(zip_path: Path) -> None:
 
 
 async def send_backup(bot, chat_id: int) -> bool:
-    from aiogram.types import FSInputFile
-
     try:
         await flush_all()
         zip_path = await asyncio.to_thread(create_backup_zip)
@@ -128,7 +157,7 @@ async def send_backup(bot, chat_id: int) -> bool:
         return False
     try:
         caption = datetime.now(timezone.utc).strftime("Backup %Y-%m-%d %H:%M UTC")
-        await bot.send_document(chat_id, FSInputFile(str(zip_path)), caption=caption)
+        await _send_backup_file(bot, chat_id, zip_path, caption)
         return True
     except Exception:
         logger.exception("event=backup.send_failed chat_id=%s", chat_id)
@@ -146,12 +175,10 @@ async def send_backup_to_admins(bot) -> int:
     except Exception:
         logger.exception("event=backup.create_failed")
         return 0
-    from aiogram.types import FSInputFile
-
     caption = datetime.now(timezone.utc).strftime("Backup %Y-%m-%d %H:%M UTC")
     for admin_id in get_backup_recipients():
         try:
-            await bot.send_document(admin_id, FSInputFile(str(zip_path)), caption=caption)
+            await _send_backup_file(bot, admin_id, zip_path, caption)
             sent += 1
         except Exception:
             logger.exception("event=backup.send_failed admin=%s", admin_id)

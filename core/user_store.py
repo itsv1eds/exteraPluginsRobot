@@ -2,10 +2,9 @@ import asyncio
 import logging
 import re
 import time
-from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
-from core.storage import load_users, save_users
+from core.storage import flush_documents, load_users, save_users
 
 _users_cache: Dict[str, Dict[str, Any]] = {}
 _cache_loaded: bool = False
@@ -91,10 +90,9 @@ async def _schedule_save() -> None:
         if not _dirty:
             return
         _last_save = time.time()
-        data = {"users": deepcopy(_users_cache)}
-        await asyncio.to_thread(_save_to_storage_sync, data)
-        if _users_cache == data["users"]:
-            _dirty = False
+        _dirty = False
+        _save_to_storage_sync({"users": _users_cache})
+        await flush_documents("users")
 
 
 def _ensure_loaded_sync() -> None:
@@ -265,7 +263,6 @@ async def flush_user_store() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     if _dirty or _users_cache:
-        data = {"users": deepcopy(_users_cache)}
-        await asyncio.to_thread(_save_to_storage_sync, data)
-        if _users_cache == data["users"]:
-            _dirty = False
+        _dirty = False
+        _save_to_storage_sync({"users": _users_cache})
+        await flush_documents("users")

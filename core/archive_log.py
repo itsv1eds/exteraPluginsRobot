@@ -67,6 +67,8 @@ def connection():
                         PRIMARY KEY (channel_id, request_id)
                     );
                 """)
+                if "source" not in {row[1] for row in conn.execute("PRAGMA table_info(media)")}:
+                    conn.execute("ALTER TABLE media ADD COLUMN source TEXT")
             _ready_path = path
     with closing(sqlite3.connect(path, timeout=15)) as conn, conn:
         yield conn
@@ -178,13 +180,14 @@ def retry_file(file_id, now):
 
 
 def record_media(rows):
+    rows = [tuple(row) + (None,) * (5 - len(row)) for row in rows]
     with connection() as conn:
-        conn.executemany("INSERT OR IGNORE INTO media (file_id, kind, filename, size) VALUES (?,?,?,?)", rows)
+        conn.executemany("INSERT OR IGNORE INTO media (file_id, kind, filename, size, source) VALUES (?,?,?,?,?)", rows)
 
 
 def next_media(now):
     with connection() as conn:
-        return conn.execute("SELECT id, file_id, kind, path FROM media WHERE kind<>'sticker' AND (path IS NULL OR path NOT LIKE 'channel:%') AND retry_at<=? ORDER BY id LIMIT 1", (now,)).fetchone()
+        return conn.execute("SELECT id, file_id, kind, path, source FROM media WHERE kind<>'sticker' AND (path IS NULL OR path NOT LIKE 'channel:%') AND retry_at<=? ORDER BY id LIMIT 1", (now,)).fetchone()
 
 
 def update_media(media_id, path=None, retry_at=0):

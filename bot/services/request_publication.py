@@ -19,7 +19,7 @@ from bot.services.admin_notifications import finalize_admin_notify_messages, is_
 from bot.services.audit import add_audit_event
 from bot.services.example_media import schedule_example_media
 from bot.services.moderation import delete_forum_request_message, with_author_vote_summary
-from bot.services.publish import publish_icon, publish_plugin, remove_plugin_entry, update_plugin
+from bot.services.publish import publish_plugin, remove_plugin_entry, update_plugin
 from bot.texts import t
 from core.catalog import find_plugin_by_slug
 from core.categories import categories_for
@@ -257,8 +257,7 @@ async def publish_request(bot, entry: dict, actor: str, actor_id: int | None = N
         await flush_documents("requests")
         notify_key = "notify_deleted"
     elif is_icon:
-        result = await publish_icon(entry, actor=actor, actor_id=actor_id)
-        notify_key = "notify_icon_published"
+        raise ValueError("Icon packs are added to the catalog from the super admin panel")
     else:
         result = await publish_plugin(entry, bot, actor=actor, actor_id=actor_id)
         notify_key = "notify_published"

@@ -93,7 +93,7 @@ def _time(value):
         if isinstance(value, (int, float)):
             stamp = datetime.fromtimestamp(value, timezone.utc)
         else:
-            stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            stamp = datetime.fromisoformat(str(value))
     except (ValueError, OverflowError, OSError):
         return str(value or "—")
     if stamp.tzinfo is None:

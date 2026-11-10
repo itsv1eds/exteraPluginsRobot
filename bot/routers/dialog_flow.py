@@ -1,7 +1,7 @@
-
 from __future__ import annotations
 
 import logging
+
 import re
 from datetime import datetime, timezone
 
@@ -25,6 +25,7 @@ from bot.services.dialogs import (
 )
 from bot.texts import t
 from core.request_store import get_request_by_id
+from core.user_store import is_user_banned
 
 router = Router(name="dialog-flow")
 logger = logging.getLogger(__name__)
@@ -147,6 +148,9 @@ async def on_dialog_reply(message: Message) -> None:
         return
     sender = message.from_user
     lang = get_lang(sender.id)
+    if int(ref.get("author_id") or 0) == sender.id and is_user_banned(sender.id):
+        await message.answer(t("user_banned_short", lang), disable_web_page_preview=True)
+        return
 
     text = telegram_html(message.html_text or message.html_caption or message.text or message.caption or "")
     if not text and not has_dialog_media(message):

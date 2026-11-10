@@ -36,8 +36,9 @@ def get_backup_config() -> Dict[str, Any]:
 
 
 def get_backup_recipients() -> list[int]:
-    recipients = get_backup_config()["recipients"]
-    return recipients if recipients else sorted(get_admins_super())
+    supers = get_admins_super()
+    recipients = [rid for rid in get_backup_config()["recipients"] if rid in supers]
+    return recipients if recipients else sorted(supers)
 
 
 def set_backup_config(**fields: Any) -> Dict[str, Any]:

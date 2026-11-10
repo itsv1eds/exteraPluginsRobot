@@ -9,6 +9,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+
 from bot import limits
 from bot.formatting import normalize_custom_emoji, telegram_html, visible_html_length
 from bot.helpers import BLANK_CHAR
@@ -128,7 +130,7 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None
     try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(value))
     except ValueError:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
@@ -140,6 +142,35 @@ def can_manage(channel: Optional[Dict[str, Any]], user_id: int) -> bool:
     if channel.get("owner_user_id") == user_id:
         return True
     return user_id in (channel.get("admin_ids") or [])
+
+
+_ADMIN_STATUSES = {"administrator", "creator"}
+_ADMIN_CHECK_SECONDS = 120
+_admin_checks: Dict[tuple, tuple] = {}
+
+
+async def is_channel_admin(bot, chat_id, user_id) -> Optional[bool]:
+    try:
+        key = (int(chat_id), int(user_id))
+    except (TypeError, ValueError):
+        return False
+    cached = _admin_checks.get(key)
+    loop_now = asyncio.get_running_loop().time()
+    if cached and loop_now - cached[1] < _ADMIN_CHECK_SECONDS:
+        return cached[0]
+    try:
+        member = await bot.get_chat_member(*key)
+    except (TelegramForbiddenError, TelegramBadRequest) as exc:
+        logger.warning("poster: channel unavailable chat=%s user=%s error=%s", chat_id, user_id, exc)
+        return False
+    except Exception as exc:
+        logger.warning("poster: admin check failed chat=%s user=%s error=%s", chat_id, user_id, exc)
+        return None
+    allowed = getattr(member, "status", None) in _ADMIN_STATUSES
+    _admin_checks[key] = (allowed, loop_now)
+    if len(_admin_checks) > 5000:
+        _admin_checks.clear()
+    return allowed
 
 
 def list_channels(user_id: int) -> List[Dict[str, Any]]:
@@ -633,8 +664,16 @@ async def deliver_post(bot, post: Dict[str, Any]) -> bool:
     content = post.get("content") or {}
     chat_id = post.get("chat_id")
 
+    allowed = await is_channel_admin(bot, chat_id, post.get("owner_user_id"))
+    if allowed is None:
+        return False
     if not _claim_post(post_id):
         logger.warning("poster: skip duplicate delivery post=%s", post_id)
+        return False
+    if not allowed:
+        _in_flight.discard(post_id)
+        _update_post(post_id, status="failed", error="Author is no longer an admin of this channel or the bot lost access")
+        logger.warning("poster: author lost admin rights post=%s chat=%s", post_id, chat_id)
         return False
 
     message = None

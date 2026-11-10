@@ -117,7 +117,7 @@ def _pending_vote_remaining(item: dict | None, now: datetime | None = None) -> f
     if not raw_started_at:
         return 0.0
     try:
-        started_at = datetime.fromisoformat(str(raw_started_at).replace("Z", "+00:00"))
+        started_at = datetime.fromisoformat(str(raw_started_at))
     except ValueError:
         return 0.0
     if started_at.tzinfo is None:
@@ -296,12 +296,13 @@ async def start_vote_prompt(
     target_chat_id: int,
     *,
     message_thread_id: int | None = None,
+    public: bool = False,
 ) -> bool:
     previous = get_pending_vote(request_id, user_id)
     if previous:
         await _delete_prompt(bot, previous)
 
-    entry = start_pending_vote(request_id, user_id, username, name, vote)
+    entry = start_pending_vote(request_id, user_id, username, name, vote, public=public)
     if not entry:
         return False
     stored_pending = get_pending_vote(request_id, user_id) or {}
@@ -374,7 +375,8 @@ async def _finish_vote(bot, request_id: str, user_id: int, reason: str, cb: Call
         actor_id=int(user_id),
         actor=str(item.get("username") or item.get("name") or ""),
         request_id=request_id,
-        details={"vote": item.get("vote"), "anonymous": bool(item.get("anonymous")), "reason": reason},
+        details={"vote": item.get("vote"), "anonymous": bool(item.get("anonymous")), "reason": reason,
+                 "public": bool(item.get("public"))},
     )
     spawn_background(_refresh_vote_surfaces(
         bot,
@@ -413,7 +415,8 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
         return
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     inline_public = bool(payload.get("moderation_inline_public")) if isinstance(payload, dict) else False
-    if not inline_public and not can_vote_in_context(user.id if user else None, chat_id):
+    moderator = can_vote_in_context(user.id if user else None, chat_id)
+    if not inline_public and not moderator:
         await cb.answer(t("admin_denied", "ru"), show_alert=True)
         return
 
@@ -435,6 +438,7 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
         lang,
         int(target_chat),
         message_thread_id=int(thread_id) if thread_id else None,
+        public=not moderator,
     )
     if not ok:
         await cb.answer(t("vote_expired", lang), show_alert=True)

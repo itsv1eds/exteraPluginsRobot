@@ -46,9 +46,10 @@ class UserFlow(StatesGroup):
 
 class AdminFlow(StatesGroup):
     menu = State()
+    adding_icon_pack = State()
+    entering_icon_pack_field = State()
     reviewing = State()
     editing_draft_field = State()
-    editing_icon_field = State()
     entering_reject_comment = State()
     entering_catalog_delete_reason = State()
     editing_quiz_text = State()
@@ -76,9 +77,6 @@ class AdminFlow(StatesGroup):
     editing_scheduled_time = State()
     scheduled_post_edit_text = State()
     scheduled_post_edit_time = State()
-    searching_icon = State()
-    linking_author_icon_user = State()
-    editing_catalog_icon = State()
 
     entering_sync_version = State()
     entering_sync_catalog = State()

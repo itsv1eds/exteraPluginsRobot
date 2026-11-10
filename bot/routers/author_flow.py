@@ -18,6 +18,7 @@ from bot.services.moderation import moderation_config, request_title
 from bot.states import UserFlow
 from bot.texts import t
 from core.request_store import get_request_by_id, update_request_payload, update_request_status
+from core.user_store import is_user_banned
 
 router = Router(name="author-flow")
 router.callback_query.middleware(MenuOwnerMiddleware())
@@ -47,10 +48,19 @@ def _own_request(cb: CallbackQuery, request_id: str) -> dict | None:
     return entry
 
 
+async def _reject_banned(cb: CallbackQuery, lang: str) -> bool:
+    if cb.from_user and is_user_banned(cb.from_user.id):
+        await ack(cb, t("user_banned_short", lang), show_alert=True)
+        return True
+    return False
+
+
 @router.callback_query(F.data.startswith("usr:modcontact:"))
 async def on_contact_moderation(cb: CallbackQuery, state: FSMContext) -> None:
     request_id = cb.data.split(":", 2)[2]
     lang = get_lang(cb.from_user.id if cb.from_user else None)
+    if await _reject_banned(cb, lang):
+        return
     entry = _own_request(cb, request_id)
     if not entry:
         await cb.answer(t("not_found", lang), show_alert=True)
@@ -84,6 +94,10 @@ async def on_moderation_contact_text(message: Message, state: FSMContext) -> Non
         return
 
     lang = get_lang(user.id)
+    if is_user_banned(user.id):
+        await state.set_state(UserFlow.idle)
+        await message.answer(t("user_banned_short", lang), disable_web_page_preview=True)
+        return
     text = telegram_html(message.html_text or message.html_caption or message.text or message.caption or "").strip()
     if not text and not has_dialog_media(message):
         await message.answer(t("dialog_need_text", lang), disable_web_page_preview=True)
@@ -162,6 +176,8 @@ async def on_moderation_contact_text(message: Message, state: FSMContext) -> Non
 async def on_contact_moderation_removed(cb: CallbackQuery, state: FSMContext) -> None:
     slug = cb.data.split(":", 2)[2]
     lang = get_lang(cb.from_user.id if cb.from_user else None)
+    if await _reject_banned(cb, lang):
+        return
     await state.set_state(UserFlow.entering_moderation_contact)
     await state.update_data(modcontact_request_id="", modcontact_slug=slug)
     try:
@@ -179,6 +195,8 @@ async def on_contact_moderation_removed(cb: CallbackQuery, state: FSMContext) ->
 async def on_request_appeal(cb: CallbackQuery, state: FSMContext) -> None:
     request_id = cb.data.split(":", 2)[2]
     lang = get_lang(cb.from_user.id if cb.from_user else None)
+    if await _reject_banned(cb, lang):
+        return
     entry = _own_request(cb, request_id)
     if not entry:
         await cb.answer(t("not_found", lang), show_alert=True)

@@ -30,8 +30,8 @@ from bot.cache import get_admins
 from bot.context import get_lang
 from bot import limits
 from bot.formatting import plain_html, rich_html, telegram_html
-from bot.helpers import ack, answer, blank_and_delete
-from bot.keyboards import _btn
+from bot.helpers import ack, answer, blank_and_delete, track_screen
+from bot.keyboards import _back, _btn, _cancel
 from bot.menu_owner import MenuOwnerMiddleware
 from bot.states import PosterFlow
 from bot.texts import t
@@ -122,7 +122,7 @@ async def _delete_msgs(bot, chat_id: int, message_ids: list[int]) -> None:
 def _fmt_local(run_at_iso: str, tz: timezone | None = None) -> str:
     from datetime import datetime as _dt
     try:
-        dt = _dt.fromisoformat(str(run_at_iso).replace("Z", "+00:00"))
+        dt = _dt.fromisoformat(str(run_at_iso))
     except ValueError:
         return str(run_at_iso)[:16]
     if dt.tzinfo is None:
@@ -142,7 +142,7 @@ def _home_kb(channels: list, lang: str, admin_mode: bool = False, tz_label: str 
     ])
     rows.append([_btn(t("poster_btn_tz", lang, value=tz_label or _tz_label(TZ_DISPLAY)), callback_data="pstr:tz", icon="clock")])
     back_cb = "adm:menu" if admin_mode else "profile"
-    rows.append([_btn(t("btn_back", lang), callback_data=back_cb, style="danger", icon="back")])
+    rows.append([_back(lang, back_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -150,20 +150,20 @@ def _channel_kb(chat_id: int, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("poster_btn_new_post", lang), callback_data=f"pstr:new:{chat_id}", icon="send", style="success")],
         [_btn(t("poster_btn_remove_channel", lang), callback_data=f"pstr:ch:{chat_id}:del", icon="delete", style="danger")],
-        [_btn(t("btn_back", lang), callback_data="pstr:home", style="danger", icon="back")],
+        [_back(lang, "pstr:home")],
     ])
 
 
 def _skip_kb(step: str, lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [_btn(t("poster_btn_skip", lang), callback_data=f"pstr:skip:{step}", icon="forward")],
-        [_btn(t("btn_cancel", lang), callback_data="pstr:home", style="danger", icon="back")],
+        [_cancel(lang, "pstr:home")],
     ])
 
 
 def _cancel_only_kb(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [_btn(t("btn_cancel", lang), callback_data="pstr:home", style="danger", icon="back")],
+        [_cancel(lang, "pstr:home")],
     ])
 
 
@@ -174,7 +174,7 @@ def _time_kb(lang: str) -> InlineKeyboardMarkup:
             _btn(t("poster_time_3h", lang), callback_data="pstr:time:180"),
             _btn(t("poster_time_24h", lang), callback_data="pstr:time:1440"),
         ],
-        [_btn(t("btn_cancel", lang), callback_data="pstr:home", style="danger", icon="back")],
+        [_cancel(lang, "pstr:home")],
     ])
 
 
@@ -187,7 +187,7 @@ def _posts_kb(posts: list, lang: str, tz: timezone | None = None) -> InlineKeybo
             f"{_fmt_local(p.get('run_at', ''), tz)} · {_channel_label(p.get('chat_id'))}",
             callback_data=f"pstr:post:{p.get('id')}", icon="clock",
         )])
-    rows.append([_btn(t("btn_back", lang), callback_data="pstr:home", style="danger", icon="back")])
+    rows.append([_back(lang, "pstr:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -347,12 +347,19 @@ async def on_channel_remove(cb: CallbackQuery, state: FSMContext) -> None:
     await cb.answer(t("poster_channel_removed", _lang(cb)), show_alert=True)
 
 
+async def _can_post(target, chat_id) -> bool:
+    channel = poster.get_channel(chat_id) if chat_id else None
+    user_id = target.from_user.id
+    if not poster.can_manage(channel, user_id):
+        return False
+    return bool(await poster.is_channel_admin(target.bot, chat_id, user_id))
+
+
 @router.callback_query(F.data.regexp(r"^pstr:new:-?\d+$"))
 async def on_new_post(cb: CallbackQuery, state: FSMContext) -> None:
     chat_id = int(cb.data.split(":")[2])
-    channel = poster.get_channel(chat_id)
-    if not poster.can_manage(channel, cb.from_user.id):
-        await cb.answer(t("poster_err_not_found", _lang(cb)), show_alert=True)
+    if not await _can_post(cb, chat_id):
+        await cb.answer(t("poster_err_user_not_admin", _lang(cb)), show_alert=True)
         return
     await state.set_state(PosterFlow.composing_text)
     await state.update_data(poster_chat_id=chat_id, poster_media=[], poster_buttons=[],
@@ -609,7 +616,7 @@ def _preview_kb(lang: str, admin_mode: bool = False, autodel_label: str = "не�
         rows.append([_btn(t("poster_btn_updated_plugins", lang), callback_data="pstr:preview:upd", icon="updates")])
     rows.append([_btn(t("poster_btn_publish_now", lang), callback_data="pstr:publishnow", icon="send", style="success")])
     rows.append([_btn(t("poster_btn_schedule", lang), callback_data="pstr:schedule", icon="clock", style="success")])
-    rows.append([_btn(t("btn_cancel", lang), callback_data="pstr:home", style="danger", icon="back")])
+    rows.append([_cancel(lang, "pstr:home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -624,7 +631,7 @@ def _autodel_kb(lang: str) -> InlineKeyboardMarkup:
     labels = _AUTODEL_LABELS.get(lang, _AUTODEL_LABELS["en"])
     rows = [[_btn(labels[m], callback_data=f"pstr:autodel:{m}")] for m in _AUTODEL_PRESETS]
     rows.append([_btn(t("poster_autodel_custom_btn", lang), callback_data="pstr:autodel:custom", icon="clock")])
-    rows.append([_btn(t("btn_back", lang), callback_data="pstr:preview:back", style="danger", icon="back")])
+    rows.append([_back(lang, "pstr:preview:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -635,7 +642,7 @@ def _repeat_label(data: dict, lang: str) -> str:
 def _repeat_kb(lang: str) -> InlineKeyboardMarkup:
     labels = _REPEAT_LABELS.get(lang, _REPEAT_LABELS["en"])
     rows = [[_btn(labels[d], callback_data=f"pstr:repeat:{d}")] for d in _REPEAT_PRESETS]
-    rows.append([_btn(t("btn_back", lang), callback_data="pstr:preview:back", style="danger", icon="back")])
+    rows.append([_back(lang, "pstr:preview:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -666,11 +673,11 @@ async def _render_preview(target, state: FSMContext) -> None:
         post_msg_ids = []
 
     admin_mode = bool(data.get("poster_admin_mode"))
-    ctrl = await bot.send_message(
-        chat_id, t("poster_preview_control", lang),
-        reply_markup=_preview_kb(lang, admin_mode, _autodel_label(data, lang), _repeat_label(data, lang),
-                                 bool(data.get("poster_rich"))),
-        parse_mode=ParseMode.HTML)
+    control_kb = _preview_kb(lang, admin_mode, _autodel_label(data, lang), _repeat_label(data, lang),
+                             bool(data.get("poster_rich")))
+    ctrl = await bot.send_message(chat_id, t("poster_preview_control", lang), reply_markup=control_kb,
+                                  parse_mode=ParseMode.HTML)
+    track_screen(target, ctrl, control_kb)
     await state.update_data(
         preview_post_msg_id=post_msg_id,
         preview_post_msg_ids=post_msg_ids,
@@ -819,9 +826,8 @@ async def on_preview_publish_now(cb: CallbackQuery, state: FSMContext) -> None:
     lang = _lang(cb)
     data = await state.get_data()
     chat_id = data.get("poster_chat_id")
-    channel = poster.get_channel(chat_id) if chat_id else None
-    if not poster.can_manage(channel, cb.from_user.id):
-        await cb.answer(t("poster_err_not_found", lang), show_alert=True)
+    if not await _can_post(cb, chat_id):
+        await cb.answer(t("poster_err_user_not_admin", lang), show_alert=True)
         return
 
     content = {
@@ -903,9 +909,8 @@ async def on_poster_tz_value(message: Message, state: FSMContext) -> None:
 async def _finalize(target, state: FSMContext, run_at_utc: datetime) -> None:
     data = await state.get_data()
     chat_id = data.get("poster_chat_id")
-    channel = poster.get_channel(chat_id) if chat_id else None
-    if not poster.can_manage(channel, target.from_user.id):
-        await answer(target, t("poster_err_not_found", _lang(target)), None)
+    if not await _can_post(target, chat_id):
+        await answer(target, t("poster_err_user_not_admin", _lang(target)), None)
         return
     content = {
         "html_text": data.get("poster_html") or "",
@@ -980,7 +985,7 @@ def _post_detail_kb(post_id: str, lang: str) -> InlineKeyboardMarkup:
         [_btn(t("poster_btn_post_inline", lang), switch_inline_query_current_chat=post_id, icon="send")],
         [_btn(t("poster_btn_post_edit", lang), callback_data=f"pstr:postedit:{post_id}", icon="edit", style="success")],
         [_btn(t("poster_btn_post_delete", lang), callback_data=f"pstr:postdel:{post_id}", icon="delete", style="danger")],
-        [_btn(t("btn_back", lang), callback_data="pstr:posts", style="danger", icon="back")],
+        [_back(lang, "pstr:posts")],
     ])
 
 

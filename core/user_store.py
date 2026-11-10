@@ -251,6 +251,15 @@ def list_users() -> List[Dict[str, Any]]:
     return [{"user_id": int(uid), **data} for uid, data in _users_cache.items()]
 
 
+def language_counts() -> tuple[int, Dict[str, int]]:
+    _ensure_loaded_sync()
+    counts: Dict[str, int] = {}
+    for data in _users_cache.values():
+        key = str(data.get("language") or "unknown").lower()
+        counts[key] = counts.get(key, 0) + 1
+    return len(_users_cache), counts
+
+
 async def init_user_store() -> None:
     await _ensure_loaded()
 

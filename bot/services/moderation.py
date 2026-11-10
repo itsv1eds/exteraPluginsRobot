@@ -33,6 +33,7 @@ def _forum_reply_markup(entry: dict | None, request_id: str, yes: int, no: int):
 from core.request_store import get_request_by_id, update_request_payload
 
 VoteValue = Literal["yes", "no"]
+PUBLIC_VOTES_KEY = "moderation_public_votes"
 VOTABLE_REQUEST_STATUSES = frozenset({"pending", "error", "scheduled"})
 
 
@@ -179,10 +180,13 @@ def previous_rounds_text(entry: dict | None, lang: str = "ru") -> str:
         if not isinstance(rnd, dict):
             continue
         votes = rnd.get("votes")
-        if not isinstance(votes, dict) or not votes:
+        if not isinstance(votes, dict) or (not votes and not rnd.get("public_votes")):
             continue
         n = rnd.get("round") or (len(blocks) + 1)
         blocks.append(_format_votes_block(votes, header_label=t("vote_previous_round", lang, number=n), lang=lang))
+        public_votes = rnd.get("public_votes")
+        if isinstance(public_votes, dict) and public_votes:
+            blocks.append(_format_votes_block(public_votes, header_label=t("vote_public_label", lang), lang=lang))
     if not blocks:
         return ""
     return t("vote_previous_title", lang) + "\n" + "\n\n".join(blocks)
@@ -192,14 +196,17 @@ def reset_vote_round_fields(payload: dict, *, after_rework: bool) -> dict:
     votes = payload.get("moderation_votes")
     rounds = payload.get("previous_vote_rounds")
     rounds = list(rounds) if isinstance(rounds, list) else []
-    if isinstance(votes, dict) and votes:
+    public_votes = payload.get(PUBLIC_VOTES_KEY)
+    if (isinstance(votes, dict) and votes) or (isinstance(public_votes, dict) and public_votes):
         rounds.append({
             "round": len(rounds) + 1,
-            "votes": votes,
+            "votes": votes if isinstance(votes, dict) else {},
+            "public_votes": public_votes if isinstance(public_votes, dict) else {},
             "archived_at": datetime.now(timezone.utc).isoformat(),
         })
     return {
         "moderation_votes": {},
+        PUBLIC_VOTES_KEY: {},
         "previous_vote_rounds": rounds,
         "resubmitted_after_rework": after_rework or bool(payload.get("resubmitted_after_rework")),
         "moderation_pending_votes": {},
@@ -222,22 +229,27 @@ def forum_text_with_votes(entry: dict | None) -> str:
     archive = archive_context(payload.get("plugin") or {}) if isinstance(payload, dict) else ""
     if archive and archive not in base:
         parts.append(archive)
+    from bot.texts import t as _t
+
+    extras = []
     if is_unban_appeal(entry):
-        from bot.texts import t as _t
-
-        parts.append(_t("appeal_forum_badge", "ru"))
+        extras.append(_t("appeal_forum_badge", "ru"))
     if isinstance(payload, dict) and payload.get("is_appeal"):
-        from bot.texts import t as _t
-
-        parts.append(_t(
+        extras.append(_t(
             "admin_appeal_badge", "ru",
             comment=strip_blockquote_tags(telegram_html(str(payload.get("appeal_comment") or "—"))),
         ))
     if isinstance(payload, dict) and payload.get("resubmitted_after_rework"):
-        parts.append(f"{emoji_html('updates')} <b>Отправлено после доработки</b> (плагин уже был на модерации)")
+        extras.append(f"{emoji_html('updates')} <b>Отправлено после доработки</b> (плагин уже был на модерации)")
+    parts.extend(extra for extra in extras if extra not in base)
     if isinstance(entry, dict) and entry.get("type") == "delete":
         return "\n\n".join(parts)
     parts.append(vote_summary(entry))
+    public_votes = payload.get(PUBLIC_VOTES_KEY) if isinstance(payload, dict) else None
+    if isinstance(public_votes, dict) and public_votes:
+        from bot.texts import t as _t
+
+        parts.append(_format_votes_block(public_votes, header_label=_t("vote_public_label", "ru"), lang="ru"))
     prev = previous_rounds_text(entry)
     if prev:
         parts.append(prev)
@@ -311,6 +323,8 @@ def start_pending_vote(
     username: str,
     name: str,
     vote: VoteValue,
+    *,
+    public: bool = False,
 ) -> dict | None:
     entry = get_request_by_id(request_id)
     if not entry:
@@ -322,6 +336,7 @@ def start_pending_vote(
         "username": username or prev.get("username", ""),
         "name": name or prev.get("name", ""),
         "vote": vote,
+        "public": bool(public),
         "anonymous": bool(prev.get("anonymous")),
         "prompt_chat_id": int(prev.get("prompt_chat_id") or 0),
         "prompt_message_id": int(prev.get("prompt_message_id") or 0),
@@ -364,7 +379,8 @@ def commit_pending_vote(request_id: str, user_id: int, reason: str) -> dict | No
     item = pending.pop(user_key, None)
     if not isinstance(item, dict):
         return None
-    votes_source = payload.get("moderation_votes")
+    votes_key = PUBLIC_VOTES_KEY if item.get("public") else "moderation_votes"
+    votes_source = payload.get(votes_key)
     votes = dict(votes_source) if isinstance(votes_source, dict) else {}
     current = votes.get(user_key) if isinstance(votes.get(user_key), dict) else {}
     vote_record = {
@@ -379,10 +395,10 @@ def commit_pending_vote(request_id: str, user_id: int, reason: str) -> dict | No
     }
     votes[user_key] = vote_record
     updated = update_request_payload(request_id, {
-        "moderation_votes": votes,
+        votes_key: votes,
         "moderation_pending_votes": pending,
     })
-    if updated:
+    if updated and not item.get("public"):
         from bot.services.moderation_stats import record_vote
 
         try:

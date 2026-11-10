@@ -6,17 +6,13 @@ import re
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from uuid import uuid4
 from typing import Dict, Optional
 
-from aiogram import Bot
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.types import (
     CallbackQuery,
-    FSInputFile,
     InlineKeyboardMarkup,
-    InputMediaPhoto,
     LinkPreviewOptions,
     Message,
 )
@@ -33,13 +29,9 @@ from core.storage import DATA_DIR
 BASE_DIR = Path(__file__).resolve().parent.parent
 IMAGES_DIR = BASE_DIR / "img"
 
-_image_file_ids: Dict[str, str] = {}
 logger = logging.getLogger(__name__)
 
-_LINK_PREVIEW_IMAGE_URLS = {
-    key: f"https://raw.githubusercontent.com/itsv1eds/exteraPluginsRobot/main/img/{key}.jpg"
-    for key in ("admin", "new", "update", "appeal", "delete")
-}
+_IMAGE_BASE_URL = "https://raw.githubusercontent.com/itsv1eds/exteraPluginsRobot/main/img"
 
 
 def image_path(image: Optional[str]) -> Optional[Path]:
@@ -54,15 +46,9 @@ def image_path(image: Optional[str]) -> Optional[Path]:
 def localized_image_key(image: Optional[str], lang: Optional[str]) -> Optional[str]:
     if image and normalize_language(lang) in {"ru", "ua"} and not image.endswith("_ru"):
         russian = f"{image}_ru"
-        if image_path(russian) or _link_preview_url(russian):
+        if image_path(russian):
             return russian
     return image
-
-
-def _remember_image(image: str, message):
-    if isinstance(message, Message) and message.photo:
-        _image_file_ids[image] = message.photo[-1].file_id
-    return message
 
 
 def get_uploads_dir() -> Path:
@@ -153,21 +139,13 @@ def _is_transient_network_error(exc: Exception) -> bool:
     return isinstance(exc, (TelegramNetworkError, TelegramServerError, TelegramRetryAfter))
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=128)
 def _link_preview_url(image: Optional[str]) -> Optional[str]:
-    if not image:
-        return None
-    key = image.removesuffix("_ru")
-    url = _LINK_PREVIEW_IMAGE_URLS.get(key)
-    if not url:
-        return None
     path = image_path(image)
-    filename = path.name if path else f"{image}.jpg"
-    preview_url = f"{url.rsplit('/', 1)[0]}/{filename}"
-    if path:
-        version = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
-        preview_url += f"?v={version}"
-    return preview_url
+    if not path:
+        return None
+    version = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+    return f"{_IMAGE_BASE_URL}/{path.name}?v={version}"
 
 
 def link_preview_options(image: Optional[str] = None, url: Optional[str] = None,
@@ -278,7 +256,7 @@ BLANK_SETTLE_DELAY = 1.5
 
 def message_is_too_old(sent_at) -> bool:
     try:
-        date = sent_at if isinstance(sent_at, datetime) else datetime.fromisoformat(str(sent_at).replace("Z", "+00:00"))
+        date = sent_at if isinstance(sent_at, datetime) else datetime.fromisoformat(str(sent_at))
     except (ValueError, TypeError):
         return False
     if date.tzinfo is None:
@@ -412,16 +390,33 @@ async def blank_and_delete_message(msg) -> bool:
         return False
 
 
-async def download_document(bot: Bot, file_id: str, dest_dir: Path) -> Path:
-    file = await bot.get_file(file_id)
-    name = Path(file.file_path).name if file.file_path else f"{file_id}.plugin"
-    dest = dest_dir / f"{uuid4().hex}-{name}"
+_SCREEN_LIMIT = 5000
+_screens: Dict[int, tuple[int, datetime]] = {}
+
+
+def track_screen(target: Message | CallbackQuery, sent, kb) -> None:
+    if kb is None or not isinstance(sent, Message) or sent.chat.type != "private":
+        return
+    chat_id = sent.chat.id
+    previous = _screens.pop(chat_id, None)
+    _screens[chat_id] = (sent.message_id, datetime.now(timezone.utc))
+    while len(_screens) > _SCREEN_LIMIT:
+        _screens.pop(next(iter(_screens)))
+    if not previous or previous[0] == sent.message_id:
+        return
+    pressed = target.message if isinstance(target, CallbackQuery) else None
+    if isinstance(target, Message) or (pressed and pressed.message_id == previous[0]):
+        spawn_background(_retire_screen(sent.bot, chat_id, *previous))
+
+
+async def _retire_screen(bot, chat_id: int, message_id: int, sent_at: datetime) -> None:
+    if not message_is_too_old(sent_at):
+        await blank_and_delete(bot, chat_id, message_id)
+        return
     try:
-        await bot.download_file(file.file_path, dest)
-    except BaseException:
-        dest.unlink(missing_ok=True)
-        raise
-    return dest
+        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+    except Exception as exc:
+        logger.info("event=screen.retire_failed chat_id=%s message_id=%s error=%s", chat_id, message_id, _short_error(exc))
 
 
 async def answer(
@@ -432,290 +427,106 @@ async def answer(
     *,
     lang: Optional[str] = None,
 ) -> Optional[Message]:
+    sent = await _render_screen(target, text, kb, image, lang=lang)
+    track_screen(target, sent, kb)
+    return sent
+
+
+async def _render_screen(
+    target: Message | CallbackQuery,
+    text: str,
+    kb: Optional[InlineKeyboardMarkup] = None,
+    image: Optional[str] = None,
+    *,
+    lang: Optional[str] = None,
+) -> Optional[Message]:
+    callback = target if isinstance(target, CallbackQuery) else None
+    message = callback.message if callback else target
+    if not message:
+        return None
     if image:
-        try:
-            user = (target.from_user if isinstance(target, Message) else (target.from_user or (target.message.from_user if target.message else None)))
-            lang = lang or get_lang(getattr(user, "id", None))
-            image = localized_image_key(image, lang)
-        except Exception:
-            pass
+        user = target.from_user or message.from_user
+        image = localized_image_key(image, lang or get_lang(getattr(user, "id", None)))
     preview_options = link_preview_options(image)
     if preview_options:
         text = with_hidden_preview_link(text, preview_options.url)
-        image = None
-    text_length = visible_html_length(text)
-    disable_web_page_preview = not bool(preview_options)
+    bot = message.bot
+    chat_id = message.chat.id
+    options = {
+        "parse_mode": ParseMode.HTML,
+        "disable_web_page_preview": not preview_options,
+        "link_preview_options": preview_options,
+    }
+    thread_kwargs = _topic_kwargs(message)
 
-    if image and text_length > limits.CAPTION:
-        image = None
-
-    if isinstance(target, CallbackQuery):
-        msg = target.message
-        if not msg:
-            return None
-        
-        bot = msg.bot
-        chat_id = msg.chat.id
-        thread_kwargs = _topic_kwargs(msg)
-
-        async def replace_with_text():
-            if text_length > limits.MESSAGE_TEXT:
-                sent = await send_in_parts(
-                    bot, chat_id, text, kb, disable_web_page_preview=disable_web_page_preview,
-                    link_preview_options=preview_options, **thread_kwargs,
-                )
-            else:
-                sent = await bot.send_message(
-                    chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=kb,
-                    disable_web_page_preview=disable_web_page_preview,
-                    link_preview_options=preview_options, **thread_kwargs,
-                )
-            spawn_background(blank_and_delete_message(msg))
-            return sent
-
-        try:
-            if msg.photo and text_length > limits.CAPTION:
-                return await replace_with_text()
-
-            if preview_options and msg.photo:
-                return await replace_with_text()
-
-            if image and not msg.photo:
-                file_id = _image_file_ids.get(image)
-                path = image_path(image)
-                if file_id or path is not None:
-                    sent = await msg.edit_media(
-                        InputMediaPhoto(media=file_id or FSInputFile(path), caption=text, parse_mode=ParseMode.HTML),
-                        reply_markup=kb,
-                    )
-                    return _remember_image(image, sent)
-
-            if image and msg.photo:
-                file_id = _image_file_ids.get(image)
-
-                if file_id and msg.photo[-1].file_id == file_id:
-                    return await msg.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-
-                if file_id:
-                    edited = await msg.edit_media(
-                        InputMediaPhoto(
-                            media=file_id,
-                            caption=text,
-                            parse_mode=ParseMode.HTML,
-                        ),
-                        reply_markup=kb,
-                    )
-                    return _remember_image(image, edited)
-
-                path = image_path(image)
-                if path is not None:
-                    edited = await msg.edit_media(
-                        InputMediaPhoto(
-                            media=FSInputFile(path),
-                            caption=text,
-                            parse_mode=ParseMode.HTML,
-                        ),
-                        reply_markup=kb,
-                    )
-                    return _remember_image(image, edited)
-
-                return await msg.edit_caption(caption=text, parse_mode=ParseMode.HTML, reply_markup=kb)
-
-            elif msg.photo:
-                return await msg.edit_caption(
-                    caption=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                )
-            else:
-                return await msg.edit_text(
-                    text=text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    disable_web_page_preview=disable_web_page_preview,
-                    link_preview_options=preview_options,
-                )
-
-        except Exception as exc:
-            if isinstance(exc, TelegramBadRequest) and (
-                _is_not_modified_error(exc) or _is_superseded_error(exc)
-            ):
-                try:
-                    await target.answer()
-                except Exception:
-                    pass
-                return msg
-
-            if _is_transient_network_error(exc):
-                logger.warning(
-                    "event=answer.callback_edit_transient chat_id=%s message_id=%s type=%s error=%s",
-                    chat_id,
-                    getattr(msg, "message_id", None),
-                    type(exc).__name__,
-                    _short_error(exc),
-                )
-                return msg
-
-            if isinstance(exc, TelegramBadRequest) and _is_message_missing_error(exc):
-                logger.info(
-                    "event=answer.callback_message_replaced chat_id=%s message_id=%s",
-                    chat_id,
-                    getattr(msg, "message_id", None),
-                )
-                try:
-                    file_id = _image_file_ids.get(image or "")
-                    path = image_path(image)
-                    if image and file_id:
-                        return await bot.send_photo(
-                            chat_id, file_id, caption=text, parse_mode=ParseMode.HTML,
-                            reply_markup=kb, **thread_kwargs,
-                        )
-                    if path and path.exists():
-                        sent = await bot.send_photo(
-                            chat_id, FSInputFile(path), caption=text, parse_mode=ParseMode.HTML,
-                            reply_markup=kb, **thread_kwargs,
-                        )
-                        if sent.photo:
-                            _image_file_ids[image] = sent.photo[-1].file_id
-                        return sent
-                    return await bot.send_message(
-                        chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=kb,
-                        disable_web_page_preview=disable_web_page_preview,
-                        link_preview_options=preview_options, **thread_kwargs,
-                    )
-                except Exception as replacement_exc:
-                    logger.warning(
-                        "event=answer.callback_message_replace_failed chat_id=%s error=%s",
-                        chat_id, _short_error(replacement_exc),
-                    )
-                    return None
-
-            logger.exception(
-                "event=answer.callback_edit_failed chat_id=%s message_id=%s image=%s has_photo=%s text_len=%s error=%s",
-                chat_id,
-                getattr(msg, "message_id", None),
-                image or "-",
-                bool(getattr(msg, "photo", None)),
-                len(text or ""),
-                _short_error(exc, 500),
-            )
-            if _is_entities_error(exc):
-                repaired = telegram_html(text)
-                logger.warning(
-                    "event=answer.callback_entities_repair chat_id=%s text_len=%s error=%s",
-                    chat_id, len(text or ""), _short_error(exc),
-                )
-                try:
-                    if getattr(msg, "photo", None):
-                        return await msg.edit_caption(
-                            caption=repaired, parse_mode=ParseMode.HTML, reply_markup=kb,
-                        )
-                    return await msg.edit_text(
-                        text=repaired,
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=kb,
-                        disable_web_page_preview=disable_web_page_preview,
-                        link_preview_options=preview_options,
-                    )
-                except Exception as repair_exc:
-                    logger.exception(
-                        "event=answer.callback_entities_repair_failed chat_id=%s error=%s",
-                        chat_id, _short_error(repair_exc, 300),
-                    )
-
-            if isinstance(exc, TelegramBadRequest) and _is_too_long_error(exc):
-                try:
-                    sent = await send_in_parts(
-                        bot, chat_id, text, kb,
-                        disable_web_page_preview=disable_web_page_preview,
-                        link_preview_options=preview_options,
-                        **thread_kwargs,
-                    )
-                    return sent
-                except Exception as send_exc:
-                    logger.exception(
-                        "event=answer.callback_too_long_fallback_failed chat_id=%s text_len=%s error=%s",
-                        chat_id,
-                        len(text or ""),
-                        _short_error(send_exc, 500),
-                    )
-            try:
-                await target.answer(t("err_update_message_failed", get_lang(getattr(target.from_user, "id", None)), error=_short_error(exc)), show_alert=True)
-            except Exception:
-                pass
-        return None
-        
-    else:
-        chat_id = target.chat.id
-        bot = target.bot
-        thread_kwargs = _topic_kwargs(target)
-
-    async def _message_send(send_text: str) -> Optional[Message]:
-        if visible_html_length(send_text) > limits.MESSAGE_TEXT:
+    async def send(body: str) -> Optional[Message]:
+        if visible_html_length(body) > limits.MESSAGE_TEXT:
             return await send_in_parts(
-                bot, chat_id, send_text, kb,
-                disable_web_page_preview=disable_web_page_preview,
+                bot, chat_id, body, kb, disable_web_page_preview=not preview_options,
                 link_preview_options=preview_options, **thread_kwargs,
             )
-        if image:
-            file_id = _image_file_ids.get(image)
-            if file_id:
-                return await bot.send_photo(
-                    chat_id,
-                    photo=file_id,
-                    caption=send_text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    **thread_kwargs,
+        return await bot.send_message(chat_id, text=body, reply_markup=kb, **options, **thread_kwargs)
+
+    async def send_repaired(body: str) -> Optional[Message]:
+        try:
+            return await send(body)
+        except TelegramBadRequest as exc:
+            if _is_too_long_error(exc):
+                return await send_in_parts(
+                    bot, chat_id, body, kb, disable_web_page_preview=not preview_options,
+                    link_preview_options=preview_options, **thread_kwargs,
                 )
-            path = image_path(image)
-            if path is not None:
-                msg = await bot.send_photo(
-                    chat_id,
-                    photo=FSInputFile(path),
-                    caption=send_text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=kb,
-                    **thread_kwargs,
-                )
-                if msg.photo:
-                    _image_file_ids[image] = msg.photo[-1].file_id
-                return msg
-        return await bot.send_message(
-            chat_id,
-            text=send_text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=kb,
-            disable_web_page_preview=disable_web_page_preview,
-            link_preview_options=preview_options,
-            **thread_kwargs,
-        )
+            if not _is_entities_error(exc):
+                raise
+            logger.warning("event=answer.entities_repair chat_id=%s text_len=%s error=%s", chat_id, len(body), _short_error(exc))
+            try:
+                return await send(telegram_html(body))
+            except Exception as repair_exc:
+                logger.exception("event=answer.entities_repair_failed chat_id=%s error=%s", chat_id, _short_error(repair_exc, 300))
+                return None
+
+    if not callback:
+        return await send_repaired(text)
+
+    async def replace() -> Optional[Message]:
+        sent = await send_repaired(text)
+        if sent and message.chat.type == "private":
+            spawn_background(blank_and_delete_message(message))
+        return sent
 
     try:
-        return await _message_send(text)
-    except TelegramBadRequest as exc:
-        if _is_too_long_error(exc):
-            return await send_in_parts(
-                bot, chat_id, text, kb,
-                disable_web_page_preview=disable_web_page_preview,
-                link_preview_options=preview_options,
-                **thread_kwargs,
+        if message.content_type != "text" or visible_html_length(text) > limits.MESSAGE_TEXT:
+            return await replace()
+        return await message.edit_text(text=text, reply_markup=kb, **options)
+    except Exception as exc:
+        message_id = getattr(message, "message_id", None)
+        if isinstance(exc, TelegramBadRequest) and (_is_not_modified_error(exc) or _is_superseded_error(exc)):
+            await ack(callback)
+            return message
+        if _is_transient_network_error(exc):
+            logger.warning(
+                "event=answer.callback_edit_transient chat_id=%s message_id=%s type=%s error=%s",
+                chat_id, message_id, type(exc).__name__, _short_error(exc),
             )
-        if not _is_entities_error(exc):
-            raise
-        repaired = telegram_html(text)
-        logger.warning(
-            "event=answer.entities_repair chat_id=%s text_len=%s error=%s",
-            chat_id, len(text or ""), _short_error(exc),
-        )
+            return message
         try:
-            return await _message_send(repaired)
-        except Exception as repair_exc:
-            logger.exception(
-                "event=answer.entities_repair_failed chat_id=%s error=%s",
-                chat_id, _short_error(repair_exc, 300),
-            )
+            if isinstance(exc, TelegramBadRequest) and _is_message_missing_error(exc):
+                logger.info("event=answer.callback_message_replaced chat_id=%s message_id=%s", chat_id, message_id)
+                return await send_repaired(text)
+            if isinstance(exc, TelegramBadRequest) and _is_too_long_error(exc):
+                return await replace()
+            if _is_entities_error(exc):
+                logger.warning("event=answer.callback_entities_repair chat_id=%s text_len=%s error=%s", chat_id, len(text), _short_error(exc))
+                return await message.edit_text(text=telegram_html(text), reply_markup=kb, **options)
+        except Exception as fallback_exc:
+            logger.exception("event=answer.callback_fallback_failed chat_id=%s error=%s", chat_id, _short_error(fallback_exc, 300))
             return None
+        logger.exception(
+            "event=answer.callback_edit_failed chat_id=%s message_id=%s image=%s text_len=%s error=%s",
+            chat_id, message_id, image or "-", len(text or ""), _short_error(exc, 500),
+        )
+        await ack(callback, t("err_update_message_failed", get_lang(getattr(callback.from_user, "id", None)), error=_short_error(exc)), show_alert=True)
+        return None
 
 
 def strip_html(text: str) -> str:

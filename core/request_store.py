@@ -53,7 +53,7 @@ def _parse_datetime_utc(value: Any) -> Optional[datetime]:
     if not value:
         return None
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value))
     except (TypeError, ValueError):
         return None
     if parsed.tzinfo is None:

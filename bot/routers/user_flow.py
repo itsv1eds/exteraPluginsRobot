@@ -24,7 +24,7 @@ from aiogram.types import (
 
 from bot.context import get_language, get_lang
 from bot.languages import normalize_language
-from bot.callback_tokens import decode_slug, encode_slug
+from bot.callback_tokens import decode_slug
 from core.plugin_formats import plugin_extension, plugin_file_limit
 from core.categories import CATEGORY_KEYS, MAX_CATEGORIES, categories_for, category_fields
 from bot import limits
@@ -35,6 +35,7 @@ from bot.keyboards import (
     quiz_kb,
     quiz_start_kb,
     banned_appeal_kb,
+    cancel_confirm_kb,
     cancel_kb,
     comment_skip_kb,
     categories_kb,
@@ -72,13 +73,9 @@ from bot.services.validation import (
 from bot.states import UserFlow
 from bot.texts import TEXTS, t
 from core.catalog import find_plugin_by_slug, find_plugin_by_deeplink_token, find_user_plugins
-from bot.routers.catalog_flow import build_plugin_preview
 from bot.routers.catalog_flow import BOT_USERNAME
-from bot.keyboards import plugin_detail_kb
-from core.subscription_store import is_subscribed, ALL_SUBSCRIPTION_KEY
-from bot.keyboards import catalog_main_kb, profile_kb, admin_menu_kb
+from bot.keyboards import catalog_main_kb, admin_menu_kb
 from bot.states import AdminFlow
-from core.catalog import find_user_icons
 from core.request_store import (
     acquire_request_lock,
     release_request_lock,
@@ -103,15 +100,32 @@ router.callback_query.middleware(MenuOwnerMiddleware())
 logger = logging.getLogger(__name__)
 TZ_UTC_PLUS_5 = timezone(timedelta(hours=5))
 _START_COOLDOWN_SECONDS = 3.0
+_DRAFT_NAME_LIMIT = 64
 _recent_starts: dict[int, float] = {}
 _COMMENT_MEDIA_GROUP_SETTLE_SECONDS = 0.8
 _comment_media_group_buffers: dict[tuple[int, int, str], dict[str, Any]] = {}
 _WITHDRAWABLE_REQUEST_STATUSES = {"pending", "rework"}
 
 
+def _is_broadcast_disable_payment(payload: str | None, currency: str | None, amount: int | None) -> bool:
+    from bot.routers.catalog_flow import (
+        BROADCAST_DISABLE_CURRENCY,
+        BROADCAST_DISABLE_PAYLOAD,
+        BROADCAST_DISABLE_PRICE,
+    )
+
+    return payload == BROADCAST_DISABLE_PAYLOAD and currency == BROADCAST_DISABLE_CURRENCY \
+        and amount == BROADCAST_DISABLE_PRICE
+
+
 @router.pre_checkout_query()
 async def on_pre_checkout_query(pre_checkout_query: PreCheckoutQuery) -> None:
-    await pre_checkout_query.answer(ok=True)
+    query = pre_checkout_query
+    if _is_broadcast_disable_payment(query.invoice_payload, query.currency, query.total_amount):
+        await query.answer(ok=True)
+        return
+    logger.warning("event=payment.pre_checkout_rejected user_id=%s payload=%s", query.from_user.id, query.invoice_payload)
+    await query.answer(ok=False, error_message=t("payment_unknown", get_lang(query.from_user.id)))
 
 
 @router.message(F.successful_payment)
@@ -120,7 +134,8 @@ async def on_successful_payment(message: Message) -> None:
     if not payment:
         return
 
-    if (payment.invoice_payload or "") != "simple_payment:broadcast_disable":
+    if not _is_broadcast_disable_payment(payment.invoice_payload, payment.currency, payment.total_amount):
+        logger.warning("event=payment.unexpected payload=%s", payment.invoice_payload)
         return
 
     if not message.from_user:
@@ -311,7 +326,7 @@ def _format_publish_not_before(value: str | None) -> str:
     if not value:
         return ""
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(TZ_UTC_PLUS_5)
+        dt = datetime.fromisoformat(value).astimezone(TZ_UTC_PLUS_5)
     except Exception:
         return ""
     return dt.strftime("%d.%m.%Y %H:%M")
@@ -331,7 +346,7 @@ def _render_draft_text(data: Dict[str, Any]) -> str:
         text += "\n\n" + context
     not_before = _format_publish_not_before(data.get("publish_not_before"))
     if not_before:
-        text += f"\n\n<b>Не публиковать раньше:</b> <code>{not_before} UTC+5</code>"
+        text += "\n\n" + t("publish_not_before_label", data.get("lang") or "ru", datetime=not_before)
     return text
 
 
@@ -375,45 +390,12 @@ async def _render_home(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
 
 
 async def _render_profile_message(message: Message, state: FSMContext, lang: str) -> None:
-    user = message.from_user
-    if not user:
+    if not message.from_user:
         return
+    from bot.routers.catalog_flow import build_profile
 
-    user_plugins = find_user_plugins(user.id, user.username or "")
-    user_icons = find_user_icons(user.id, user.username or "")
-
-    pending = []
-    for req in get_user_requests(user.id):
-        if req.get("status") not in {"pending", "rework"}:
-            continue
-        if req.get("type") not in {"new", "update"}:
-            continue
-        payload = req.get("payload", {})
-        submission_type = (payload.get("submission_type") or payload.get("type") or "").strip()
-        if submission_type not in {"plugin", "update"} and not payload.get("plugin"):
-            continue
-        pending.append(req)
-
-    await state.update_data(
-        my_plugins=[plugin.get("slug") for plugin in user_plugins],
-        my_pending_plugins=[req.get("id") for req in pending if req.get("id")],
-        my_icons=[icon.get("slug") for icon in user_icons],
-    )
-
-    text = f"{t('profile_title', lang)}\n\n"
-    if user.username:
-        text += f"@{user.username}\n"
-    text += t("profile_stats", lang, plugins=len(user_plugins), icons=len(user_icons))
-    if not user_plugins and not user_icons:
-        text += f"\n\n{t('profile_empty', lang)}"
-
-    notify_all_enabled = is_subscribed(user.id, ALL_SUBSCRIPTION_KEY)
-    sent = await answer(
-        message,
-        text,
-        profile_kb(lang, has_plugins=bool(user_plugins), has_icons=bool(user_icons), notify_all_enabled=notify_all_enabled),
-        "profile",
-    )
+    text, keyboard = await build_profile(message.from_user, state, lang)
+    sent = await answer(message, text, keyboard, "profile")
     if sent:
         await remember_menu_owner(message, state, sent)
 
@@ -437,7 +419,8 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
         if not can_accept_vote(entry):
             await message.answer(t("vote_expired", lang), parse_mode=ParseMode.HTML)
             return True
-        if not inline_public and not can_vote_in_context(user.id, message.chat.id):
+        moderator = can_vote_in_context(user.id, message.chat.id)
+        if not inline_public and not moderator:
             await message.answer(t("admin_denied", lang), parse_mode=ParseMode.HTML)
             return True
         request_id = str(entry.get("id") or "")
@@ -452,6 +435,7 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
             vote,
             lang,
             int(message.chat.id),
+            public=not moderator,
         )
         if not ok:
             await message.answer(t("vote_expired", lang), parse_mode=ParseMode.HTML)
@@ -473,8 +457,7 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
             except Exception:
                 include_update = False
         await state.set_state(UserFlow.choosing_submission_type)
-        await _send_submission_rules(message, lang)
-        sent = await answer(message, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
+        sent = await answer(message, _submit_type_text(lang), submit_type_kb(lang, include_update=include_update), "suggestion")
         if sent:
             await remember_menu_owner(message, state, sent)
         return True
@@ -541,27 +524,11 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
     return False
 
 
-async def _send_submission_rules(target: Message | CallbackQuery, lang: str) -> None:
-    if isinstance(target, Message):
-        chat_id = target.chat.id
-        bot = target.bot
-    else:
-        if not target.message:
-            return
-        chat_id = target.message.chat.id
-        bot = target.bot
-    try:
-        await bot.send_message(
-            chat_id,
-            t("rules_before_submit", lang),
-            disable_web_page_preview=True,
-            parse_mode=ParseMode.HTML,
-        )
-    except Exception:
-        logger.exception("event=submission.rules_send_failed chat_id=%s", chat_id)
+def _submit_type_text(lang: str) -> str:
+    return f"<b>{t('choose_type', lang)}</b>\n\n{t('rules_before_submit', lang)}"
 
 
-async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str, *, show_rules: bool = True) -> None:
+async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str) -> None:
     user = cb.from_user
     include_update = False
     if user:
@@ -570,10 +537,7 @@ async def _render_submit_type(cb: CallbackQuery, state: FSMContext, lang: str, *
         except Exception:
             include_update = False
     await state.set_state(UserFlow.choosing_submission_type)
-    if show_rules and not (await state.get_data()).get("rules_shown"):
-        await _send_submission_rules(cb, lang)
-        await state.update_data(rules_shown=True)
-    await answer(cb, t("choose_type", lang), submit_type_kb(lang, include_update=include_update), "suggestion")
+    await answer(cb, _submit_type_text(lang), submit_type_kb(lang, include_update=include_update), "suggestion")
 
 
 async def _sync_submission_draft(
@@ -690,8 +654,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
         return
 
     if payload:
-        if payload.startswith("plugin_"):
-            payload = payload[len("plugin_") :]
+        payload = payload.removeprefix("plugin_")
         await state.update_data(start_payload=payload)
 
     if get_user_language(user_id):
@@ -710,20 +673,10 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
                     record_plugin_open(plugin_slug)
                 except Exception:
                     logger.exception("event=start.record_open_failed slug=%s", plugin_slug)
-                text = build_plugin_preview(plugin, lang)
-                link = plugin.get("channel_message", {}).get("link")
-                notify_all_enabled = is_subscribed(user_id, ALL_SUBSCRIPTION_KEY)
-                sent = await answer(
-                    message,
-                    text,
-                    plugin_detail_kb(
-                        link,
-                        back="catalog",
-                        lang=lang,
-                        subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(plugin_slug)}:catalog"),
-                    ),
-                    "catalog",
-                )
+                from bot.routers.catalog_flow import _plugin_detail_view
+
+                text, keyboard, _ = _plugin_detail_view(message.from_user, plugin, lang, "catalog", "catalog")
+                sent = await answer(message, text, keyboard, "catalog")
                 if sent:
                     await remember_menu_owner(message, state, sent)
                 return
@@ -832,15 +785,11 @@ async def on_appeal_text(message: Message, state: FSMContext) -> None:
 
 @router.message(Command("lang"))
 async def cmd_lang(message: Message, state: FSMContext) -> None:
-    if is_user_banned(message.from_user.id):
+    if not message.from_user or is_user_banned(message.from_user.id):
         return
-    lang = get_lang(message.from_user.id if message.from_user else None)
+    lang = get_lang(message.from_user.id)
     await state.set_state(UserFlow.choosing_language)
-    await message.answer(
-        t("language_prompt", lang),
-        reply_markup=language_kb(),
-        parse_mode=ParseMode.HTML,
-    )
+    await answer(message, t("language_prompt", lang), language_kb())
 
 
 @router.callback_query(F.data.startswith("lang:"))
@@ -860,22 +809,12 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
         if cb.message and await _route_start_payload_message(cb.message, state, lang, start_payload):
             await cb.answer(t("language_saved", lang))
             return
-        plugin = find_plugin_by_slug(start_payload)
+        plugin = find_plugin_by_slug(start_payload) or find_plugin_by_deeplink_token(start_payload)
         if plugin:
-            text = build_plugin_preview(plugin, lang)
-            link = plugin.get("channel_message", {}).get("link")
-            notify_all_enabled = is_subscribed(cb.from_user.id, ALL_SUBSCRIPTION_KEY) if cb.from_user else False
-            await answer(
-                cb,
-                text,
-                plugin_detail_kb(
-                    link,
-                    back="catalog",
-                    lang=lang,
-                    subscribe_callback=(None if notify_all_enabled else f"sub:toggle:{encode_slug(start_payload)}:catalog"),
-                ),
-                "catalog",
-            )
+            from bot.routers.catalog_flow import _plugin_detail_view
+
+            text, keyboard, _ = _plugin_detail_view(cb.from_user, plugin, lang, "catalog", "catalog")
+            await answer(cb, text, keyboard, "catalog")
             await cb.answer(t("language_saved", lang))
             return
 
@@ -909,41 +848,81 @@ async def on_home(cb: CallbackQuery, state: FSMContext) -> None:
     await ack(cb)
 
 
-@router.callback_query(F.data == "cancel")
+_EDITOR_PREFIXES = {"draft", "upd", "pend", "pendupd"}
+_EDITOR_INPUT_STATES = {"editing_draft_field", "entering_publish_not_before", "uploading_pending_file"}
+_EDITOR_ROOT_STATES = {"confirming_submission", "confirming_update"}
+_WIZARD_STATES = {
+    "uploading_file",
+    "entering_min_version",
+    "uploading_update_file",
+    "choosing_description_language",
+    "editing_description_translation",
+    "editing_usage_ru",
+    "editing_usage_en",
+    "choosing_category",
+    "confirming_submission",
+    "confirming_update",
+    "entering_changelog",
+    "choosing_plugin_to_update",
+}
+
+
+def _returns_to_editor(state_name: str, data: Dict[str, Any]) -> bool:
+    prefix = data.get("draft_prefix")
+    if prefix not in _EDITOR_PREFIXES or not data.get("plugin"):
+        return False
+    if state_name in _EDITOR_INPUT_STATES:
+        return True
+    if state_name == "entering_admin_comment":
+        return prefix in {"draft", "upd"} and data.get("pending_request_type") in {"new", "update"}
+    if state_name == "entering_update_note":
+        return prefix in _PENDING_PREFIXES and bool(data.get("pending_request_id")) \
+            and data.get("pending_request_id") == data.get("update_note_request_id")
+    return False
+
+
+@router.callback_query(F.data.in_({"cancel", "cancel:confirm"}))
 async def on_cancel(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     data = await state.get_data()
     picker = data.get("category_selection")
     if picker and not await _category_picker_valid(cb, state, picker.get("prefix"), lang):
         return
+    state_name = (await state.get_state() or "").split(":")[-1]
+    prefix = data.get("draft_prefix")
+
+    if _returns_to_editor(state_name, data):
+        if state_name == "entering_admin_comment":
+            await _discard_pending_comment_media_groups(cb)
+        await state.update_data(category_selection=None, edit_field=None, edit_lang=None, update_note_request_id=None)
+        await _show_editor(cb, state, prefix, lang)
+        await ack(cb, t("input_cancelled", lang))
+        return
+
+    if cb.data == "cancel" and state_name in _EDITOR_ROOT_STATES and prefix in {"draft", "upd"} and data.get("plugin"):
+        await answer(cb, t("cancel_submission_confirm", lang), cancel_confirm_kb(prefix, lang), None)
+        await ack(cb)
+        return
+
     await state.update_data(category_selection=None, edit_field=None)
     draft_id = data.get("draft_request_id")
     if draft_id:
         delete_request(draft_id)
 
-    current_state = await state.get_state() or ""
-    state_name = current_state.split(":")[-1]
+    if state_name == "uploading_update_file" and data.get("update_from_profile") and data.get("update_slug"):
+        from bot.routers.catalog_flow import _show_plugin_detail
 
-    if state_name in {
-        "uploading_file",
-        "entering_min_version",
-        "uploading_update_file",
-        "choosing_description_language",
-        "editing_description_translation",
-        "editing_usage_ru",
-        "editing_usage_en",
-        "choosing_category",
-        "confirming_submission",
-        "confirming_update",
-        "entering_changelog",
-        "choosing_plugin_to_update",
-    }:
-        await _render_submit_type(cb, state, lang, show_rules=False)
+        await state.set_state(UserFlow.idle)
+        if await _show_plugin_detail(cb, state, data["update_slug"], "my"):
+            await ack(cb, t("submission_cancelled", lang))
+        return
+
+    if state_name in _WIZARD_STATES and prefix not in _PENDING_PREFIXES:
+        await _render_submit_type(cb, state, lang)
     else:
         await _render_home(cb, state, lang)
 
     await ack(cb, t("submission_cancelled", lang))
-    await ack(cb)
 
 
 @router.callback_query(F.data == "submit")
@@ -971,9 +950,10 @@ async def _render_quiz_question(target, state: FSMContext, lang: str) -> None:
     if idx >= len(quiz):
         return
     q = quiz[idx]
+    options = "\n".join(f"<b>{number}.</b> {plain_html(option)}" for number, option in enumerate(q["options"], 1))
     await answer(
         target,
-        t("quiz_question", lang, current=idx + 1, total=len(quiz), text=plain_html(q["text"])),
+        t("quiz_question", lang, current=idx + 1, total=len(quiz), text=f"{plain_html(q['text'])}\n\n{options}"),
         quiz_kb(q["options"], idx, lang),
         "new",
     )
@@ -1058,7 +1038,8 @@ async def on_choose_plugin_update(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     current_version = plugin.get("ru", {}).get("version") or "?"
-    await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version, **category_fields(plugin), category_selection=None)
+    await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version, **category_fields(plugin), category_selection=None,
+                            update_from_profile=False)
     await state.set_state(UserFlow.uploading_update_file)
     await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "update")
     await ack(cb)
@@ -1087,7 +1068,8 @@ async def _ask_request_comment(cb: CallbackQuery, state: FSMContext, payload: di
     await _discard_pending_comment_media_groups(cb)
     await state.set_state(UserFlow.entering_admin_comment)
     await state.update_data(pending_comment=None, pending_comment_media=[], comment_required=comment_required, media_required=media_required)
-    await answer(cb, t(prompt_key, lang, max=COMMENT_MEDIA_LIMIT), comment_skip_kb(lang, required=True), scene)
+    await answer(cb, t(prompt_key, lang, max=COMMENT_MEDIA_LIMIT),
+                 comment_skip_kb(lang, required=True, back=request_type in {"new", "update"}), scene)
 
 
 _PENDING_PREFIXES = {"pend", "pendupd"}
@@ -1101,7 +1083,7 @@ async def _save_editor_change(state: FSMContext, user, prefix: str) -> None:
         await _stage_pending_changes(state)
 
 
-async def _show_editor(target: CallbackQuery | Message, state: FSMContext, prefix: str, lang: str, *, edit_message_id: int | None = None) -> None:
+async def _show_editor(target: CallbackQuery | Message, state: FSMContext, prefix: str, lang: str) -> None:
     is_update = prefix in _UPDATE_PREFIXES
     await state.set_state(UserFlow.confirming_update if is_update else UserFlow.confirming_submission)
     data = await state.get_data()
@@ -1113,27 +1095,24 @@ async def _show_editor(target: CallbackQuery | Message, state: FSMContext, prefi
             text = f"{status}\n\n{text}"
         kb = draft_edit_kb(
             prefix, t("btn_save_changes", lang),
-            include_cancel=True, include_checked_on=False,
+            include_checked_on=False,
             include_delete=entry.get("status") in _WITHDRAWABLE_REQUEST_STATUSES,
-            include_file=True, include_back=True, lang=lang,
+            include_file=True, include_back=True, back_callback="profile", lang=lang,
         )
         scene = "update" if is_update else "profile"
     else:
         kb = draft_edit_kb(prefix, t("btn_send_to_admin", lang), include_cancel=True, include_checked_on=False, lang=lang)
         scene = "update" if is_update else "new"
-    if edit_message_id and isinstance(target, Message):
-        try:
-            await target.bot.edit_message_text(
-                text, chat_id=target.chat.id, message_id=edit_message_id,
-                parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True,
-            )
-            return
-        except Exception as exc:
-            if "message is not modified" in str(exc).lower():
-                return
-    sent = await answer(target, text, kb, scene)
-    if message_id := getattr(sent, "message_id", None):
-        await state.update_data(draft_message_id=message_id)
+    await answer(target, text, kb, scene)
+
+
+async def _toggle_settings_flag(cb: CallbackQuery, state: FSMContext, prefix: str, lang: str) -> None:
+    plugin = dict((await state.get_data()).get("plugin") or {})
+    plugin["has_ui_settings"] = not plugin.get("has_ui_settings")
+    await state.update_data(plugin=plugin, edit_field=None)
+    await _save_editor_change(state, cb.from_user, prefix)
+    await _show_editor(cb, state, prefix, lang)
+    await ack(cb, t("settings_toggled_on" if plugin["has_ui_settings"] else "settings_toggled_off", lang))
 
 
 async def _ask_request_update_note(cb: CallbackQuery, state: FSMContext, request_id: str, lang: str) -> None:
@@ -1147,7 +1126,7 @@ async def _ask_request_update_note(cb: CallbackQuery, state: FSMContext, request
     text = t("ask_update_note", lang)
     if entry["status"] in {"approved", "scheduled"}:
         text += "\n\n" + t("update_note_returns_to_review", lang)
-    await answer(cb, text, cancel_kb(lang), "update" if entry["type"] == "update" else "new")
+    await answer(cb, text, cancel_kb(lang, back=True), "update" if entry["type"] == "update" else "new")
     await ack(cb)
 
 
@@ -1181,7 +1160,6 @@ async def on_open_pending_request(cb: CallbackQuery, state: FSMContext) -> None:
         pending_request_id=str(entry["id"]),
         draft_prefix="pendupd" if is_update else "pend",
         old_version=old_locale.get("version") or "",
-        draft_message_id=cb.message.message_id if cb.message else None,
     )
     await _show_editor(cb, state, "pendupd" if is_update else "pend", lang)
     await ack(cb)
@@ -1233,7 +1211,8 @@ async def on_profile_update(cb: CallbackQuery, state: FSMContext) -> None:
         return
 
     current_version = plugin.get("ru", {}).get("version") or "?"
-    await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version, **category_fields(plugin), category_selection=None)
+    await state.update_data(update_slug=slug, old_plugin=plugin, old_version=current_version, **category_fields(plugin), category_selection=None,
+                            update_from_profile=True)
     await state.set_state(UserFlow.uploading_update_file)
     await answer(cb, t("upload_update_file", lang, version=current_version), cancel_kb(lang), "update")
     await ack(cb)
@@ -1351,7 +1330,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         field = parts[2]
         if field == "file" and prefix == "pendupd":
             await state.set_state(UserFlow.uploading_pending_file)
-            await answer(cb, t("pending_upload_update_plugin", lang), cancel_kb(lang), None)
+            await answer(cb, t("pending_upload_update_plugin", lang), cancel_kb(lang, back=True), None)
             await cb.answer()
             return
         if field in {"description", "usage"}:
@@ -1363,17 +1342,19 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
             await _open_category_picker(cb, state, prefix, lang)
             await cb.answer()
             return
+        if field == "settings":
+            await _toggle_settings_flag(cb, state, prefix, lang)
+            return
 
         prompt = {
             "name": t("admin_prompt_new_name", lang),
             "author": t("admin_prompt_author", lang),
-            "settings": t("admin_prompt_has_settings", lang),
             "min_version": t("admin_prompt_min_version", lang),
         }.get(field, t("admin_prompt_value", lang))
 
         await state.update_data(edit_field=field)
         await state.set_state(UserFlow.editing_draft_field)
-        await answer(cb, prompt, cancel_kb(lang), None)
+        await answer(cb, prompt, cancel_kb(lang, back=True), None)
         await cb.answer()
         return
 
@@ -1383,9 +1364,7 @@ async def on_update_edit(cb: CallbackQuery, state: FSMContext) -> None:
         await state.set_state(UserFlow.editing_draft_field)
 
         prompt = t("admin_prompt_enter_text_ru", lang) if lang_choice == "ru" else t("admin_prompt_enter_text_en", lang)
-        msg = await answer(cb, prompt, cancel_kb(lang), None)
-        if msg:
-            await state.update_data(draft_message_id=msg.message_id)
+        await answer(cb, prompt, cancel_kb(lang, back=True), None)
         await cb.answer()
         return
 
@@ -1458,8 +1437,9 @@ async def on_pending_delete(cb: CallbackQuery, state: FSMContext) -> None:
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=t("btn_confirm", lang), callback_data=f"usr:withdraw_confirm:{request_callback_token(request_id)}"),
-                InlineKeyboardButton(text=t("btn_cancel", lang), callback_data=cb.data.replace(":delete", ":back")),
+                InlineKeyboardButton(text=t("btn_confirm", lang), style="danger",
+                                     callback_data=f"usr:withdraw_confirm:{request_callback_token(request_id)}"),
+                InlineKeyboardButton(text=t("btn_keep_editing", lang), callback_data=cb.data.replace(":delete", ":back")),
             ]
         ]
     )
@@ -1568,11 +1548,10 @@ async def on_file(message: Message, state: FSMContext) -> None:
     if not is_valid_version(raw_min) or not meets_min_supported(raw_min):
         await state.set_state(UserFlow.entering_min_version)
         prompt_key = "require_min_version" if not is_valid_version(raw_min) else "min_version_too_low"
-        await message.answer(
+        await answer(
+            message,
             t(prompt_key, lang, min=get_min_supported_version(), current=normalize_version(raw_min) or "—"),
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
-            reply_markup=cancel_kb(lang),
+            cancel_kb(lang),
         )
         return
 
@@ -1584,8 +1563,7 @@ async def _continue_after_plugin_parsed(message: Message, state: FSMContext, lan
     await state.set_state(UserFlow.choosing_description_language)
 
     draft_text = _render_draft_text(await state.get_data())
-    await answer(message, draft_text, image=None)
-    await answer(message, t("choose_description_language", lang), description_lang_kb(), None)
+    await answer(message, f"{draft_text}\n\n<b>{t('choose_description_language', lang)}</b>", description_lang_kb(lang), "new")
 
 
 def _submission_error_text(error: str, lang: str, *, old_version: str = "", plugin_min: str = "") -> str:
@@ -1610,13 +1588,12 @@ async def on_min_version_input(message: Message, state: FSMContext) -> None:
     lang = await get_language(message, state)
     raw = (message.text or "").strip()
     if not is_valid_version(raw):
-        await message.answer(t("invalid_min_version", lang), reply_markup=cancel_kb(lang))
+        await message.answer(t("invalid_min_version", lang))
         return
     if not meets_min_supported(raw):
         await message.answer(
             t("min_version_too_low", lang, min=get_min_supported_version(), current=normalize_version(raw)),
             parse_mode=ParseMode.HTML,
-            reply_markup=cancel_kb(lang),
         )
         return
 
@@ -1674,12 +1651,7 @@ async def on_description_translation(message: Message, state: FSMContext) -> Non
 
     await state.set_state(UserFlow.editing_usage_ru)
     lang = await get_language(message, state)
-    await message.answer(
-        t("enter_usage_ru", lang),
-        parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True,
-        reply_markup=cancel_kb(lang),
-    )
+    await answer(message, t("enter_usage_ru", lang), cancel_kb(lang))
 
 
 @router.message(UserFlow.editing_usage_ru)
@@ -1738,7 +1710,7 @@ async def on_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
 
     if field == "file" and prefix == "pend":
         await state.set_state(UserFlow.uploading_pending_file)
-        await answer(cb, t("pending_upload_plugin", lang), cancel_kb(lang), None)
+        await answer(cb, t("pending_upload_plugin", lang), cancel_kb(lang, back=True), None)
         await cb.answer()
         return
 
@@ -1752,17 +1724,19 @@ async def on_draft_edit(cb: CallbackQuery, state: FSMContext) -> None:
         await _open_category_picker(cb, state, prefix, lang)
         await cb.answer()
         return
+    if field == "settings":
+        await _toggle_settings_flag(cb, state, prefix, lang)
+        return
 
     prompt = {
         "name": t("admin_prompt_new_name", lang),
         "author": t("admin_prompt_author", lang),
-        "settings": t("admin_prompt_has_settings", lang),
         "min_version": t("admin_prompt_min_version", lang),
     }.get(field, t("admin_prompt_value", lang))
 
     await state.update_data(edit_field=field)
     await state.set_state(UserFlow.editing_draft_field)
-    await answer(cb, prompt, cancel_kb(lang), None)
+    await answer(cb, prompt, cancel_kb(lang, back=True), None)
     await ack(cb)
 
 
@@ -1774,7 +1748,7 @@ async def on_draft_not_before(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     await state.update_data(draft_prefix=prefix)
     await state.set_state(UserFlow.entering_publish_not_before)
-    await answer(cb, t("publish_not_before_prompt", lang), cancel_kb(lang), None)
+    await answer(cb, t("publish_not_before_prompt", lang), cancel_kb(lang, back=True), None)
     await ack(cb)
 
 
@@ -1810,9 +1784,7 @@ async def on_draft_language(cb: CallbackQuery, state: FSMContext) -> None:
     lang = await get_language(cb, state)
     prompt = t("admin_prompt_enter_text_ru", lang) if lang_choice == "ru" else t("admin_prompt_enter_text_en", lang)
 
-    msg = await answer(cb, prompt, cancel_kb(lang), None)
-    if msg:
-        await state.update_data(draft_message_id=msg.message_id)
+    await answer(cb, prompt, cancel_kb(lang, back=True), None)
     await ack(cb)
 
 
@@ -1857,31 +1829,31 @@ async def on_draft_field_value(message: Message, state: FSMContext) -> None:
     edit_lang = data.get("edit_lang")
     prefix = (data.get("draft_prefix") or "draft").strip()
 
+    plugin = dict(data.get("plugin") or {})
     if field in {"description", "usage"}:
-        key = f"{field}_{edit_lang}"
-        await state.update_data({key: text_html})
-    elif field == "name":
-        plugin = data.get("plugin", {})
-        plugin["name"] = text_plain
-        await state.update_data(plugin=plugin)
-    elif field == "author":
-        plugin = data.get("plugin", {})
-        plugin["author"] = text_plain
+        await state.update_data({f"{field}_{edit_lang}": text_html})
+    elif field in {"name", "author"}:
+        if len(text_plain) > _DRAFT_NAME_LIMIT:
+            await message.answer(t("draft_name_too_long", lang, max=_DRAFT_NAME_LIMIT))
+            return
+        plugin[field] = text_plain
         await state.update_data(plugin=plugin)
     elif field == "min_version":
-        plugin = data.get("plugin", {})
-        plugin["min_version"] = text_plain
-        await state.update_data(plugin=plugin)
-    elif field == "settings":
-        value = text_plain.lower()
-        has_settings = value in {"да", "yes", "1", "true"}
-        plugin = data.get("plugin", {})
-        plugin["has_ui_settings"] = has_settings
+        if not is_valid_version(text_plain):
+            await message.answer(t("invalid_min_version", lang))
+            return
+        if not meets_min_supported(text_plain):
+            await message.answer(
+                t("min_version_too_low", lang, min=get_min_supported_version(), current=normalize_version(text_plain)),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        plugin["min_version"] = normalize_version(text_plain)
         await state.update_data(plugin=plugin)
 
     await state.update_data(edit_field=None, edit_lang=None)
     await _save_editor_change(state, message.from_user, prefix)
-    await _show_editor(message, state, prefix, lang, edit_message_id=(await state.get_data()).get("draft_message_id"))
+    await _show_editor(message, state, prefix, lang)
 
 
 @router.message(UserFlow.uploading_pending_file, F.document)
@@ -2158,7 +2130,8 @@ async def _render_comment_state(target, state: FSMContext, lang: str) -> None:
     await answer(
         target,
         text,
-        comment_skip_kb(lang, ready, len(media), comment_required or media_required),
+        comment_skip_kb(lang, ready, len(media), comment_required or media_required,
+                        back=data.get("pending_request_type") in {"new", "update"}),
         "delete" if comment_required else ("update" if data.get("pending_request_type") == "update" else "new"),
     )
 

@@ -22,7 +22,7 @@ from bot.cache import get_admins_super
 from bot.helpers import ack, try_react_pray
 from bot.context import get_lang
 from bot.formatting import telegram_html
-from bot.keyboards import _btn
+from bot.keyboards import _back, _btn
 from bot.texts import t
 
 router = Router()
@@ -260,8 +260,7 @@ def _is_valid_welcome_template(template: str) -> bool:
 
     for match in _BUTTON_URL_PATTERN.finditer(templ):
         raw_url = (match.group("url") or "").strip()
-        if raw_url.endswith(":same"):
-            raw_url = raw_url[: -len(":same")]
+        raw_url = raw_url.removesuffix(":same")
         if not _is_valid_button_url(raw_url):
             return False
     return True
@@ -312,7 +311,7 @@ def _settings_kb(chat_id: int, lang: str) -> InlineKeyboardMarkup:
 
 
 def _panel_kb_back(lang: str = "ru", callback: str = "join:back") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[_btn(t("btn_back", lang), callback_data=callback, icon="back")]])
+    return InlineKeyboardMarkup(inline_keyboard=[[_back(lang, callback)]])
 
 
 def _panel_kb_welcome(chat_id: int, lang: str) -> InlineKeyboardMarkup:
@@ -325,7 +324,7 @@ def _panel_kb_welcome(chat_id: int, lang: str) -> InlineKeyboardMarkup:
             [_btn(t("join_welcome_preview", lang), callback_data="join:welcome_preview", icon="search")],
             [_btn(t("join_btn_edit", lang), callback_data="join:welcome_edit", icon="edit")],
             [_btn(t("join_welcome_community_preset", lang), callback_data="join:welcome_preset", icon="file")],
-            [_btn(t("btn_back", lang), callback_data="join:back", icon="back")],
+            [_back(lang, "join:back")],
         ]
     )
 
@@ -445,7 +444,8 @@ async def _send_welcome(bot, chat, user, lang: str, *, personal: bool | None = N
         if not any(marker in str(exc).lower() for marker in ("parse entities", "can't find end", "must be escaped")):
             logger.warning("event=joinly.welcome_send_failed chat_id=%s error=%s", chat.id, exc)
             return None
-        plain_text, safe_kb = _parse_buttonurl_md(_unescape_md_v2(templ).format(**raw_vars))
+        plain_template, safe_kb = _parse_buttonurl_md(_unescape_md_v2(templ))
+        plain_text = plain_template.format(**raw_vars)
         kwargs["reply_markup"] = safe_kb
         return await _safe_telegram(partial(
             bot.send_message, chat.id, plain_text or "—", parse_mode=None, **kwargs,
@@ -490,7 +490,7 @@ def _panel_kb_post_guard(chat_id: int, lang: str) -> InlineKeyboardMarkup:
             [_btn(t("join_btn_post_permissions", lang), callback_data="join:post_permissions", icon="lock")],
             [_btn(t("join_btn_post_rules_edit", lang), callback_data="join:post_rules_edit", icon="edit")],
             [_btn(t("join_btn_post_unlock_now", lang), callback_data="join:post_unlock_now", icon="lock", style="success")],
-            [_btn(t("btn_back", lang), callback_data="join:back", icon="back")],
+            [_back(lang, "join:back")],
         ]
     )
 
@@ -519,7 +519,7 @@ def _panel_kb_post_permissions(chat_id: int, lang: str) -> InlineKeyboardMarkup:
             label = _post_lock_permission_label(field, lang)
             row.append(_btn(label, callback_data=f"join:post_perm:{field}", icon=_status_icon(enabled), style=_status_style(enabled)))
         rows.append(row)
-    rows.append([_btn(t("btn_back", lang), callback_data="join:post_guard", icon="back")])
+    rows.append([_back(lang, "join:post_guard")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -527,7 +527,7 @@ def _panel_kb_reaction(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_btn(t("join_btn_edit", lang), callback_data="join:reaction_edit", icon="edit")],
-            [_btn(t("btn_back", lang), callback_data="join:back", icon="back")],
+            [_back(lang, "join:back")],
         ]
     )
 

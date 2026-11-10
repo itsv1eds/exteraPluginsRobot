@@ -196,7 +196,12 @@ async def main() -> None:
     bot.session.middleware(TelegramRequestTimingMiddleware())
     bot.session.middleware(ArchiveApiMiddleware())
     
-    dp = Dispatcher()
+    from bot.fsm_storage import PersistentStorage
+    from core.storage import DATA_DIR
+
+    fsm_storage = PersistentStorage(DATA_DIR / "fsm.sqlite3")
+    dp = Dispatcher(storage=fsm_storage)
+    dp.shutdown.register(fsm_storage.close)
     
     dp.update.middleware(UserActionLoggingMiddleware(enabled=True))
     dp.callback_query.outer_middleware(CallbackAckWatchdogMiddleware())

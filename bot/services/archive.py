@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import gzip
 import hashlib
 import json
@@ -145,11 +146,28 @@ def _seed_history():
     archive_log.record_events((kind, record, True) for kind, records in sources for record in records if isinstance(record, dict))
     media = []
     for entry in sources[0][1]:
-        for item in (entry.get("payload") or {}).get("comment_media") or []:
+        payload = entry.get("payload") or {}
+        source = _request_media_source(entry)
+        for item in payload.get("comment_media") or []:
             if isinstance(item, dict) and item.get("file_id") and item.get("type") in _media_types:
-                media.append((item["file_id"], item["type"], None, None))
+                media.append((item["file_id"], item["type"], None, None, source))
     if media:
         archive_log.record_media(media)
+
+
+def _request_media_source(entry):
+    payload = entry.get("payload") or {}
+    plugin = payload.get("plugin") if isinstance(payload.get("plugin"), dict) else {}
+    who = f"@{payload['username']}" if payload.get("username") else str(payload.get("user_id") or "?")
+    return f"Пример к заявке {entry.get('id')} · {plugin.get('name') or plugin.get('id') or '—'} · от {who}"
+
+
+def _message_media_source(name, message):
+    sender = message.get("from_user") or message.get("from") or {}
+    who = f"@{sender['username']}" if sender.get("username") else str(sender.get("id") or "?")
+    kind = "изменённое сообщение" if name.startswith("edited") else "сообщение"
+    moment = datetime.fromtimestamp(int(message.get("date") or 0), timezone.utc).strftime("%d.%m.%Y %H:%M UTC")
+    return f"Личное {kind} боту от {who} (id {sender.get('id', '?')}) · #{message.get('message_id', '?')} · {moment}"
 
 
 def record_updates(bot_id, updates, archive_chat_ids):
@@ -161,14 +179,17 @@ def record_updates(bot_id, updates, archive_chat_ids):
             continue
         payload = _api_payload(update.model_dump(exclude_none=True, exclude_unset=True, warnings=False))
         events.append(("telegram.update", {"bot_id": bot_id, **payload}, True))
-        for name in ("message", "edited_message", "channel_post", "edited_channel_post", "business_message", "edited_business_message"):
+        for name in ("message", "edited_message"):
             message = payload.get(name) or {}
+            if (message.get("chat") or {}).get("type") != "private":
+                continue
             for kind in _media_types:
                 item = message.get(kind)
                 if kind == "photo" and item:
                     item = item[-1]
                 if isinstance(item, dict) and item.get("file_id"):
-                    media.append((item["file_id"], kind, item.get("file_name"), item.get("file_size")))
+                    media.append((item["file_id"], kind, item.get("file_name"), item.get("file_size"),
+                                  _message_media_source(name, message)))
     archive_log.record_events(events)
     if media:
         archive_log.record_media(media)
@@ -285,9 +306,14 @@ async def _forward_media(bot, chat_id):
     row = await asyncio.to_thread(archive_log.next_media, time.time())
     if not row:
         return False
-    number, file_id, kind, local = row
+    number, file_id, kind, local, source = row
+    caption = f"Медиа #{number} · {kind}\n{source or 'Источник не записан (сохранено до 10.11.2026)'}"
     try:
-        message = await getattr(bot, f"send_{kind}")(chat_id, file_id, disable_notification=True)
+        if kind in {"video_note"}:
+            message = await bot.send_video_note(chat_id, file_id, disable_notification=True)
+        else:
+            message = await getattr(bot, f"send_{kind}")(chat_id, file_id, caption=caption, parse_mode=None,
+                                                         disable_notification=True)
     except TelegramRetryAfter:
         raise
     except TelegramBadRequest as exc:

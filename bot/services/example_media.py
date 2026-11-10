@@ -67,7 +67,7 @@ def eligible(entry: dict[str, Any]) -> bool:
     not_before = str(payload.get("example_media_not_before") or "")
     if not_before:
         try:
-            scheduled_at = datetime.fromisoformat(not_before.replace("Z", "+00:00"))
+            scheduled_at = datetime.fromisoformat(not_before)
             if scheduled_at.tzinfo is None:
                 scheduled_at = scheduled_at.replace(tzinfo=timezone.utc)
             if scheduled_at > datetime.now(timezone.utc):

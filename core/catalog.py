@@ -1,6 +1,8 @@
+import difflib
 import hashlib
 import random
 import re
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
 from core.storage import load_icons, load_plugins
@@ -154,59 +156,87 @@ def list_plugins_by_category(category_key: str) -> List[CatalogEntry]:
     return [p for p in entries if any(key in categories_for(p) for key in selected)]
 
 
-def search_plugins(query: str, limit: int = 10) -> List[CatalogEntry]:
-    normalized = query.strip().lower()
-    entries = _get_published_plugins()
-    
-    if not normalized:
+_RU_LAYOUT = "йцукенгшщзхъфывапролджэячсмитьбю"
+_EN_LAYOUT = "qwertyuiop[]asdfghjkl;'zxcvbnm,."
+_TO_EN = str.maketrans(_RU_LAYOUT, _EN_LAYOUT)
+_TO_RU = str.maketrans(_EN_LAYOUT, _RU_LAYOUT)
+
+
+def _fold(value: Any) -> str:
+    return " ".join(str(value or "").lower().replace("ё", "е").split())
+
+
+def _query_variants(query: str) -> List[str]:
+    base = _fold(query).lstrip("@#")
+    variants = [base, base.translate(_TO_EN), base.translate(_TO_RU)]
+    return [value for value in dict.fromkeys(variants) if value]
+
+
+def _search_fields(entry: CatalogEntry, extra) -> tuple[List[str], str]:
+    names = [entry.get("slug"), entry.get("plugin_id")]
+    details = []
+    for locale in ("ru", "en"):
+        locale_data = entry.get(locale, {}) or {}
+        names += [locale_data.get("name"), locale_data.get("id")]
+        details += [locale_data.get("description"), locale_data.get("usage")]
+    authors = entry.get("authors") or {}
+    details += [authors.get("ru"), authors.get("en"), *(authors.get("handles") or [])]
+    if extra:
+        details += extra(entry)
+    return [_fold(name) for name in names if name], _fold(" ".join(str(item) for item in details if item))
+
+
+def _search(entries: List[CatalogEntry], query: str, limit: int, extra=None) -> List[CatalogEntry]:
+    variants = _query_variants(query)
+    if not variants:
         result = entries.copy()
         random.shuffle(result)
-        return result[:limit]
+        return [(entry, 0) for entry in result[:limit]]
 
-    def matches(plugin: CatalogEntry) -> bool:
-        haystack_parts: List[str] = []
-        for locale in ("ru", "en"):
-            locale_data = plugin.get(locale, {}) or {}
-            haystack_parts.extend([
-                locale_data.get("name"),
-                locale_data.get("description"),
-                locale_data.get("usage"),
-            ])
-        haystack_parts.append(plugin.get("slug"))
-        haystack_parts.extend(categories_for(plugin))
-        haystack = " ".join(filter(None, haystack_parts)).lower()
-        return normalized in haystack
+    ranked = []
+    fields = []
+    for position, entry in enumerate(entries):
+        names, details = _search_fields(entry, extra)
+        fields.append((names, entry))
+        rank = None
+        for variant in variants:
+            if any(name.startswith(variant) for name in names):
+                rank = 0
+            elif any(variant in name for name in names):
+                rank = 1 if rank is None else min(rank, 1)
+            elif all(word in " ".join(names) + " " + details for word in variant.split()):
+                rank = 2 if rank is None else min(rank, 2)
+            if rank == 0:
+                break
+        if rank is not None:
+            ranked.append((rank, position, entry))
+    if not ranked:
+        lookup = {}
+        for names, entry in fields:
+            for name in names:
+                lookup.setdefault(name, entry)
+        close = difflib.get_close_matches(variants[0], list(lookup), n=limit, cutoff=0.6)
+        seen = set()
+        for position, name in enumerate(close):
+            entry = lookup[name]
+            if id(entry) not in seen:
+                seen.add(id(entry))
+                ranked.append((3, position, entry))
+    ranked.sort(key=lambda item: item[:2])
+    return [(entry, rank) for rank, _, entry in ranked[:limit]]
 
-    results = [p for p in entries if matches(p)]
-    random.shuffle(results)
-    return results[:limit]
+
+def search_plugins_ranked(query: str, limit: int = 10) -> tuple[List[CatalogEntry], bool]:
+    found = _search(_get_published_plugins(), query, limit, categories_for)
+    return [entry for entry, _ in found], bool(found) and all(rank == 3 for _, rank in found)
+
+
+def search_plugins(query: str, limit: int = 10) -> List[CatalogEntry]:
+    return search_plugins_ranked(query, limit)[0]
 
 
 def search_icons(query: str, limit: int = 10) -> List[CatalogEntry]:
-    normalized = query.strip().lower()
-    entries = _get_published_icons()
-    
-    if not normalized:
-        result = entries.copy()
-        random.shuffle(result)
-        return result[:limit]
-
-    def matches(icon: CatalogEntry) -> bool:
-        haystack_parts: List[str] = []
-        for locale in ("ru", "en"):
-            locale_data = icon.get(locale, {}) or {}
-            haystack_parts.extend([
-                locale_data.get("name"),
-                locale_data.get("description"),
-                locale_data.get("usage"),
-            ])
-        haystack_parts.append(icon.get("slug"))
-        haystack = " ".join(filter(None, haystack_parts)).lower()
-        return normalized in haystack
-
-    results = [i for i in entries if matches(i)]
-    random.shuffle(results)
-    return results[:limit]
+    return [entry for entry, _ in _search(_get_published_icons(), query, limit)]
 
 
 def _normalize_slug(value: Optional[str]) -> str:
@@ -239,49 +269,37 @@ def find_icon_by_slug(slug: Optional[str]) -> Optional[CatalogEntry]:
     return _icon_slug_index.get(target)
 
 
+@lru_cache(maxsize=512)
+def _handle_pattern(handle: str) -> re.Pattern:
+    return re.compile(rf"(?<![\w@]){re.escape(handle)}(?!\w)")
+
+
+def _mentions_handle(text: Any, handle: str) -> bool:
+    return bool(text) and handle in (lowered := str(text).lower()) and bool(_handle_pattern(handle).search(lowered))
+
+
 def find_user_plugins(user_id: int, username: str = "") -> List[CatalogEntry]:
     results = []
     handle = f"@{username.lower()}" if username else ""
-    
+
     for plugin in _get_published_plugins():
-        submitters = plugin.get("submitters", [])
-        
-        for sub in submitters:
-            if sub.get("user_id") == user_id:
-                results.append(plugin)
-                break
-        else:
-            if handle:
-                authors = plugin.get("authors", {})
-                handles = authors.get("handles", [])
-                raw_blocks = plugin.get("raw_blocks", {}) or {}
-                raw_ru = raw_blocks.get("ru") if isinstance(raw_blocks.get("ru"), dict) else {}
-                raw_en = raw_blocks.get("en") if isinstance(raw_blocks.get("en"), dict) else {}
-                
-                if any(h.lower() == handle for h in handles):
-                    results.append(plugin)
-                    continue
-                
-                for locale in ("ru", "en"):
-                    author_text = (authors.get(locale) or "").lower()
-                    if handle in author_text:
-                        results.append(plugin)
-                        break
-                else:
-                    raw_author_text = " ".join(
-                        filter(
-                            None,
-                            [
-                                (raw_ru.get("author") or ""),
-                                (raw_ru.get("author_channel") or ""),
-                                (raw_en.get("author") or ""),
-                                (raw_en.get("author_channel") or ""),
-                            ],
-                        )
-                    ).lower()
-                    if handle and handle in raw_author_text:
-                        results.append(plugin)
-    
+        if any(sub.get("user_id") == user_id for sub in plugin.get("submitters", [])):
+            results.append(plugin)
+            continue
+        if not handle:
+            continue
+        authors = plugin.get("authors", {})
+        if any(str(item).lower() == handle for item in authors.get("handles", [])):
+            results.append(plugin)
+            continue
+        raw_blocks = plugin.get("raw_blocks", {}) or {}
+        candidates = [authors.get("ru"), authors.get("en")]
+        for locale in ("ru", "en"):
+            block = raw_blocks.get(locale) if isinstance(raw_blocks.get(locale), dict) else {}
+            candidates += [block.get("author"), block.get("author_channel")]
+        if any(_mentions_handle(text, handle) for text in candidates):
+            results.append(plugin)
+
     return results
 
 

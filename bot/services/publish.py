@@ -326,50 +326,6 @@ async def publish_plugin(
     return {"message_id": message.message_id, "chat_id": channel_id, "link": link}
 
 
-async def publish_icon(
-    entry: Dict[str, Any],
-    actor: str | None = None,
-    actor_id: int | None = None,
-) -> Dict[str, Any]:
-    from userbot.client import get_userbot
-
-    userbot = await get_userbot()
-    if not userbot:
-        raise ValueError("Userbot not available")
-
-    payload = entry.get("payload", {})
-    icon = payload.get("icon", {})
-    submitter_id = payload.get("user_id")
-    submitter_username = payload.get("username", "")
-
-    post_text = build_icon_channel_post(entry)
-    file_path = icon.get("file_path")
-    download_name = fit_filename(str(icon.get('id') or icon.get('name') or 'icons'), "icons")
-
-    result = await userbot.publish_icon(post_text, file_path, download_name)
-
-    _complete_publication(entry, actor, actor_id, plugin=False)
-
-    config = get_config()
-    channel_username = (
-        (config.get("icons_channel", {}) or {}).get("username")
-        or "exteraIcons"
-    )
-
-    add_icon_to_catalog(
-        entry,
-        result["message_id"],
-        result["chat_id"],
-        channel_username,
-        submitter_id,
-        submitter_username,
-    )
-
-    await flush_documents("requests", "icons")
-
-    return result
-
-
 async def update_plugin(
     entry: Dict[str, Any],
     old_catalog_entry: Dict[str, Any],
@@ -550,7 +506,7 @@ def add_updated_plugin(name: str, link: str) -> None:
         added_at = it.get("added_at")
         if isinstance(added_at, str):
             try:
-                if datetime.fromisoformat(added_at.replace("Z", "+00:00")).replace(tzinfo=None) < cutoff:
+                if datetime.fromisoformat(added_at).replace(tzinfo=None) < cutoff:
                     continue
             except Exception:
                 pass
@@ -589,7 +545,7 @@ def seed_updated_plugins() -> int:
         include = False
         if isinstance(updated_at, str):
             try:
-                include = datetime.fromisoformat(updated_at.replace("Z", "+00:00")).replace(tzinfo=None) >= cutoff
+                include = datetime.fromisoformat(updated_at).replace(tzinfo=None) >= cutoff
             except Exception:
                 include = False
         checked_ru = (p.get("ru") or {}).get("checked_on")
@@ -613,114 +569,6 @@ def seed_updated_plugins() -> int:
         updated["items"] = items[-200:]
     save_updated(updated)
     return len(items)
-
-
-def add_icon_to_catalog(
-    entry: Dict[str, Any],
-    message_id: int,
-    chat_id: int,
-    channel_username: str,
-    submitter_id: Optional[int] = None,
-    submitter_username: Optional[str] = None,
-) -> None:
-    payload = entry.get("payload", {})
-    icon = payload.get("icon", {})
-
-    slug = make_slug(icon.get("name") or icon.get("id"))
-    author = icon.get("author", "")
-
-    handles = list(set(re.findall(r"@[\w]+", author)))
-
-    submitters = []
-    if submitter_id:
-        submitters.append({"user_id": submitter_id, "username": submitter_username or ""})
-
-    catalog_entry = {
-        "slug": slug,
-        "status": "published",
-        "category": None,
-        "authors": {
-            "ru": author,
-            "en": author,
-            "handles": handles,
-        },
-        "submitters": submitters,
-        "ru": {
-            "name": icon.get("name"),
-            "description": None,
-            "usage": None,
-            "min_version": None,
-            "version": icon.get("version"),
-            "settings_label": "❌",
-        },
-        "en": {
-            "name": icon.get("name"),
-            "description": None,
-            "usage": None,
-            "min_version": None,
-            "version": icon.get("version"),
-            "settings_label": "❌",
-        },
-        "settings": {"has_ui": False},
-        "requirements": {"min_version": None},
-        "channel_message": {
-            "chat_id": chat_id,
-            "message_id": message_id,
-            "link": f"https://t.me/{channel_username}/{message_id}",
-        },
-        "published_at": datetime.utcnow().isoformat(),
-        "file": {
-            "file_id": icon.get("file_id"),
-            "file_name": Path(icon.get("file_path", "")).name if icon.get("file_path") else None,
-        },
-    }
-
-    db = load_icons()
-    icons = db.setdefault("iconpacks", [])
-
-    idx = next((i for i, p in enumerate(icons) if p.get("slug") == slug), None)
-    if idx is not None:
-        old_submitters = icons[idx].get("submitters", [])
-        for sub in old_submitters:
-            if sub not in catalog_entry["submitters"]:
-                catalog_entry["submitters"].append(sub)
-        icons[idx] = catalog_entry
-    else:
-        icons.append(catalog_entry)
-
-    save_icons(db)
-    _invalidate_all_icons()
-
-
-def add_submitter_to_iconpack(slug: str, user_id: int, username: str = "") -> bool:
-    target = (slug or "").strip().lower()
-    if not target:
-        return False
-
-    db = load_icons()
-    packs = db.get("iconpacks") or []
-    if not isinstance(packs, list):
-        return False
-
-    for pack in packs:
-        if not isinstance(pack, dict):
-            continue
-        if (pack.get("slug") or "").strip().lower() != target:
-            continue
-
-        submitters = pack.setdefault("submitters", [])
-        if not isinstance(submitters, list):
-            submitters = []
-            pack["submitters"] = submitters
-
-        item = {"user_id": int(user_id), "username": username or ""}
-        if item not in submitters:
-            submitters.append(item)
-            save_icons(db)
-            _invalidate_all_icons()
-        return True
-
-    return False
 
 
 def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int) -> None:
@@ -868,15 +716,6 @@ async def remove_user_content(user_id: int, username: str = "") -> dict:
     icons = find_user_icons(user_id, username)
     for icon in icons:
         slug = icon.get("slug", "")
-        message_id = icon.get("channel_message", {}).get("message_id")
-        try:
-            if userbot and message_id:
-                ub = await get_userbot()
-                if ub:
-                    entity = await ub.get_icons_publish_entity()
-                    await ub.client.delete_messages(entity, message_id)
-        except Exception as e:
-            errors.append(f"icon/{slug}: {e}")
         try:
             remove_icon_entry(slug)
             removed_icons.append(slug)
@@ -888,6 +727,57 @@ async def remove_user_content(user_id: int, username: str = "") -> dict:
         "removed_icons": removed_icons,
         "errors": errors,
     }
+
+
+_PACK_LINK_RE = re.compile(r"^https://t\.me/(?:c/(\d+)|([A-Za-z][\w]{3,31}))/(\d+)$")
+
+
+def parse_pack_link(link: str) -> Optional[Dict[str, Any]]:
+    match = _PACK_LINK_RE.match(str(link or "").strip())
+    if not match:
+        return None
+    private_id, username, message_id = match.groups()
+    return {
+        "link": match.group(0),
+        "chat_id": int(f"-100{private_id}") if private_id else None,
+        "username": username or "",
+        "message_id": int(message_id),
+    }
+
+
+def add_icon_pack(draft: Dict[str, Any]) -> str:
+    name = str(draft.get("name") or "").strip()
+    slug = make_slug(name)
+    post = parse_pack_link(draft.get("link"))
+    if not name or not slug:
+        raise ValueError("icon_pack_name_required")
+    if not post:
+        raise ValueError("icon_pack_bad_link")
+    db = load_icons()
+    icons = db.setdefault("iconpacks", [])
+    if any(item.get("slug") == slug for item in icons):
+        raise ValueError("icon_pack_exists")
+    author = str(draft.get("author") or "").strip()
+    locale = {"name": name, "description": None, "usage": None, "min_version": None,
+              "version": str(draft.get("version") or "").strip() or None, "settings_label": "❌"}
+    icons.append({
+        "slug": slug,
+        "status": "published",
+        "category": None,
+        "authors": {"ru": author, "en": author, "handles": sorted(set(re.findall(r"@\w+", author)))},
+        "submitters": [],
+        "ru": dict(locale),
+        "en": dict(locale),
+        "count": int(draft.get("count") or 0),
+        "settings": {"has_ui": False},
+        "requirements": {"min_version": None},
+        "channel_message": {"chat_id": post["chat_id"], "message_id": post["message_id"], "link": post["link"]},
+        "published_at": datetime.now(timezone.utc).isoformat(),
+        "added_by": draft.get("added_by"),
+    })
+    save_icons(db)
+    _invalidate_all_icons()
+    return slug
 
 
 def make_slug(name: str) -> str:

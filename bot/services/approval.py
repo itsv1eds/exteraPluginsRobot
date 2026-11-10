@@ -2,7 +2,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 
-from aiogram.exceptions import TelegramRetryAfter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 
 from bot.context import get_lang
 from bot.formatting import plain_html, split_html
@@ -42,7 +42,7 @@ def approval_status_text(entry: dict, lang: str) -> str:
         return t("review_approved", lang)
     if entry.get("status") == "scheduled" and payload.get("scheduled_at"):
         try:
-            value = datetime.fromisoformat(str(payload["scheduled_at"]).replace("Z", "+00:00"))
+            value = datetime.fromisoformat(str(payload["scheduled_at"]))
         except ValueError:
             return t("review_approved", lang)
         value = value.replace(tzinfo=value.tzinfo or timezone.utc)
@@ -89,6 +89,13 @@ def schedule_request(request_id: str, scheduled_at: datetime, actor: str, actor_
         add_audit_event("moderation.request_scheduled", actor=actor, actor_id=actor_id,
                         request_id=request_id, details={"scheduled_at": moment.isoformat(), "previous": previous})
     return get_request_by_id(request_id)
+
+
+_UNREACHABLE_MARKERS = ("chat not found", "user is deactivated", "bot was blocked", "user not found", "peer_id_invalid")
+
+
+def _author_unreachable(exc: Exception) -> bool:
+    return isinstance(exc, TelegramForbiddenError) or any(marker in str(exc).lower() for marker in _UNREACHABLE_MARKERS)
 
 
 def _notification_key(entry: dict) -> str:
@@ -149,6 +156,18 @@ async def notify_author_approval(bot, request_id: str) -> None:
                 "approval_notification_progress": None,
             })
             await flush_documents("requests")
+    except (TelegramForbiddenError, TelegramBadRequest) as exc:
+        if not _author_unreachable(exc):
+            update_request_payload(request_id, {
+                "approval_notification_retry_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+            })
+            logger.exception("event=moderation.approval_notification_failed request_id=%s", request_id)
+            return
+        update_request_payload(request_id, {
+            "approval_notified_for": key, "approval_notification_retry_at": None,
+            "approval_notification_progress": None,
+        })
+        logger.warning("event=moderation.approval_notification_undeliverable request_id=%s error=%s", request_id, exc)
     except Exception:
         update_request_payload(request_id, {
             "approval_notification_retry_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
@@ -171,7 +190,7 @@ def queue_pending_approval_notifications(bot) -> None:
             retry_at = payload.get("approval_notification_retry_at")
             if retry_at:
                 try:
-                    value = datetime.fromisoformat(str(retry_at).replace("Z", "+00:00"))
+                    value = datetime.fromisoformat(str(retry_at))
                     if value.replace(tzinfo=value.tzinfo or timezone.utc) > now:
                         continue
                 except ValueError:

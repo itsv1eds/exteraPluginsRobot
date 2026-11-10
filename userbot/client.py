@@ -9,7 +9,7 @@ from core.plugin_formats import plugin_extension
 from typing import Any, Dict, List, Optional
 
 from telethon import TelegramClient, __version__ as TELETHON_VERSION, utils
-from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError, MediaCaptionTooLongError, MessageIdInvalidError, MessageNotModifiedError
+from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError, MessageIdInvalidError, MessageNotModifiedError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from telethon.tl.functions.help import GetAppConfigRequest, GetConfigRequest
 from telethon.tl.types import DocumentAttributeFilename, Message, MessageEntityBlockquote
@@ -183,17 +183,6 @@ class UserbotClient:
             except Exception:
                 self._sync_entity = await self.client.get_entity(SYNC_CHANNEL_USERNAME)
         return self._sync_entity
-
-    async def get_icons_publish_entity(self):
-        if not self._icons_publish_entity:
-            try:
-                if ICONS_CHANNEL_ID:
-                    self._icons_publish_entity = await self.client.get_entity(ICONS_CHANNEL_ID)
-                else:
-                    raise ValueError("Missing icons channel ID")
-            except Exception:
-                self._icons_publish_entity = await self.client.get_entity(ICONS_CHANNEL_USERNAME)
-        return self._icons_publish_entity
 
     async def get_icons_sync_entity(self):
         if not self._icons_sync_entity:
@@ -444,94 +433,6 @@ class UserbotClient:
             "scheduled_at": schedule_date.isoformat(),
         }
 
-
-
-    async def publish_icon(
-        self,
-        text: str,
-        file_path: Optional[str] = None,
-        download_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        entity = await self.get_icons_publish_entity()
-        parsed_text, entities = self._format_text_for_telegram(text)
-
-        if file_path and Path(file_path).exists():
-            message = await _guard(self.client.send_file(
-                entity,
-                file=file_path,
-                caption=parsed_text,
-                formatting_entities=entities,
-                attributes=[DocumentAttributeFilename(download_name)] if download_name else None,
-            ), "send_file")
-        else:
-            message = await _guard(self.client.send_message(
-                entity,
-                parsed_text,
-                formatting_entities=entities,
-                link_preview=False,
-            ), "send_message")
-
-        channel_username = CONFIG.get("icons_channel", {}).get("username", ICONS_CHANNEL_USERNAME)
-
-        return {
-            "message_id": message.id,
-            "chat_id": entity.id,
-            "link": f"https://t.me/{channel_username}/{message.id}",
-        }
-    
-    async def update_message(
-        self,
-        message_id: int,
-        text: str,
-        file_path: Optional[str] = None,
-        download_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        entity = await self.get_publish_entity()
-        parsed_text, entities = self._format_text_for_telegram(text)
-        has_file = bool(file_path and Path(file_path).exists())
-        is_caption = has_file
-        if not has_file and utf16_length(parsed_text) > limits.CAPTION:
-            existing = await _guard(self.client.get_messages(entity, ids=message_id), "get_messages")
-            is_caption = bool(getattr(existing, "media", None))
-        split = False
-        if is_caption and utf16_length(parsed_text) > limits.CAPTION:
-            caption_limit, _ = await self.text_limits()
-            split = utf16_length(parsed_text) > caption_limit
-
-        async def edit(separate: bool):
-            kwargs = {"formatting_entities": [] if separate else entities}
-            if has_file:
-                kwargs["file"] = file_path
-                kwargs["attributes"] = [DocumentAttributeFilename(download_name or Path(file_path).name)]
-            return await _guard(self.client.edit_message(
-                entity, message_id, "" if separate else parsed_text, **kwargs,
-            ), "edit_message", timeout=600)
-
-        updated = True
-        try:
-            try:
-                await edit(split)
-            except MediaCaptionTooLongError:
-                if not is_caption or split:
-                    raise
-                split = True
-                await edit(True)
-        except MessageNotModifiedError:
-            logger.info("Message %s not modified; skipping edit", message_id)
-            updated = False
-        except Exception:
-            logger.exception("Failed to update message %s", message_id)
-            raise
-        if split:
-            await self._send_description(entity, text, message_id)
-            updated = True
-        channel_username = CONFIG.get("publish_channel", "xzcvzxa")
-        return {
-            "message_id": message_id,
-            "chat_id": entity.id,
-            "link": f"https://t.me/{channel_username}/{message_id}",
-            "updated": updated,
-        }
 
 
     async def delete_message(self, message_id: int) -> None:

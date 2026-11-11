@@ -1044,6 +1044,7 @@ def admin_review_kb(
     allow_vote: bool = True,
     media_count: int = 0,
     allow_approve: bool = False,
+    share_query: str | None = None,
 ) -> InlineKeyboardMarkup:
     vote_token = request_callback_token(request_id)
     if not submit_callback:
@@ -1064,6 +1065,8 @@ def admin_review_kb(
             _btn(t("btn_vote_yes", lang), callback_data=f"modvote:yes:{vote_token}", icon="yes", style="success"),
             _btn(t("btn_vote_no", lang), callback_data=f"modvote:no:{vote_token}", icon="no", style="danger"),
         ])
+    if allow_vote and share_query:
+        rows.append([_btn(t("admin_btn_public_vote", lang), switch_inline_query=share_query, icon="send")])
     if media_count:
         rows.append([_btn(t("admin_btn_show_media", lang, count=media_count),
                           callback_data=f"adm:media:{request_callback_token(request_id)}", icon="art")])

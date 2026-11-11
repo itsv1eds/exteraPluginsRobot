@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import shutil
+import sqlite3
 import tempfile
 import zipfile
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from typing import Any, Dict, Optional
 
 from core.storage import (
     ADMIN_SQLITE_PATH, CATALOG_SQLITE_PATH, LEGACY_SQLITE_PATH, SECRETS_PATH,
-    flush_all, load_config, save_config, snapshot_databases,
+    flush_all, load_config, save_config,
 )
 from bot.cache import get_admins_super, get_config, invalidate
 
@@ -88,28 +89,54 @@ def create_backup_zip(include_uploads: bool = False) -> Path:
         raise
 
 
+def _database_sources() -> list[tuple[tuple[str, Path], ...]]:
+    from core.archive_log import ARCHIVE_PATH
+    from core.audit_store import AUDIT_PATH
+    from core.request_history import HISTORY_PATH
+
+    groups = [(("catalog.sqlite3", CATALOG_SQLITE_PATH), ("admin.sqlite3", ADMIN_SQLITE_PATH))]
+    groups += [((name, path),) for name, path in (
+        ("history.sqlite3", HISTORY_PATH), ("audit.sqlite3", AUDIT_PATH), ("archive.sqlite3", ARCHIVE_PATH),
+    )]
+    return [tuple(item for item in group if Path(item[1]).is_file()) for group in groups]
+
+
+def _write_databases(zf: zipfile.ZipFile, group: tuple[tuple[str, Path], ...]) -> None:
+    connections = []
+    try:
+        for _, path in group:
+            conn = sqlite3.connect(Path(path), timeout=30, isolation_level=None)
+            connections.append(conn)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        for conn in connections:
+            conn.execute("BEGIN IMMEDIATE")
+        for name, path in group:
+            zf.write(path, arcname=name)
+            wal = Path(f"{path}-wal")
+            if wal.is_file() and wal.stat().st_size:
+                zf.write(wal, arcname=f"{name}-wal")
+    finally:
+        for conn in connections:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            conn.close()
+
+
 def _build_backup_zip(tmp_dir: Path, ts: str, include_uploads: bool) -> Path:
-    snapshots = snapshot_databases(tmp_dir)
-    from core.archive_log import snapshot_archive
-
-    journal = snapshot_archive(tmp_dir / "archive.sqlite3")
-    if journal is not None:
-        snapshots[journal.name] = journal
-    from core.request_history import snapshot as snapshot_history
-
-    history = snapshot_history(tmp_dir / "history.sqlite3")
-    if history is not None:
-        snapshots[history.name] = history
-    from core.audit_store import snapshot as snapshot_audit
-
-    audit_copy = snapshot_audit(tmp_dir / "audit.sqlite3")
-    if audit_copy is not None:
-        snapshots[audit_copy.name] = audit_copy
+    from core.storage import _data_snapshot_lock
 
     zip_path = tmp_dir / f"storage_backup_{ts}.zip"
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-        for name, snapshot in snapshots.items():
-            zf.write(snapshot, arcname=name)
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for index, group in enumerate(_database_sources()):
+            if not group:
+                continue
+            if index:
+                _write_databases(zf, group)
+                continue
+            with _data_snapshot_lock:
+                _write_databases(zf, group)
         if include_uploads:
             try:
                 from bot.helpers import get_uploads_dir
@@ -124,8 +151,6 @@ def _build_backup_zip(tmp_dir: Path, ts: str, include_uploads: bool) -> Path:
                 raise RuntimeError("Unable to include uploads in backup") from exc
 
     os.chmod(zip_path, 0o600)
-    for snapshot in snapshots.values():
-        snapshot.unlink(missing_ok=True)
     return zip_path
 
 
@@ -149,20 +174,25 @@ def _cleanup(zip_path: Path) -> None:
         shutil.rmtree(zip_path.parent, ignore_errors=True)
 
 
-async def send_backup(bot, chat_id: int) -> bool:
+def _error_reason(exc: BaseException) -> str:
+    text = str(exc).strip() or type(exc).__name__
+    return text[:200]
+
+
+async def send_backup(bot, chat_id: int) -> Optional[str]:
     try:
         await flush_all()
         zip_path = await asyncio.to_thread(create_backup_zip)
-    except Exception:
+    except Exception as exc:
         logger.exception("event=backup.create_failed")
-        return False
+        return _error_reason(exc)
     try:
         caption = datetime.now(timezone.utc).strftime("Backup %Y-%m-%d %H:%M UTC")
         await _send_backup_file(bot, chat_id, zip_path, caption)
-        return True
-    except Exception:
+        return None
+    except Exception as exc:
         logger.exception("event=backup.send_failed chat_id=%s", chat_id)
-        return False
+        return _error_reason(exc)
     finally:
         _cleanup(zip_path)
 

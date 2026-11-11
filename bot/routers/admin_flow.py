@@ -129,6 +129,7 @@ from bot.services.moderation import (
     send_request_to_forum,
     previous_rounds_text,
     vote_counts,
+    public_vote_summary,
     vote_summary,
     with_author_vote_summary,
     request_image_key,
@@ -506,6 +507,9 @@ def _review_meta_block(entry: dict, lang: str = "ru") -> str:
     if isinstance(payload, dict) and payload.get("resubmitted_after_rework"):
         parts.append(t("review_after_rework", lang))
     parts.append(vote_summary(entry, lang=lang))
+    public = public_vote_summary(entry, lang=lang)
+    if public:
+        parts.append(public)
     prev = previous_rounds_text(entry, lang=lang)
     if prev:
         parts.append(prev)
@@ -1458,12 +1462,18 @@ async def _render_review(
             allow_vote=can_accept_vote(entry),
             allow_approve=can_approve_request(entry),
             media_count=len(_comment_media_of_entry(entry)),
+            share_query=_public_vote_query(entry) if is_super and not is_delete else None,
         )
         if is_super and entry.get("status") == "scheduled":
             kb.inline_keyboard[-1:-1] = admin_schedule_controls(request_id, lang)
     sent = await answer(target, text, kb, request_image_key(entry))
     if send_document and isinstance(target, CallbackQuery):
         spawn_background(_send_review_document(target, entry, sent))
+
+
+def _public_vote_query(entry: dict | None) -> str | None:
+    plugin = ((entry or {}).get("payload") or {}).get("plugin") or {}
+    return str(plugin.get("id") or "").strip() or None
 
 
 _SUPER_ONLY_NAV_PREFIXES = (
@@ -2051,7 +2061,7 @@ async def _render_backup(target: CallbackQuery | Message, state: FSMContext) -> 
     next_run = "—"
     if cfg["auto_enabled"]:
         next_run = _tr(target, "admin_backup_auto_state", hours=cfg["interval_hours"])
-    text = _tr(target, "admin_backup_title", state=next_run)
+    text = await _with_notice(state, _tr(target, "admin_backup_title", state=next_run))
     await state.set_state(AdminFlow.menu)
     await answer(target, text, admin_backup_kb(cfg, lang), "admin")
 
@@ -2074,15 +2084,15 @@ async def on_admin_backup_now(cb: CallbackQuery, state: FSMContext) -> None:
         await cb.answer(_tr(cb, "admin_denied"), show_alert=True)
         return
     await ack(cb, _tr(cb, "admin_backup_started"))
-    ok = await send_backup(cb.bot, cb.from_user.id)
+    error = await send_backup(cb.bot, cb.from_user.id)
     add_audit_event(
         "backup.manual",
         actor_id=cb.from_user.id if cb.from_user else None,
         actor=_admin_actor_label(cb),
-        details={"ok": ok},
+        details={"ok": error is None, **({"error": error} if error else {})},
     )
-    await answer(cb, _tr(cb, "admin_backup_sent" if ok else "admin_backup_failed"),
-                 None, "admin")
+    notice = _tr(cb, "admin_backup_sent") if error is None else _tr(cb, "admin_backup_failed", error=html.escape(error))
+    await state.update_data(**{_ADMIN_NOTICE_KEY: notice})
     await _render_backup(cb, state)
 
 
@@ -5027,7 +5037,8 @@ async def on_admin_back_review(cb: CallbackQuery, state: FSMContext) -> None:
     else:
         kb = admin_review_kb(request_id, user_id, lang=lang, allow_publish=_is_super_admin(cb),
                              allow_approve=can_approve_request(entry), allow_vote=can_accept_vote(entry),
-                             media_count=len(_comment_media_of_entry(entry)))
+                             media_count=len(_comment_media_of_entry(entry)),
+                             share_query=_public_vote_query(entry) if _is_super_admin(cb) else None)
 
     await cb.message.edit_reply_markup(reply_markup=kb)
     await ack(cb)

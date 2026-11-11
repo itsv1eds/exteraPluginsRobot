@@ -23,7 +23,6 @@ from aiogram.types import (
 )
 from aiogram.exceptions import TelegramBadRequest
 
-from bot import limits
 from bot.routers import joinly_flow
 from bot.cache import get_admins_super, get_categories, get_icons
 from bot.constants import PAGE_SIZE
@@ -73,7 +72,7 @@ from core.user_store import (
 from core.storage import load_joinly
 from core.storage import save_joinly
 from core.request_store import get_request_by_id, get_request_by_plugin_id, get_user_requests, request_callback_token, update_request_payload
-from bot.services.moderation import VOTABLE_REQUEST_STATUSES, forum_text_with_votes, vote_counts
+from bot.services.moderation import VOTABLE_REQUEST_STATUSES, forum_text_with_votes, public_vote_counts, vote_card_caption
 from bot.services.inline import answer_inline, parse_inline_language
 
 router = Router(name="catalog-flow")
@@ -177,13 +176,6 @@ class _CaptionHTMLTruncator(HTMLParser):
             self.parts.append(f"</{self.stack.pop()}>")
 
 
-def _truncate_caption_html(value: str, max_visible: int) -> tuple[str, bool]:
-    parser = _CaptionHTMLTruncator(max_visible)
-    parser.feed(value)
-    parser.close_open_tags()
-    return "".join(parser.parts).strip(), parser.truncated
-
-
 def _request_inline_file(payload: dict[str, Any]) -> tuple[str, str, str] | None:
     plugin = payload.get("plugin") if isinstance(payload.get("plugin"), dict) else {}
     icon = payload.get("icon") if isinstance(payload.get("icon"), dict) else {}
@@ -202,19 +194,6 @@ def _request_inline_file(payload: dict[str, Any]) -> tuple[str, str, str] | None
     )
     kind = "icon" if icon else "plugin"
     return file_id, name, kind
-
-
-def _request_inline_file_caption(request_id: str, file_kind: str, message_text: str) -> str:
-    text = str(message_text or "").strip()
-    if len(strip_html(text)) <= limits.CAPTION:
-        return text
-
-    suffix = "\n\nПолный текст есть в отдельной карточке заявки."
-    budget = max(200, limits.CAPTION - len(strip_html(suffix)) - 3)
-    body, truncated = _truncate_caption_html(text, budget)
-    if not truncated:
-        return body
-    return f"{body}...{suffix}"
 
 
 def _toggle_label(value: bool, lang: str) -> str:
@@ -1309,7 +1288,7 @@ async def on_inline(query: InlineQuery) -> None:
             update_request_payload(request_id, {"moderation_inline_public": True})
             request_entry = get_request_by_plugin_id(text, statuses=VOTABLE_REQUEST_STATUSES) or request_entry
             payload = request_entry.get("payload", {}) if isinstance(request_entry.get("payload"), dict) else {}
-            yes, no, _ = vote_counts(request_entry)
+            yes, no, _ = public_vote_counts(request_entry)
             message_text = forum_text_with_votes(request_entry)
             try:
                 bot_username = str((await query.bot.me()).username or BOT_USERNAME)
@@ -1339,7 +1318,7 @@ async def on_inline(query: InlineQuery) -> None:
                         title=f"Файл {file_name}",
                         document_file_id=file_id,
                         description=f"Файл заявки {request_id}",
-                        caption=_request_inline_file_caption(request_id, file_kind, message_text),
+                        caption=vote_card_caption(request_entry),
                         parse_mode=ParseMode.HTML,
                         reply_markup=vote_markup,
                     )

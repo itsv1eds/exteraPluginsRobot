@@ -340,6 +340,9 @@ async def update_plugin(
         raise ValueError("Userbot not available")
 
     payload = entry.get("payload", {})
+    update_file = str((payload.get("plugin") or {}).get("file_path") or "")
+    if not update_file or not Path(update_file).is_file():
+        raise ValueError("Update file not found")
     current = find_plugin_by_slug(payload.get("update_slug") or old_catalog_entry.get("slug"))
     expected_id = str((payload.get("plugin") or {}).get("id") or "").strip()
     if current and expected_id and str(current.get("plugin_id") or "").strip() == expected_id:
@@ -385,24 +388,20 @@ async def update_plugin(
         except Exception:
             bot_username = ""
     links_line = _channel_links_line(bot_username, footer_slug)
-    if links_line and "Открыть в боте" not in post_text:
+    if links_line and links_line not in post_text:
         post_text = f"{post_text}\n\n{links_line}"
 
     download_name = fit_filename(str(plugin.get('id') or plugin.get('name') or 'plugin'), payload_extension(plugin))
     result = await userbot.update_message(old_message_id, post_text, file_path, download_name)
+    changed = result.get("updated", True) is not False
 
+    update_catalog_entry(old_catalog_entry.get("slug"), entry, old_message_id, record_changelog=changed)
     _complete_publication(entry, actor, actor_id)
-    
-    update_catalog_entry(
-        old_catalog_entry.get("slug"),
-        entry,
-        old_message_id,
-    )
 
     slug = old_catalog_entry.get("slug") or payload.get("update_slug") or plugin.get("id")
     name = plugin.get("name") or (old_catalog_entry.get("ru") or {}).get("name") or (old_catalog_entry.get("en") or {}).get("name") or slug
     link = (old_catalog_entry.get("channel_message") or {}).get("link")
-    if link:
+    if link and changed:
         add_updated_plugin(name, link)
 
     await flush_documents("requests", "plugins", "updated")
@@ -571,7 +570,7 @@ def seed_updated_plugins() -> int:
     return len(items)
 
 
-def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int) -> None:
+def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int, *, record_changelog: bool = True) -> None:
     payload = entry.get("payload", {})
     plugin = payload.get("plugin", {})
     
@@ -632,7 +631,7 @@ def update_catalog_entry(slug: str, entry: Dict[str, Any], message_id: int) -> N
             p["updated_at"] = datetime.utcnow().isoformat()
             
             changelog = payload.get("changelog", "")
-            if changelog:
+            if changelog and record_changelog:
                 updates = p.setdefault("updates", [])
                 updates.append({
                     "version": plugin.get("version"),

@@ -41,7 +41,7 @@
   "admin_backup_recipient_prompt": "请发送接收备份的用户或聊天数字 ID：",
   "admin_backup_started": "正在创建备份…",
   "admin_backup_sent": "<tg-emoji emoji-id=\"5395634613576049949\">✔️</tg-emoji> 备份已发送。",
-  "admin_backup_failed": "创建或发送备份失败。",
+  "admin_backup_failed": "<tg-emoji emoji-id=\"5398086773614096624\">❌</tg-emoji> 备份失败：{error}",
   "admin_maint_title": "<b>维护</b>\n\n诊断以及手动管理目录和申请。",
   "admin_maint_health": "运行状况 / 诊断",
   "admin_maint_sync_version": "同步插件版本",
@@ -301,6 +301,7 @@
   "comment_cleared": "已清空",
   "notify_plugin_removed_reason": "\n\n<b>原因：</b>\n<blockquote expandable>{reason}</blockquote>",
   "modremoved_prompt": "请写下关于已删除插件“{name}”的问题。\n审核员将回复，你可以看到具体是谁。",
+  "admin_btn_public_vote": "公开投票",
   "admin_btn_show_media": "查看媒体（{count}）",
   "admin_media_empty": "此申请未附加媒体",
   "admin_request_comment_media": "\n<b>附件数量：</b>{count}",
@@ -879,6 +880,6 @@
   "btn_add_to_catalog": "加入目录",
   "kb_field_link": "链接",
   "payment_unknown": "此付款已失效，请在机器人中重新打开付款。",
-  "vote_public_label": "社区投票（非审核员，不计入阈值）",
+  "vote_public_label": "公开投票（通过链接，不计入门槛）",
   "backup_recipient_not_super": "只有超级管理员会收到备份。请先把此 id 加为超级管理员。"
 }

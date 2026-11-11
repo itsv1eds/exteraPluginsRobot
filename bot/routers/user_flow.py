@@ -400,7 +400,8 @@ async def _render_profile_message(message: Message, state: FSMContext, lang: str
         await remember_menu_owner(message, state, sent)
 
 
-async def _route_start_payload_message(message: Message, state: FSMContext, lang: str, payload: str) -> bool:
+async def _route_start_payload_message(message: Message, state: FSMContext, lang: str, payload: str, sender=None) -> bool:
+    sender = sender or message.from_user
     raw_value = (payload or "").strip()
     value = raw_value.lower()
     if not raw_value:
@@ -410,18 +411,12 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
         vote = "yes" if raw_value.startswith("modvote_yes_") else "no"
         request_token = unquote(raw_value.split("_", 2)[2])
         entry = get_request_by_deeplink_token(request_token)
-        request_payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
-        inline_public = bool(request_payload.get("moderation_inline_public")) if isinstance(request_payload, dict) else False
-        user = message.from_user
+        user = sender
         if not entry or not user:
             await message.answer(t("not_found", lang), parse_mode=ParseMode.HTML)
             return True
         if not can_accept_vote(entry):
             await message.answer(t("vote_expired", lang), parse_mode=ParseMode.HTML)
-            return True
-        moderator = can_vote_in_context(user.id, message.chat.id)
-        if not inline_public and not moderator:
-            await message.answer(t("admin_denied", lang), parse_mode=ParseMode.HTML)
             return True
         request_id = str(entry.get("id") or "")
         from bot.routers.moderation_flow import start_vote_prompt
@@ -435,7 +430,7 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
             vote,
             lang,
             int(message.chat.id),
-            public=not moderator,
+            public=not can_vote_in_context(user.id, message.chat.id),
         )
         if not ok:
             await message.answer(t("vote_expired", lang), parse_mode=ParseMode.HTML)
@@ -449,7 +444,7 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
         return True
 
     if value == "submit":
-        user = message.from_user
+        user = sender
         include_update = False
         if user:
             try:
@@ -507,7 +502,7 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
         return True
 
     if value == "admin":
-        user_id = message.from_user.id if message.from_user else None
+        user_id = sender.id if sender else None
         if user_id and user_id in get_admins():
             await state.set_state(AdminFlow.menu)
             from bot.routers.admin_flow import _admin_menu_role
@@ -516,7 +511,7 @@ async def _route_start_payload_message(message: Message, state: FSMContext, lang
             if sent:
                 await remember_menu_owner(message, state, sent)
         else:
-            sent = await answer(message, _welcome_text(message.from_user, lang), main_menu_kb(lang), "welcome")
+            sent = await answer(message, _welcome_text(sender, lang), main_menu_kb(lang), "welcome")
             if sent:
                 await remember_menu_owner(message, state, sent)
         return True
@@ -806,7 +801,7 @@ async def on_lang(cb: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     start_payload = (data.get("start_payload") or "").strip()
     if start_payload:
-        if cb.message and await _route_start_payload_message(cb.message, state, lang, start_payload):
+        if cb.message and await _route_start_payload_message(cb.message, state, lang, start_payload, cb.from_user):
             await cb.answer(t("language_saved", lang))
             return
         plugin = find_plugin_by_slug(start_payload) or find_plugin_by_deeplink_token(start_payload)

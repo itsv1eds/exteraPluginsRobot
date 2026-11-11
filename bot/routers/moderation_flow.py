@@ -21,13 +21,14 @@ from bot.services.moderation import (
     commit_pending_vote,
     forum_text_with_votes,
     get_pending_vote,
-    moderation_vote_kb,
+    inline_cards,
+    public_vote_counts,
     refresh_forum_vote_keyboard,
+    vote_card_caption,
     request_title,
     require_vote_reason,
     start_pending_vote,
     update_pending_vote,
-    vote_counts,
 )
 from bot.services.admin_notifications import (
     notify_superadmins_if_threshold,
@@ -59,20 +60,42 @@ def _vote_templates(vote: str | None, request_id: str | None = None, lang: str |
     return visible_reason_templates(values, kind, user_id) if user_id is not None else values
 
 
-async def _refresh_inline_vote_message(bot, inline_message_id: str | None, entry: dict | None, request_id: str) -> None:
-    if not inline_message_id or not entry:
+async def refresh_inline_cards(bot, entry: dict | None, request_id: str, extra: str | None = None) -> None:
+    from bot.keyboards import moderation_inline_vote_url_kb
+
+    cards = inline_cards(entry)
+    if extra and extra not in cards:
+        cards.append(extra)
+    if not cards or not entry:
         return
-    yes, no, _ = vote_counts(entry)
     try:
-        await bot.edit_message_text(
-            forum_text_with_votes(entry),
-            inline_message_id=inline_message_id,
-            parse_mode="HTML",
-            reply_markup=moderation_vote_kb(request_id, yes, no),
-            disable_web_page_preview=True,
-        )
+        bot_username = str((await bot.me()).username or "")
     except Exception:
-        pass
+        logger.warning("event=vote.inline_cards.no_username request_id=%s", request_id)
+        return
+    yes, no, _ = public_vote_counts(entry)
+    text = forum_text_with_votes(entry)
+    caption = vote_card_caption(entry)
+    markup = moderation_inline_vote_url_kb(bot_username, request_id, yes, no)
+    for inline_message_id in cards:
+        try:
+            await bot.edit_message_text(text, inline_message_id=inline_message_id, parse_mode="HTML",
+                                        reply_markup=markup, disable_web_page_preview=True)
+        except TelegramBadRequest as exc:
+            error = str(exc).lower()
+            if "not modified" in error:
+                continue
+            if "caption" not in error and "no text" not in error:
+                logger.info("event=vote.inline_card_skipped request_id=%s error=%s", request_id, exc)
+                continue
+            try:
+                await bot.edit_message_caption(inline_message_id=inline_message_id, caption=caption,
+                                               parse_mode="HTML", reply_markup=markup)
+            except TelegramBadRequest as caption_exc:
+                if "not modified" not in str(caption_exc).lower():
+                    logger.info("event=vote.inline_card_skipped request_id=%s error=%s", request_id, caption_exc)
+        except Exception:
+            logger.warning("event=vote.inline_card_failed request_id=%s", request_id, exc_info=True)
 
 
 async def _refresh_vote_surfaces(bot, request_id: str, entry: dict, prompt: dict,
@@ -83,8 +106,7 @@ async def _refresh_vote_surfaces(bot, request_id: str, entry: dict, prompt: dict
         ("admin_notifications", refresh_admin_notify_messages(bot, entry)),
         ("threshold_notifications", notify_superadmins_if_threshold(bot, entry)),
     ]
-    if inline_message_id:
-        calls.append(("inline", _refresh_inline_vote_message(bot, inline_message_id, entry, request_id)))
+    calls.append(("inline", refresh_inline_cards(bot, entry, request_id, inline_message_id)))
     results = await asyncio.gather(*(call for _, call in calls), return_exceptions=True)
     for (name, _), result in zip(calls, results):
         if isinstance(result, BaseException):
@@ -413,10 +435,9 @@ async def on_moderation_vote(cb: CallbackQuery, state: FSMContext) -> None:
     if not can_accept_vote(entry):
         await cb.answer(t("vote_expired", "ru"), show_alert=True)
         return
-    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
-    inline_public = bool(payload.get("moderation_inline_public")) if isinstance(payload, dict) else False
+    from_inline_card = bool(cb.inline_message_id)
     moderator = can_vote_in_context(user.id if user else None, chat_id)
-    if not inline_public and not moderator:
+    if not from_inline_card and not moderator:
         await cb.answer(t("admin_denied", "ru"), show_alert=True)
         return
 

@@ -9,7 +9,7 @@ from core.plugin_formats import plugin_extension
 from typing import Any, Dict, List, Optional
 
 from telethon import TelegramClient, __version__ as TELETHON_VERSION, utils
-from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError, MessageIdInvalidError, MessageNotModifiedError
+from telethon.errors.rpcerrorlist import AuthKeyDuplicatedError, MediaCaptionTooLongError, MessageIdInvalidError, MessageNotModifiedError
 from telethon.tl.functions.messages import GetDiscussionMessageRequest
 from telethon.tl.functions.help import GetAppConfigRequest, GetConfigRequest
 from telethon.tl.types import DocumentAttributeFilename, Message, MessageEntityBlockquote
@@ -24,7 +24,6 @@ from core.catalog import invalidate_catalog_cache
 
 logger = logging.getLogger(__name__)
 
-BLANK_CHAR = "."
 
 CONFIG = load_config()
 SYNC_CHANNEL_USERNAME = CONFIG.get("channel", {}).get("username", "exteraPluginsSup")
@@ -434,13 +433,62 @@ class UserbotClient:
         }
 
 
+    async def update_message(
+        self,
+        message_id: int,
+        text: str,
+        file_path: Optional[str] = None,
+        download_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        entity = await self.get_publish_entity()
+        parsed_text, entities = self._format_text_for_telegram(text)
+        has_file = bool(file_path and Path(file_path).exists())
+        is_caption = has_file
+        if not has_file and utf16_length(parsed_text) > limits.CAPTION:
+            existing = await _guard(self.client.get_messages(entity, ids=message_id), "get_messages")
+            is_caption = bool(getattr(existing, "media", None))
+        split = False
+        if is_caption and utf16_length(parsed_text) > limits.CAPTION:
+            caption_limit, _ = await self.text_limits()
+            split = utf16_length(parsed_text) > caption_limit
+
+        async def edit(separate: bool):
+            kwargs = {"formatting_entities": [] if separate else entities}
+            if has_file:
+                kwargs["file"] = file_path
+                kwargs["attributes"] = [DocumentAttributeFilename(download_name or Path(file_path).name)]
+            return await _guard(self.client.edit_message(
+                entity, message_id, "" if separate else parsed_text, **kwargs,
+            ), "edit_message", timeout=600)
+
+        updated = True
+        try:
+            try:
+                await edit(split)
+            except MediaCaptionTooLongError:
+                if not is_caption or split:
+                    raise
+                split = True
+                await edit(True)
+        except MessageNotModifiedError:
+            logger.info("Message %s not modified; skipping edit", message_id)
+            updated = False
+        except Exception:
+            logger.exception("Failed to update message %s", message_id)
+            raise
+        if split:
+            await self._send_description(entity, text, message_id)
+            updated = True
+        channel_username = CONFIG.get("publish_channel", "xzcvzxa")
+        return {
+            "message_id": message_id,
+            "chat_id": entity.id,
+            "link": f"https://t.me/{channel_username}/{message_id}",
+            "updated": updated,
+        }
 
     async def delete_message(self, message_id: int) -> None:
         entity = await self.get_publish_entity()
-        try:
-            await _guard(self.client.edit_message(entity, message_id, BLANK_CHAR, file=None), "edit_message")
-        except Exception:
-            logger.debug("userbot: blanking before delete failed message_id=%s", message_id)
         await _guard(self.client.delete_messages(entity, message_id), "delete_messages")
     
     async def full_sync(self, limit: int = 0) -> Dict[str, int]:

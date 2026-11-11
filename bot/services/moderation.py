@@ -76,9 +76,32 @@ def is_moderation_forum_chat(chat_id: int | None) -> bool:
     return bool(chat_id and int(chat_id) == moderation_config()["chat_id"])
 
 
-def vote_counts(entry: dict | None) -> tuple[int, int, int]:
+INLINE_CARDS_KEY = "moderation_inline_messages"
+_INLINE_CARDS_LIMIT = 20
+
+
+def public_vote_counts(entry: dict | None) -> tuple[int, int, int]:
+    return vote_counts(entry, PUBLIC_VOTES_KEY)
+
+
+def remember_inline_card(request_id: str, inline_message_id: str) -> None:
+    entry = get_request_by_id(request_id)
+    if not entry or not inline_message_id:
+        return
+    cards = (entry.get("payload") or {}).get(INLINE_CARDS_KEY)
+    cards = [item for item in cards if isinstance(item, str) and item != inline_message_id] if isinstance(cards, list) else []
+    cards.append(inline_message_id)
+    update_request_payload(request_id, {INLINE_CARDS_KEY: cards[-_INLINE_CARDS_LIMIT:], "moderation_inline_public": True})
+
+
+def inline_cards(entry: dict | None) -> list[str]:
+    cards = ((entry or {}).get("payload") or {}).get(INLINE_CARDS_KEY)
+    return [item for item in cards if isinstance(item, str) and item] if isinstance(cards, list) else []
+
+
+def vote_counts(entry: dict | None, key: str = "moderation_votes") -> tuple[int, int, int]:
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
-    votes = payload.get("moderation_votes") if isinstance(payload, dict) else {}
+    votes = payload.get(key) if isinstance(payload, dict) else {}
     if not isinstance(votes, dict):
         return 0, 0, 0
     yes = 0
@@ -120,7 +143,7 @@ def rejection_reasons(entry: dict | None, lang: str = "ru") -> list[str]:
     return out
 
 
-def _format_votes_block(votes: dict, header_label: str | None = None, lang: str = "ru") -> str:
+def _format_votes_block(votes: dict, header_label: str | None = None, lang: str = "ru", *, compact: bool = False) -> str:
     from bot.services.reason_templates import localize_reason
     from bot.texts import t
 
@@ -132,6 +155,8 @@ def _format_votes_block(votes: dict, header_label: str | None = None, lang: str 
     total = yes + no
     yes_label, no_label = t("vote_value_yes", lang), t("vote_value_no", lang)
     header = f"<b>{header_label}:</b> {total}  |  {yes_label}: {yes}  |  {no_label}: {no}"
+    if compact:
+        return header
     details: list[str] = []
     for item in votes.values():
         if not isinstance(item, dict):
@@ -156,6 +181,36 @@ def vote_summary(entry: dict | None, lang: str = "ru") -> str:
     payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
     votes = payload.get("moderation_votes") if isinstance(payload, dict) else {}
     return _format_votes_block(votes if isinstance(votes, dict) else {}, lang=lang)
+
+
+def public_vote_summary(entry: dict | None, lang: str = "ru") -> str:
+    from bot.texts import t as _t
+
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    votes = payload.get(PUBLIC_VOTES_KEY) if isinstance(payload, dict) else None
+    if not isinstance(votes, dict) or not votes:
+        return ""
+    return _format_votes_block(votes, header_label=_t("vote_public_label", lang), lang=lang)
+
+
+def vote_card_caption(entry: dict | None) -> str:
+    import html as _html
+    from bot.formatting import utf16_length
+    from bot.texts import t as _t
+
+    payload = entry.get("payload", {}) if isinstance(entry, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    title = f"<b>{_html.escape(request_title(entry))}</b>\nID: {code_html(str((entry or {}).get('id') or ''))}"
+    moderators = payload.get("moderation_votes") if isinstance(payload.get("moderation_votes"), dict) else {}
+    public = payload.get(PUBLIC_VOTES_KEY) if isinstance(payload.get(PUBLIC_VOTES_KEY), dict) else {}
+    for compact in (False, True):
+        parts = [title, _format_votes_block(moderators, compact=compact)]
+        if public:
+            parts.append(_format_votes_block(public, header_label=_t("vote_public_label", "ru"), compact=compact))
+        text = "\n\n".join(parts)
+        if utf16_length(text) <= limits.CAPTION:
+            return text
+    return title
 
 
 def with_author_vote_summary(text: str, entry: dict | None, lang: str = "ru") -> str:
@@ -245,11 +300,9 @@ def forum_text_with_votes(entry: dict | None) -> str:
     if isinstance(entry, dict) and entry.get("type") == "delete":
         return "\n\n".join(parts)
     parts.append(vote_summary(entry))
-    public_votes = payload.get(PUBLIC_VOTES_KEY) if isinstance(payload, dict) else None
-    if isinstance(public_votes, dict) and public_votes:
-        from bot.texts import t as _t
-
-        parts.append(_format_votes_block(public_votes, header_label=_t("vote_public_label", "ru"), lang="ru"))
+    public = public_vote_summary(entry)
+    if public:
+        parts.append(public)
     prev = previous_rounds_text(entry)
     if prev:
         parts.append(prev)

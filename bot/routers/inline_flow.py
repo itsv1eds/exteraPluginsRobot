@@ -16,10 +16,46 @@ logger = logging.getLogger(__name__)
 async def on_chosen_inline_result(result: ChosenInlineResult) -> None:
     logger.info("event=inline.formatting.chosen bot_id=%s result_id=%s user_id=%s has_inline_id=%s",
                 result.bot.id, result.result_id, result.from_user.id, bool(result.inline_message_id))
-    if result.inline_message_id:
-        await apply_inline_formatting(result.bot, result.result_id, result.from_user.id, result.inline_message_id)
-    else:
+    if not result.inline_message_id:
         logger.warning("event=inline.formatting.chosen_without_inline_id result_id=%s", result.result_id)
+        return
+    snapshot = snapshot_for(int(result.bot.id), result.result_id, result.from_user.id)
+    await apply_inline_formatting(result.bot, result.result_id, result.from_user.id, result.inline_message_id)
+    request_id = _vote_card_request_id(snapshot.reply_markup if snapshot else None)
+    if request_id:
+        _remember_vote_card(request_id, result)
+
+
+def _vote_card_request_id(markup) -> str | None:
+    from core.request_store import get_request_by_deeplink_token
+
+    for row in getattr(markup, "inline_keyboard", None) or []:
+        for button in row:
+            url = str(getattr(button, "url", None) or "")
+            if "?start=modvote_" not in url:
+                continue
+            token = url.split("?start=modvote_", 1)[1].split("_", 1)[-1]
+            entry = get_request_by_deeplink_token(token)
+            if entry:
+                return str(entry.get("id") or "") or None
+    return None
+
+
+def _remember_vote_card(request_id: str, result: ChosenInlineResult) -> None:
+    from bot.services.moderation import remember_inline_card
+
+    remember_inline_card(request_id, result.inline_message_id)
+    logger.info("event=vote.inline_card_sent request_id=%s user_id=%s", request_id, result.from_user.id)
+
+
+@router.chosen_inline_result(F.result_id.startswith("request:"))
+async def on_chosen_request_card(result: ChosenInlineResult) -> None:
+    from bot.callback_tokens import decode_slug
+
+    if not result.inline_message_id:
+        logger.warning("event=vote.inline_card_without_id result_id=%s", result.result_id)
+        return
+    _remember_vote_card(decode_slug(result.result_id.split(":", 1)[1]), result)
 
 
 @router.callback_query(F.data == PENDING_CALLBACK)

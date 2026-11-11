@@ -297,44 +297,33 @@ async def blank_and_delete(bot, chat_id: int, message_id: int, *, is_media: bool
 
     blanked = False
     blanked_with = ""
-    text_error = caption_error = None
+    text_error = None
 
-    for method in (("caption", "text") if is_media else ("text", "caption")):
-        for candidate in BLANK_CANDIDATES:
-            try:
-                if method == "caption":
-                    await bot.edit_message_caption(
-                        chat_id=int(chat_id), message_id=int(message_id), caption=candidate, reply_markup=None,
-                    )
-                else:
-                    await bot.edit_message_text(
-                        candidate, chat_id=int(chat_id), message_id=int(message_id), reply_markup=None,
-                    )
+    for candidate in () if is_media else BLANK_CANDIDATES:
+        try:
+            await bot.edit_message_text(
+                candidate, chat_id=int(chat_id), message_id=int(message_id), reply_markup=None,
+            )
+            blanked = True
+            blanked_with = candidate
+            break
+        except Exception as exc:
+            if isinstance(exc, TelegramRetryAfter):
+                async def retry_blank(wait=exc.retry_after):
+                    await asyncio.sleep(max(1, float(wait)))
+                    await blank_and_delete(bot, chat_id, message_id, is_media=is_media)
+
+                spawn_background(retry_blank())
+                return False
+            if isinstance(exc, TelegramBadRequest) and "message to edit not found" in str(exc).lower():
+                return True
+            if _is_not_modified_error(exc):
                 blanked = True
                 blanked_with = candidate
                 break
-            except Exception as exc:
-                if isinstance(exc, TelegramRetryAfter):
-                    async def retry_blank(wait=exc.retry_after):
-                        await asyncio.sleep(max(1, float(wait)))
-                        await blank_and_delete(bot, chat_id, message_id, is_media=is_media)
-
-                    spawn_background(retry_blank())
-                    return False
-                if isinstance(exc, TelegramBadRequest) and "message to edit not found" in str(exc).lower():
-                    return True
-                if _is_not_modified_error(exc):
-                    blanked = True
-                    blanked_with = candidate
-                    break
-                if method == "caption":
-                    caption_error = _short_error(exc)
-                else:
-                    text_error = _short_error(exc)
-                if not _is_empty_text_error(exc):
-                    break
-        if blanked:
-            break
+            text_error = _short_error(exc)
+            if not _is_empty_text_error(exc):
+                break
 
     async def _delete(delay: float) -> bool:
         if delay:
@@ -365,10 +354,9 @@ async def blank_and_delete(bot, chat_id: int, message_id: int, *, is_media: bool
             return False
 
     if not blanked:
-        logger.warning(
-            "event=blank_before_delete.failed chat_id=%s message_id=%s text_error=%s caption_error=%s",
-            chat_id, message_id, text_error, caption_error,
-        )
+        if text_error:
+            logger.info("event=blank_before_delete.skipped chat_id=%s message_id=%s error=%s",
+                        chat_id, message_id, text_error)
         return await _delete(0)
 
     if blanked_with != BLANK_CANDIDATES[0]:
